@@ -339,16 +339,16 @@
       // Risk Posture summary
       const highOrCritical = sortedFlags.filter(f => f.severity === 'critical' || f.severity === 'high').length;
       const riskPosture = document.createElement('div');
-      riskPosture.style.cssText = 'font-size:11px; margin:4px 0 8px; padding:6px 8px; background:#1f2937; border-radius:6px; border-left:3px solid #64748b;';
+      riskPosture.style.cssText = 'font-size:11px; margin:4px 0 8px; padding:10px 12px; background:#1f2937; border-radius:6px; border-left:3px solid #64748b; line-height:1.45;';
       if (highOrCritical > 0) {
         riskPosture.style.borderLeftColor = '#fda4af';
-        riskPosture.innerHTML = `<span style="color:#fda4af; font-weight:500;">Risk Posture:</span> ${highOrCritical} material flag(s) present. Focus mitigation on concentration and data visibility issues.`;
+        riskPosture.innerHTML = `<span style="color:#fda4af; font-weight:600; display:block; margin-bottom:4px;">Risk Posture Summary</span> ${highOrCritical} material flag(s) present. Primary concerns center on geographic concentration and limited sub-tier / capacity visibility. <strong>Mitigation priority:</strong> dual-sourcing agreements and proactive capacity monitoring with NIB PSR. Review the detailed implications below for specific actions.`;
       } else if (sortedFlags.length > 0) {
         riskPosture.style.borderLeftColor = '#a3e635';
-        riskPosture.innerHTML = `<span style="color:#a3e635; font-weight:500;">Risk Posture:</span> Manageable. No critical or high flags identified in current synthesis.`;
+        riskPosture.innerHTML = `<span style="color:#a3e635; font-weight:600; display:block; margin-bottom:4px;">Risk Posture Summary</span> Manageable overall. No critical or high flags in current synthesis. Continue routine monitoring of capacity and program signals.`;
       } else {
         riskPosture.style.borderLeftColor = '#a3e635';
-        riskPosture.innerHTML = `<span style="color:#a3e635; font-weight:500;">Risk Posture:</span> Clean. No flags identified.`;
+        riskPosture.innerHTML = `<span style="color:#a3e635; font-weight:600; display:block; margin-bottom:4px;">Risk Posture Summary</span> Clean profile. No flags identified in current synthesis.`;
       }
       fEl.appendChild(riskPosture);
 
@@ -407,6 +407,24 @@
       if (sup.continuity_assessment || sup.ContinuityAssessment) {
         const note = sup.continuity_assessment || sup.ContinuityAssessment;
         extraLine += `<div style="font-size:11px; color:#a5b4fc; margin-top:4px; font-style:italic;">${note}</div>`;
+      }
+
+      // Diversification / Continuity Score (visual badge + note)
+      const concRisk = (sup.concentration_risk || sup.ConcentrationRisk || '').toLowerCase();
+      let divLabel = '';
+      let scoreColor = '#64748b';
+      if (concRisk === 'low') {
+        divLabel = 'Diversification: Strong — broad, resilient base with low single-point risk.';
+        scoreColor = '#10b981';
+      } else if (concRisk === 'medium') {
+        divLabel = 'Diversification: Moderate — acceptable spread but monitor lead producers closely.';
+        scoreColor = '#fbbf24';
+      } else if (concRisk === 'elevated' || concRisk === 'high') {
+        divLabel = 'Diversification: Concentrated — elevated capacity and continuity risk on large orders.';
+        scoreColor = '#f87171';
+      }
+      if (divLabel) {
+        extraLine += `<div style="font-size:10px; color:${scoreColor}; margin-top:3px; font-weight:600;">${divLabel}</div>`;
       }
 
       document.getElementById('supplier-summary').innerHTML =
