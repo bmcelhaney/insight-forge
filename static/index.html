@@ -350,7 +350,11 @@
         fEl.appendChild(riskNote);
       }
 
-      sortedFlags.forEach(f => {
+      // Group flags: Critical/High first, then Medium/Low
+      const criticalHigh = sortedFlags.filter(f => f.severity === 'critical' || f.severity === 'high');
+      const mediumLow = sortedFlags.filter(f => f.severity !== 'critical' && f.severity !== 'high');
+
+      const renderFlag = (f) => {
         const div = document.createElement('div');
         let cls = 'flag-medium';
         if (f.severity === 'critical') cls = 'flag-critical';
@@ -362,8 +366,29 @@
           html += `<div style="font-size:10px; color:#e0f2fe; margin-top:4px; padding-left:10px; border-left:3px solid rgba(103, 232, 249, 0.4); line-height:1.35;">${f.implication}</div>`;
         }
         div.innerHTML = html;
-        fEl.appendChild(div);
-      });
+        return div;
+      };
+
+      if (criticalHigh.length > 0) {
+        const subHeader = document.createElement('div');
+        subHeader.style.cssText = 'font-size:10px; color:#fda4af; margin:4px 0 2px; font-weight:500;';
+        subHeader.textContent = 'Critical / High';
+        fEl.appendChild(subHeader);
+        criticalHigh.forEach(f => fEl.appendChild(renderFlag(f)));
+      }
+
+      if (mediumLow.length > 0) {
+        if (criticalHigh.length > 0) {
+          const spacer = document.createElement('div');
+          spacer.style.height = '4px';
+          fEl.appendChild(spacer);
+        }
+        const subHeader = document.createElement('div');
+        subHeader.style.cssText = 'font-size:10px; color:#64748b; margin:4px 0 2px; font-weight:500;';
+        subHeader.textContent = 'Medium / Low';
+        fEl.appendChild(subHeader);
+        mediumLow.forEach(f => fEl.appendChild(renderFlag(f)));
+      }
 
       // Supplier
       const sup = result.supplier_data || result.SupplierData || {};
