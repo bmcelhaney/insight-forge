@@ -78,6 +78,7 @@ type SupplierView struct {
 	AwardPeriod             string  `json:"award_period"` // e.g. "Jan 2023 – Dec 2025 (36 months)"
 	TopSuppliersTotalValue  float64 `json:"top_suppliers_total_value,omitempty"`
 	EcosystemNote           string  `json:"ecosystem_note,omitempty"` // Short analytical note on overall supplier health/continuity
+	ContinuityAssessment    string  `json:"continuity_assessment,omitempty"` // Deeper forward-looking note on supply continuity / risk
 }
 
 // SupplierSummary for top vendors.
