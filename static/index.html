@@ -338,9 +338,14 @@
       // Supplier
       const sup = result.supplier_data || result.SupplierData || {};
       const supplierPeriod = sup.award_period || sup.AwardPeriod || '';
+      let extraLine = '';
+      if (sup.top_suppliers_total_value || sup.TopSuppliersTotalValue) {
+        const val = sup.top_suppliers_total_value || sup.TopSuppliersTotalValue;
+        extraLine = `<div style="font-size:11px; color:#a1a1aa; margin-top:2px;">Top suppliers represent $${(val/1000000).toFixed(2)}M in awards</div>`;
+      }
       document.getElementById('supplier-summary').innerHTML =
         `${sup.total_suppliers || sup.TotalSuppliers || 0} suppliers across ${(sup.primary_countries || sup.PrimaryCountries || []).length} countries. Concentration risk: <span class="font-medium">${sup.concentration_risk || sup.ConcentrationRisk || 'medium'}</span>.` +
-        (supplierPeriod ? `<div style="font-size:11px; color:#a1a1aa; margin-top:4px;">${supplierPeriod}</div>` : '');
+        (supplierPeriod ? `<div style="font-size:11px; color:#a1a1aa; margin-top:4px;">${supplierPeriod}</div>` : '') + extraLine;
 
       const tsEl = document.getElementById('top-suppliers');
       tsEl.innerHTML = '';

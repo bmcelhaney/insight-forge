@@ -71,11 +71,12 @@ type RiskFlag struct {
 
 // SupplierView aggregates supplier concentration and ecosystem.
 type SupplierView struct {
-	TotalSuppliers      int                `json:"total_suppliers"`
-	TopSuppliers        []SupplierSummary  `json:"top_suppliers"`
-	ConcentrationRisk   string             `json:"concentration_risk"` // low/medium/high
-	PrimaryCountries    []string           `json:"primary_countries"`
-	AwardPeriod         string             `json:"award_period"` // e.g. "Jan 2023 – Dec 2025 (36 months)"
+	TotalSuppliers        int                `json:"total_suppliers"`
+	TopSuppliers          []SupplierSummary  `json:"top_suppliers"`
+	ConcentrationRisk     string             `json:"concentration_risk"` // low/medium/high
+	PrimaryCountries      []string           `json:"primary_countries"`
+	AwardPeriod           string             `json:"award_period"` // e.g. "Jan 2023 – Dec 2025 (36 months)"
+	TopSuppliersTotalValue float64           `json:"top_suppliers_total_value,omitempty"`
 }
 
 // SupplierSummary for top vendors.
