@@ -59,25 +59,38 @@ func main() {
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.Timeout(120 * time.Second))
 
+	basePath := cfg.BasePath
+	// Normalize: ensure it starts with / but does not end with / (unless it's just "/")
+	if basePath != "" && basePath[0] != '/' {
+		basePath = "/" + basePath
+	}
+	if len(basePath) > 1 && basePath[len(basePath)-1] == '/' {
+		basePath = basePath[:len(basePath)-1]
+	}
+
 	// Health
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{"status": "ok", "service": "insight-forge"})
 	})
 
-	// === Main Workspace - initial HTML load ===
-	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
+	// === Main Workspace - initial HTML load (under base path) ===
+	r.Get(basePath+"/", func(w http.ResponseWriter, r *http.Request) {
 		recent, _ := database.GetRecentAnalyses(r.Context(), 8)
 		props := components.WorkspaceProps{
 			RecentNSNs: recent,
+			BasePath:   basePath,
 		}
 		html, _ := components.RenderWorkspaceToString(props)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		fmt.Fprint(w, html)
 	})
 
-	// === Datastar SSE endpoint for reactive analysis (with live partial updates) ===
-	r.Post("/datastar/analyze", func(w http.ResponseWriter, r *http.Request) {
+	// Mount the rest of the app under the base path
+	r.Route(basePath, func(r chi.Router) {
+
+		// === Datastar SSE endpoint for reactive analysis (with live partial updates) ===
+		r.Post("/datastar/analyze", func(w http.ResponseWriter, r *http.Request) {
 		sse := datastar.NewSSE(w, r)
 
 		nsn := r.FormValue("nsn")
@@ -256,6 +269,8 @@ func main() {
 			slog.Error("failed to write excel", "error", err)
 		}
 	})
+
+	}) // end of r.Route(basePath, ...)
 
 	addr := fmt.Sprintf(":%d", cfg.Port)
 	srv := &http.Server{

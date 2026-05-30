@@ -18,9 +18,10 @@ type WorkspaceProps struct {
 	Snapshots         []models.DataSnapshot
 	RecentNSNs        []string
 	IsAnalyzing       bool
-	CompletedSources  []string   // for live progress
+	CompletedSources  []string // for live progress
 	TotalSources      int
 	ErrorMessage      string
+	BasePath          string // e.g. "/insightforge" — must start with /
 }
 
 // Workspace is the main reactive component rendered via Datastar.
@@ -57,7 +58,7 @@ func SearchPanel(props WorkspaceProps) g.Node {
 				),
 				Button(
 					Class("btn btn-primary"),
-					ds.On("click", `@post('/datastar/analyze', {nsn: $nsn})`),
+					ds.On("click", fmt.Sprintf(`@post('%s', {nsn: $nsn})`, props.path("/datastar/analyze"))),
 					g.Text("Analyze"),
 				),
 			),
@@ -76,7 +77,7 @@ func RecentPanel(props WorkspaceProps) g.Node {
 			g.Group(g.Map(props.RecentNSNs, func(nsn string) g.Node {
 				return Button(
 					Class("btn btn-sm btn-ghost justify-start w-full font-mono text-left mb-1"),
-					ds.On("click", fmt.Sprintf(`@set($nsn, '%s'); @post('/datastar/analyze', {nsn: $nsn})`, nsn)),
+					ds.On("click", fmt.Sprintf(`@set($nsn, '%s'); @post('%s', {nsn: $nsn})`, nsn, props.path("/datastar/analyze"))),
 					g.Text(nsn),
 				)
 			})),
@@ -183,17 +184,17 @@ func InsightCard(props WorkspaceProps) g.Node {
 			Div(Class("card-actions justify-end mt-6 gap-2"),
 				Button(
 					Class("btn btn-primary btn-sm"),
-					ds.On("click", fmt.Sprintf(`window.location = '/api/export/%s'`, r.EntityID)),
+					ds.On("click", fmt.Sprintf(`window.location = '%s'`, props.path(fmt.Sprintf("/api/export/%s", r.EntityID)))),
 					g.Text("Export JSON"),
 				),
 				Button(
 					Class("btn btn-accent btn-sm"),
-					ds.On("click", fmt.Sprintf(`window.location = '/api/export-excel/%s'`, r.EntityID)),
+					ds.On("click", fmt.Sprintf(`window.location = '%s'`, props.path(fmt.Sprintf("/api/export-excel/%s", r.EntityID)))),
 					g.Text("Export Excel Bundle"),
 				),
 				Button(
 					Class("btn btn-ghost btn-sm"),
-					ds.On("click", fmt.Sprintf(`@set($nsn, '%s'); @post('/datastar/analyze', {nsn: $nsn})`, r.EntityID)),
+					ds.On("click", fmt.Sprintf(`@set($nsn, '%s'); @post('%s', {nsn: $nsn})`, r.EntityID, props.path("/datastar/analyze"))),
 					g.Text("Re-run"),
 				),
 			),
@@ -206,4 +207,18 @@ func RenderWorkspaceToString(props WorkspaceProps) (string, error) {
 	var buf bytes.Buffer
 	err := Workspace(props).Render(&buf)
 	return buf.String(), err
+}
+
+// path joins the BasePath with a route.
+func (p WorkspaceProps) path(route string) string {
+	if p.BasePath == "" {
+		return route
+	}
+	if route == "" || route == "/" {
+		return p.BasePath
+	}
+	if route[0] != '/' {
+		route = "/" + route
+	}
+	return p.BasePath + route
 }

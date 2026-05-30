@@ -6,8 +6,9 @@
 # without conflicting with Stitchify or PriorityForge.
 #
 # Usage:
-#   ./run.sh                 # runs on port 8091 (recommended safe port)
-#   ./run.sh 8100            # runs on a custom port
+#   ./run.sh                          # runs on port 8091
+#   ./run.sh 8100                     # custom port
+#   BASE_PATH=/insightforge ./run.sh  # serve under subpath (for nib-sprite.fly.dev/insightforge)
 #
 # Isolation guarantees:
 # - Runs from its own directory (/home/sprite/insight-forge)
@@ -45,7 +46,12 @@ echo ""
 mkdir -p data
 
 # Run with explicit environment for clarity
+# Set BASE_PATH if you want the app mounted under a subpath on the sprite
+# (e.g. so it appears at https://nib-sprite.../insightforge)
+BASE_PATH=${BASE_PATH:-""}
+
 IF_PORT=$PORT \
 IF_DUCKDB_PATH=./data/insight-forge.duckdb \
+IF_BASE_PATH=$BASE_PATH \
 IF_ENV=prototype \
 go run ./cmd/server

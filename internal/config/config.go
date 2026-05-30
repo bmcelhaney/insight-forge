@@ -11,6 +11,7 @@ type Config struct {
 	Env        string
 	Port       int
 	DuckDBPath string
+	BasePath   string // e.g. "/insightforge" — for running under a subpath on the sprite
 	LogLevel   slog.Level
 }
 
@@ -21,12 +22,14 @@ func Load() (*Config, error) {
 	viper.SetDefault("ENV", "development")
 	viper.SetDefault("PORT", 8080)
 	viper.SetDefault("DUCKDB_PATH", "./data/insight-forge.duckdb")
+	viper.SetDefault("BASE_PATH", "")
 	viper.SetDefault("LOG_LEVEL", "info")
 
 	cfg := &Config{
 		Env:        viper.GetString("ENV"),
 		Port:       viper.GetInt("PORT"),
 		DuckDBPath: viper.GetString("DUCKDB_PATH"),
+		BasePath:   viper.GetString("BASE_PATH"),
 	}
 
 	levelStr := viper.GetString("LOG_LEVEL")
