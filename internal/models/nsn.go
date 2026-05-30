@@ -65,6 +65,7 @@ type RiskFlag struct {
 	Type        string  `json:"type"`        // "geopolitical", "sanctions", "concentration", "regulatory", "technical"
 	Severity    string  `json:"severity"`    // "low", "medium", "high", "critical"
 	Description string  `json:"description"`
+	Implication string  `json:"implication,omitempty"` // Analytical note on what it means and suggested action
 	SourceCodes []string `json:"source_codes"`
 }
 

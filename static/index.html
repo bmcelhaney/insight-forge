@@ -327,7 +327,11 @@
         if (f.severity === 'critical') cls = 'flag-critical';
         else if (f.severity === 'high') cls = 'flag-high';
         div.className = `px-3 py-1 rounded-xl text-sm border ${cls}`;
-        div.innerHTML = `<strong>${f.type}</strong> — ${f.description}`;
+        let html = `<strong>${f.type}</strong> — ${f.description}`;
+        if (f.implication) {
+          html += `<div style="font-size:10px; opacity:0.9; margin-top:2px;">${f.implication}</div>`;
+        }
+        div.innerHTML = html;
         fEl.appendChild(div);
       });
 

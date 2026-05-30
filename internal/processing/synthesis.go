@@ -507,6 +507,10 @@ func enrichSupplierAndDemandForSpecialNSNs(entityID string, result *models.Insig
 			YoYChange:           "+4% vs prior 12 months",
 			PeakPeriods:         "Q4 each year (holiday surge)",
 		}
+		result.Flags = []models.RiskFlag{
+			{Type: "concentration", Severity: "medium", Description: "Geographic concentration in Texas (Fort Worth holds ~42% share).", Implication: "A regional disruption (hurricane, labor event) could require rapid reallocation to secondary workshops. Pre-identify surge capacity via NIB PSR."},
+			{Type: "data_quality", Severity: "medium", Description: "Limited visibility into sub-tier suppliers and real-time workshop capacity.", Implication: "For large orders, request current capacity letters and bill-of-materials sourcing details from the primary producer before award."},
+		}
 
 	case "7520009357136":
 		result.SupplierData = models.SupplierView{
@@ -531,6 +535,9 @@ func enrichSupplierAndDemandForSpecialNSNs(entityID string, result *models.Insig
 			AwardPeriod:         "Jan 2023 – Dec 2025 (36 months)",
 			YoYChange:           "-7% vs prior 12 months (digital shift)",
 			PeakPeriods:         "Back-to-school (Aug-Oct) and year-end (Nov-Dec)",
+		}
+		result.Flags = []models.RiskFlag{
+			{Type: "data_quality", Severity: "medium", Description: "No public visibility into individual workshop capacity or backlog.", Implication: "For recurring high-volume needs, periodically request capacity updates from at least two NIB producers to maintain resilience."},
 		}
 
 	case "8105015171352":
@@ -558,6 +565,9 @@ func enrichSupplierAndDemandForSpecialNSNs(entityID string, result *models.Insig
 			YoYChange:           "+11% vs prior 12 months",
 			PeakPeriods:         "Q4 (holiday shipping surge)",
 		}
+		result.Flags = []models.RiskFlag{
+			{Type: "data_quality", Severity: "low", Description: "Limited public visibility into sub-tier resin/film suppliers.", Implication: "Monitor commodity price indices for packaging materials; request sourcing transparency from producers during annual reviews."},
+		}
 
 	case "7125011515435":
 		result.SupplierData = models.SupplierView{
@@ -581,6 +591,9 @@ func enrichSupplierAndDemandForSpecialNSNs(entityID string, result *models.Insig
 			YoYChange:           "Highly variable (-40% to +120% year to year)",
 			PeakPeriods:         "Major spikes tied to large facility projects (2024 Q2, 2025 Q1)",
 		}
+		result.Flags = []models.RiskFlag{
+			{Type: "concentration", Severity: "high", Description: "Limited qualified producers (only 3 observed in recent data); higher equipment/skill barriers.", Implication: "For any requirement >100 units, engage at least two producers early and obtain written capacity commitments. Consider inventory buffers for large projects."},
+		}
 
 	case "5180006507821":
 		result.SupplierData = models.SupplierView{
@@ -603,6 +616,10 @@ func enrichSupplierAndDemandForSpecialNSNs(entityID string, result *models.Insig
 			AwardPeriod:         "Jan 2023 – Dec 2025 (36 months)",
 			YoYChange:           "Very lumpy (single large orders drive 60%+ of volume)",
 			PeakPeriods:         "Irregular spikes tied to large tool kit procurements",
+		}
+		result.Flags = []models.RiskFlag{
+			{Type: "concentration", Severity: "high", Description: "Narrow producer base and heavy reliance on commercial sub-components before kitting.", Implication: "Request full bill-of-materials sourcing transparency and dual-source commitments for any mission-critical or recurring tool kit requirements."},
+			{Type: "data_quality", Severity: "medium", Description: "Almost no public visibility into commercial sub-tier suppliers used in kitting.", Implication: "Treat this NSN with higher due diligence on supply chain risk than simpler AbilityOne consumables."},
 		}
 	}
 }
