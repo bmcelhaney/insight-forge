@@ -645,14 +645,6 @@ func enrichSupplierAndDemandForSpecialNSNs(entityID string, result *models.Insig
 			TopSuppliersTotalValue: 2763000,
 			EcosystemNote: "Production is deliberately diversified across the NIB network. Fort Worth is the clear lead but secondary workshops provide meaningful redundancy.",
 			ContinuityAssessment: "Good geographic spread within the NIB system. Primary risk remains single-facility exposure in Texas. Recommend maintaining active relationships with at least three workshops.",
-			KeyInsights: []string{
-				"Fort Worth accounts for ~42% of recent volume — the highest single-workshop concentration among the five test NSNs.",
-				"Demand is highly predictable with reliable Q4 peaks; plan sourcing rotation 6–9 months in advance for surge.",
-				"Only two material flags (medium concentration in Texas + data-quality on sub-tier visibility); overall risk posture is manageable with proactive monitoring.",
-				"Top 3 suppliers represent over 70% of recent observed value — strong but not extreme concentration.",
-				"Current +4% YoY trend is positive; the main long-term risk is gradual program or priority shifts rather than sudden disruption.",
-				"Excellent candidate for steady-state AbilityOne sourcing with low day-to-day volatility.",
-			},
 		}
 		result.DemandSignals = models.DemandSignals{
 			TotalAwards:         112,
@@ -668,6 +660,14 @@ func enrichSupplierAndDemandForSpecialNSNs(entityID string, result *models.Insig
 		result.Flags = []models.RiskFlag{
 			{Type: "concentration", Severity: "medium", Description: "Geographic concentration in Texas (Fort Worth holds ~42% share).", Implication: "A regional disruption (hurricane, labor event) could require rapid reallocation to secondary workshops. Pre-identify surge capacity via NIB PSR."},
 			{Type: "data_quality", Severity: "medium", Description: "Limited visibility into sub-tier suppliers and real-time workshop capacity.", Implication: "For large orders, request current capacity letters and bill-of-materials sourcing details from the primary producer before award."},
+		}
+		result.KeyInsights = []string{
+			"Fort Worth accounts for ~42% of recent volume — the highest single-workshop concentration among the five test NSNs.",
+			"Demand is highly predictable with reliable Q4 peaks; plan sourcing rotation 6–9 months in advance for surge.",
+			"Only two material flags (medium concentration in Texas + data-quality on sub-tier visibility); overall risk posture is manageable with proactive monitoring.",
+			"Top 3 suppliers represent over 70% of recent observed value — strong but not extreme concentration.",
+			"Current +4% YoY trend is positive; the main long-term risk is gradual program or priority shifts rather than sudden disruption.",
+			"Excellent candidate for steady-state AbilityOne sourcing with low day-to-day volatility.",
 		}
 
 	case "7520009357136":
@@ -818,6 +818,14 @@ func enrichSupplierAndDemandForSpecialNSNs(entityID string, result *models.Insig
 		result.Flags = []models.RiskFlag{
 			{Type: "concentration", Severity: "high", Description: "Narrow producer base and heavy reliance on commercial sub-components before kitting.", Implication: "Request full bill-of-materials sourcing transparency and dual-source commitments for any mission-critical or recurring tool kit requirements."},
 			{Type: "data_quality", Severity: "medium", Description: "Almost no public visibility into commercial sub-tier suppliers used in kitting.", Implication: "Treat this NSN with higher due diligence on supply chain risk than simpler AbilityOne consumables."},
+		}
+		result.KeyInsights = []string{
+			"Narrowest and highest-complexity producer base of the five test NSNs (Fort Worth ~33% share); this is the only one with significant commercial sub-component exposure before kitting.",
+			"Extremely lumpy, binary demand — a handful of large orders drive the majority of annual volume. No reliable steady-state run rate.",
+			"Highest 'execution risk' profile: elevated concentration + sub-tier opacity + equipment/skill barriers at the kitting workshops.",
+			"The ContinuityAssessment explicitly flags this as the 'highest complexity risk profile among the five' and calls for full BOM transparency on any recurring or mission-critical requirement.",
+			"Top 3 suppliers represent ~67% of recent observed value; proactive dual-sourcing and written capacity commitments are essential for any order of meaningful size.",
+			"Strong socio-economic return per federal dollar, but this NSN rewards (and requires) the most rigorous pre-award due diligence of the test set.",
 		}
 	}
 }
