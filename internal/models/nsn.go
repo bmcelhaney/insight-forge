@@ -38,13 +38,21 @@ type DataSnapshot struct {
 type InsightResult struct {
 	ID                    string         `json:"id"`
 	EntityID              string         `json:"entity_id"`
-	ViabilityScore        float64        `json:"viability_score"` // 0-100
-	RiskScore             float64        `json:"risk_score"`      // 0-100
+	ViabilityScore        float64        `json:"viability_score"` // 0-100 (legacy)
+	RiskScore             float64        `json:"risk_score"`      // 0-100 (legacy)
+	SourcingAttractiveness float64       `json:"sourcing_attractiveness"` // 0-100 preferred new name
+	SupplyRisk            float64        `json:"supply_risk"`     // 0-100 preferred new name
 	Summary               string         `json:"summary"`
+	MarketCommentary      string         `json:"market_commentary,omitempty"`
+	FullAnalystReport     string         `json:"full_analyst_report,omitempty"`
+	PricingTrend          string         `json:"pricing_trend,omitempty"`
 	Flags                 []RiskFlag     `json:"flags"`
 	SupplierData          SupplierView   `json:"supplier_data"`
+	TopDisrupters         []SupplierSummary `json:"top_disrupters,omitempty"`
+	ConcentrationIndex    float64        `json:"concentration_index,omitempty"`
 	RelatedNSNs           []RelatedNSN   `json:"related_nsns"`
 	DemandSignals         DemandSignals  `json:"demand_signals"`
+	Citations             []string       `json:"citations,omitempty"`
 	BasedOnSnapshotIDs    []string       `json:"based_on_snapshot_ids"`
 	GeneratedAt           time.Time      `json:"generated_at"`
 	GeneratedBy           string         `json:"generated_by"`

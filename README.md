@@ -27,25 +27,31 @@ go run ./cmd/server
 
 Open http://localhost:8080
 
-## Quick Start (Dedicated Sprite - Recommended)
+## Quick Start (Dedicated Sprite — Recommended)
 
-You now have a **dedicated sprite** called `nib-insightforge`.
+You have a **dedicated sprite** `nib-insightforge` (public: https://nib-insightforge-bsmmx.sprites.app/).
 
-This is the cleanest and recommended way to run Insight Forge — zero proxying, zero shared-machine drama.
+**Production rule**: Use ONLY `./scripts/reset.sh`. It runs a strict functional gate against the 5 real AbilityOne NSNs before ever starting the binary. Bad builds are rejected early.
 
-### On the new sprite (paste this block)
+### On the sprite (one clean block)
 
 ```bash
 cd /home/sprite
-git clone https://<YOUR_GITHUB_PAT>@github.com/bmcelhaney/insight-forge.git
+git clone https://<YOUR_GITHUB_PAT>@github.com/bmcelhaney/insight-forge.git || (cd insight-forge && git pull origin main)
 cd insight-forge
 git pull origin main
-mkdir -p data
-chmod +x run.sh
-./run.sh 8080
+./scripts/reset.sh
 ```
 
-Then in another terminal (or background it with nohup):
+The script will:
+- Kill old processes
+- Build
+- Run `test_release.sh` (real POSTs for 7920014487052, 7520009357136, 8105015171352, 7125011515435, 5180006507821)
+- Only start the binary if all 5 produce substantial, non-generic Full Analyst Reports
+
+Hard-refresh the browser (⌘⇧R) after every deploy. The UI is now a single self-contained file with zero Tailwind CDN (eliminates the production console warning).
+
+See `scripts/reset.sh` and `scripts/test_release.sh` for the exact gates.
 
 ```bash
 # Health check

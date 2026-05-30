@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Insight Forge • NSN Intelligence Platform</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+  <style>
+    .analyst-card { transition: transform 0.2s, box-shadow 0.2s; }
+    .analyst-card:hover { transform: translateY(-2px); box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.3); }
+    .metric { font-variant-numeric: tabular-nums; }
+    .flag-critical { background-color: #450a0a; border-color: #991b1b; color: #fca5a5; }
+    .flag-high { background-color: #431407; border-color: #9a3412; color: #fdba74; }
+    .flag-medium { background-color: #422006; border-color: #854d0e; color: #fcd34d; }
+    .section-header { letter-spacing: 0.5px; font-size: 0.75rem; text-transform: uppercase; }
+    .insight-text { line-height: 1.6; }
+    .score-bar { height: 10px; background-color: #18181b; border-radius: 9999px; overflow: hidden; }
+    .score-fill { height: 100%; transition: width 0.4s cubic-bezier(0.2, 0, 0, 1); }
+  </style>
+  <script>
+    function initTailwind() {
+      document.documentElement.style.setProperty('--accent', '#10b981');
+    }
+  </script>
+</head>
+<body class="bg-zinc-950 text-zinc-200" onload="initTailwind()">
+  <div class="max-w-[1280px] mx-auto">
+    <!-- Top Bar -->
+    <div class="border-b border-zinc-800 bg-zinc-900 px-6 py-4 flex items-center justify-between">
+      <div class="flex items-center gap-4">
+        <div class="flex items-center gap-3">
+          <div class="w-9 h-9 bg-emerald-600 rounded-xl flex items-center justify-center">
+            <i class="fa-solid fa-chart-line text-white text-xl"></i>
+          </div>
+          <div>
+            <div class="font-semibold text-2xl tracking-tight">Insight Forge</div>
+            <div class="text-[10px] text-emerald-400 -mt-1 font-medium">NSN INTELLIGENCE PLATFORM</div>
+          </div>
+        </div>
+        <div class="px-3 py-1 text-xs rounded-full bg-emerald-900 text-emerald-300 border border-emerald-700">v2 • Analyst Grade</div>
+      </div>
+      <div class="text-right">
+        <div class="text-xs text-zinc-400">Dedicated Sprite • Real-time Multi-Source Synthesis</div>
+        <div id="deploy-stamp" class="text-[10px] text-zinc-500 mt-0.5"></div>
+      </div>
+    </div>
+
+    <div class="p-6">
+      <!-- Search Bar -->
+      <div class="mb-8">
+        <form id="analyze-form" class="flex gap-3">
+          <div class="flex-1">
+            <div class="relative">
+              <input id="nsn-input" type="text" value="7920014487052"
+                     class="w-full bg-zinc-900 border border-zinc-700 focus:border-emerald-500 font-mono text-2xl px-5 py-3.5 rounded-2xl placeholder:text-zinc-500"
+                     placeholder="Enter 13-digit NSN or NIIN">
+            </div>
+          </div>
+          <button type="submit"
+                  class="px-10 py-3.5 bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 transition font-semibold rounded-2xl flex items-center gap-2 text-lg">
+            <i class="fa-solid fa-magnifying-glass"></i>
+            <span>ANALYZE</span>
+          </button>
+        </form>
+        <div class="text-[10px] text-zinc-500 mt-1.5 px-1">Multi-source extraction from WebFLIS, FPDS, Sanctions (live OFAC), AbilityOne Program intelligence</div>
+      </div>
+
+      <!-- Visible Error Banner -->
+      <div id="analysis-error" class="hidden mb-6 bg-red-950 border border-red-800 text-red-300 px-4 py-3 rounded-2xl text-sm flex items-start gap-3">
+        <i class="fa-solid fa-exclamation-triangle mt-0.5"></i>
+        <div class="flex-1">
+          <span id="error-text"></span>
+        </div>
+        <button onclick="dismissError()" class="text-red-400 hover:text-red-200">×</button>
+      </div>
+
+      <!-- Loading State -->
+      <div id="loading" class="hidden mb-8">
+        <div class="bg-zinc-900 border border-zinc-700 rounded-3xl p-8 text-center">
+          <i class="fa-solid fa-spinner fa-spin text-emerald-400 text-3xl mb-3"></i>
+          <div class="text-lg">Running parallel extractors and analyst synthesis...</div>
+          <div class="text-xs text-zinc-500 mt-1">WEBFLIS • FPDS • SANCTIONS (live) • Industry Reports • Supply Chain • Geopolitical • Pricing</div>
+        </div>
+      </div>
+
+      <!-- Main Results -->
+      <div id="results" class="hidden space-y-6">
+
+        <!-- NSN Header + Recommendation -->
+        <div class="flex items-start justify-between">
+          <div>
+            <div class="text-xs text-zinc-400">ANALYZED NSN</div>
+            <div id="nsn-header" class="font-mono text-4xl font-semibold tracking-tighter"></div>
+          </div>
+          <div id="recommendation-badge"
+               class="px-4 py-1.5 rounded-2xl text-sm font-medium border"></div>
+        </div>
+
+        <!-- Core Scores - MUCH smaller and turned into proper bar graphs -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <!-- Sourcing Attractiveness -->
+          <div class="analyst-card bg-zinc-900 border border-zinc-700 rounded-3xl p-5">
+            <div class="flex items-center justify-between mb-2">
+              <div class="section-header text-emerald-400">Sourcing Attractiveness</div>
+              <div id="sourcing-val" class="metric text-3xl font-semibold text-emerald-400 tabular-nums"></div>
+            </div>
+            <div class="score-bar mb-1.5"><div id="sourcing-bar" class="score-fill bg-emerald-500" style="width:0%"></div></div>
+            <div id="sourcing-sub" class="text-xs text-zinc-400">Data richness • Supplier diversity • Recency • Program fit</div>
+          </div>
+
+          <!-- Supply Risk -->
+          <div class="analyst-card bg-zinc-900 border border-zinc-700 rounded-3xl p-5">
+            <div class="flex items-center justify-between mb-2">
+              <div class="section-header text-rose-400">Supply Risk</div>
+              <div id="risk-val" class="metric text-3xl font-semibold text-rose-400 tabular-nums"></div>
+            </div>
+            <div class="score-bar mb-1.5"><div id="risk-bar" class="score-fill bg-rose-500" style="width:0%"></div></div>
+            <div id="risk-sub" class="text-xs text-zinc-400">Concentration • Geopolitical • Data quality • Producer capacity</div>
+          </div>
+        </div>
+
+        <!-- Executive Summary + Analyst Recommendation (expanded) -->
+        <div class="grid grid-cols-1 lg:grid-cols-5 gap-6">
+          <div class="lg:col-span-3 analyst-card bg-zinc-900 border border-zinc-700 rounded-3xl p-6">
+            <div class="section-header text-zinc-400 mb-2">Executive Summary</div>
+            <div id="summary" class="insight-text text-[15px] leading-relaxed"></div>
+          </div>
+          <div class="lg:col-span-2 analyst-card bg-zinc-900 border border-emerald-800 rounded-3xl p-6">
+            <div class="section-header text-emerald-400 mb-2">Analyst Recommendation</div>
+            <div id="recommendation" class="text-sm leading-relaxed text-emerald-200"></div>
+          </div>
+        </div>
+
+        <!-- Key Insights (expanded) -->
+        <div class="analyst-card bg-zinc-900 border border-zinc-700 rounded-3xl p-6">
+          <div class="section-header text-zinc-400 mb-3">Key Insights from Multi-Source Analysis</div>
+          <div id="key-insights" class="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-2 text-sm"></div>
+        </div>
+
+        <!-- Full Analyst Report -->
+        <div class="analyst-card bg-zinc-900 border border-zinc-700 rounded-3xl p-6">
+          <div class="section-header text-zinc-400 mb-3">Full Analyst Report</div>
+          <div id="full-report" class="bg-zinc-950 border border-zinc-800 rounded-2xl p-4 text-xs leading-relaxed whitespace-pre-wrap font-mono max-h-[380px] overflow-auto"></div>
+        </div>
+
+        <!-- Flags -->
+        <div class="analyst-card bg-zinc-900 border border-zinc-700 rounded-3xl p-6">
+          <div class="section-header text-zinc-400 mb-3 flex items-center gap-2">
+            <span>Flags &amp; Risk Drivers</span>
+            <span id="flag-count" class="text-xs px-2 py-0.5 bg-zinc-800 rounded"></span>
+          </div>
+          <div id="flags" class="flex flex-wrap gap-2"></div>
+        </div>
+
+        <!-- Two Column: Suppliers + Demand -->
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <div class="analyst-card bg-zinc-900 border border-zinc-700 rounded-3xl p-6">
+            <div class="section-header text-zinc-400 mb-3">Supplier Ecosystem &amp; Concentration</div>
+            <div id="supplier-summary" class="mb-4 text-sm"></div>
+            <div class="text-xs text-zinc-400 mb-2">Top Suppliers</div>
+            <div id="top-suppliers" class="space-y-2 text-sm"></div>
+          </div>
+
+          <div class="analyst-card bg-zinc-900 border border-zinc-700 rounded-3xl p-6">
+            <div class="section-header text-zinc-400 mb-3">Demand &amp; Market Signals</div>
+            <div id="demand-metrics" class="grid grid-cols-2 gap-4 text-sm"></div>
+          </div>
+        </div>
+
+        <!-- Related / Alternative NSNs -->
+        <div class="analyst-card bg-zinc-900 border border-zinc-700 rounded-3xl p-6">
+          <div class="section-header text-zinc-400 mb-3">Related &amp; Alternative NSNs for Consideration</div>
+          <div id="related-nsns" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3"></div>
+        </div>
+
+        <!-- Actions -->
+        <div class="flex flex-wrap gap-3 pt-2">
+          <button onclick="exportJSON()"
+                  class="px-5 py-2.5 bg-zinc-800 hover:bg-zinc-700 rounded-2xl text-sm flex items-center gap-2">
+            <i class="fa-solid fa-file-export"></i>
+            <span>Export JSON (Pricing Tool)</span>
+          </button>
+          <button onclick="exportExcel()"
+                  class="px-5 py-2.5 bg-zinc-800 hover:bg-zinc-700 rounded-2xl text-sm flex items-center gap-2">
+            <i class="fa-solid fa-file-excel"></i>
+            <span>Excel Evidence Bundle (5 sheets)</span>
+          </button>
+          <button onclick="window.location.reload()"
+                  class="px-5 py-2.5 text-sm text-zinc-400 hover:text-white ml-auto">New Analysis</button>
+        </div>
+
+        <div class="text-[10px] text-zinc-500 pt-4 border-t border-zinc-800">
+          Analysis generated • Immutable snapshots captured • <span id="generated-at"></span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let currentResult = null;
+    let currentNSN = '';
+
+    function setDeployStamp() {
+      const el = document.getElementById('deploy-stamp');
+      const d = new Date();
+      el.textContent = 'Deployed ' + d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+    }
+
+    function showError(msg) {
+      const el = document.getElementById('analysis-error');
+      document.getElementById('error-text').textContent = msg;
+      el.classList.remove('hidden');
+      el.classList.add('flex');
+    }
+    function dismissError() {
+      const el = document.getElementById('analysis-error');
+      el.classList.add('hidden');
+      el.classList.remove('flex');
+    }
+
+    document.getElementById('analyze-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const nsn = document.getElementById('nsn-input').value.trim().replace(/\D/g, '');
+      if (!nsn || nsn.length < 9) {
+        showError('Enter a valid 9- or 13-digit NSN / NIIN');
+        return;
+      }
+      await performAnalysis(nsn);
+    });
+
+    async function performAnalysis(nsn) {
+      currentNSN = nsn;
+      dismissError();
+      document.getElementById('loading').classList.remove('hidden');
+      document.getElementById('results').classList.add('hidden');
+
+      try {
+        const res = await fetch('/api/analyze', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ nsn })
+        });
+        if (!res.ok) {
+          const txt = await res.text();
+          throw new Error('Server returned ' + res.status + ': ' + txt);
+        }
+        const data = await res.json();
+        currentResult = data.result || data;
+
+        renderFullAnalysis(currentResult, nsn);
+      } catch (err) {
+        showError('Analysis failed: ' + (err.message || 'Network or server error'));
+      } finally {
+        document.getElementById('loading').classList.add('hidden');
+      }
+    }
+
+    function renderFullAnalysis(result, nsn) {
+      document.getElementById('results').classList.remove('hidden');
+
+      // === CRITICAL: Always restore the exact NSN the user typed into the input ===
+      const inputEl = document.getElementById('nsn-input');
+      if (inputEl) inputEl.value = nsn;
+
+      document.getElementById('nsn-header').textContent = nsn;
+
+      // === SMALL SCORE BAR GRAPHS (not dominant 7xl numbers) ===
+      const sourcing = result.sourcing_attractiveness || result.viability_score || 50;
+      const supply = result.supply_risk || result.risk_score || 45;
+
+      const sVal = Math.round(sourcing);
+      const rVal = Math.round(supply);
+
+      document.getElementById('sourcing-val').textContent = sVal;
+      document.getElementById('risk-val').textContent = rVal;
+
+      document.getElementById('sourcing-bar').style.width = sVal + '%';
+      document.getElementById('risk-bar').style.width = rVal + '%';
+
+      document.getElementById('sourcing-sub').textContent = 'Data richness • Supplier diversity • Recency • Program fit';
+      document.getElementById('risk-sub').textContent = 'Concentration • Geopolitical • Data quality • Producer capacity';
+
+      // Recommendation (clearer language)
+      const rec = deriveRecommendation(result, sVal, rVal);
+      const badge = document.getElementById('recommendation-badge');
+      badge.textContent = rec.level;
+      badge.className = `px-4 py-1.5 rounded-2xl text-sm font-medium border ${rec.cls}`;
+      document.getElementById('recommendation').textContent = rec.text;
+
+      // Executive Summary
+      document.getElementById('summary').textContent = result.summary || result.Summary || 'No summary generated.';
+
+      // Key Insights
+      const ig = document.getElementById('key-insights');
+      ig.innerHTML = '';
+      const insights = result.key_insights || generateDefaultInsights(result, sVal, rVal);
+      insights.forEach(i => {
+        const d = document.createElement('div');
+        d.className = 'flex gap-2';
+        d.innerHTML = `<i class="fa-solid fa-check text-emerald-400 mt-1"></i><div>${i}</div>`;
+        ig.appendChild(d);
+      });
+
+      // Full Analyst Report (rich content)
+      const reportEl = document.getElementById('full-report');
+      reportEl.textContent = result.full_analyst_report || result.FullAnalystReport || result.market_commentary || 'Detailed report not available for this NSN.';
+
+      // Flags
+      const fEl = document.getElementById('flags');
+      fEl.innerHTML = '';
+      const fl = result.flags || [];
+      document.getElementById('flag-count').textContent = fl.length + ' identified';
+      fl.forEach(f => {
+        const div = document.createElement('div');
+        let cls = 'flag-medium';
+        if (f.severity === 'critical') cls = 'flag-critical';
+        else if (f.severity === 'high') cls = 'flag-high';
+        div.className = `px-3 py-1 rounded-xl text-sm border ${cls}`;
+        div.innerHTML = `<strong>${f.type}</strong> — ${f.description}`;
+        fEl.appendChild(div);
+      });
+
+      // Supplier
+      const sup = result.supplier_data || result.SupplierData || {};
+      document.getElementById('supplier-summary').innerHTML =
+        `${sup.total_suppliers || sup.TotalSuppliers || 0} suppliers across ${(sup.primary_countries || sup.PrimaryCountries || []).length} countries. Concentration risk: <span class="font-medium">${sup.concentration_risk || sup.ConcentrationRisk || 'medium'}</span>.`;
+
+      const tsEl = document.getElementById('top-suppliers');
+      tsEl.innerHTML = '';
+      const tops = (sup.top_suppliers || sup.TopSuppliers || []).slice(0,4);
+      tops.forEach(s => {
+        const row = document.createElement('div');
+        row.className = 'flex justify-between text-xs py-0.5 border-b border-zinc-800 last:border-none';
+        row.innerHTML = `<div>${s.name || s.Name} (${s.cage || s.CAGE})</div><div class="text-zinc-400">${s.award_count || s.AwardCount || 0} awards • ${s.country || s.Country}</div>`;
+        tsEl.appendChild(row);
+      });
+
+      // Demand
+      const dem = result.demand_signals || result.DemandSignals || {};
+      const dm = document.getElementById('demand-metrics');
+      dm.innerHTML = `
+        <div><span class="text-zinc-400">Total Awards:</span> <span class="font-semibold">${dem.total_awards || dem.TotalAwards || '—'}</span></div>
+        <div><span class="text-zinc-400">Total Value:</span> <span class="font-semibold">$${(dem.total_value_usd || dem.TotalValueUSD || 0).toLocaleString()}</span></div>
+        <div><span class="text-zinc-400">Recent Trend:</span> <span class="font-semibold">${dem.recent_trend || dem.RecentTrend || '—'}</span></div>
+        <div><span class="text-zinc-400">Key Programs:</span> <span class="font-semibold">${(dem.program_associations || dem.ProgramAssociations || []).join(', ') || '—'}</span></div>`;
+
+      // Related NSNs
+      const relEl = document.getElementById('related-nsns');
+      relEl.innerHTML = '';
+      (result.related_nsns || result.RelatedNSNs || []).forEach(r => {
+        const a = document.createElement('a');
+        a.href = '#';
+        a.onclick = (e) => { e.preventDefault(); document.getElementById('nsn-input').value = r.nsn; performAnalysis(r.nsn); };
+        a.className = 'block bg-zinc-950 hover:bg-zinc-800 border border-zinc-700 p-3 rounded-2xl text-sm';
+        a.innerHTML = `<div class="font-mono">${r.nsn}</div><div class="text-xs text-zinc-400">${r.description} • ${r.relation} (${Math.round((r.confidence||0)*100)}%)</div>`;
+        relEl.appendChild(a);
+      });
+
+      document.getElementById('generated-at').textContent = new Date().toLocaleString();
+    }
+
+    function deriveRecommendation(result, sourcing, supply) {
+      const s = sourcing;
+      const r = supply;
+      if (s >= 72 && r <= 38) {
+        return {
+          level: 'PROCEED',
+          cls: 'bg-emerald-900 border-emerald-700 text-emerald-300',
+          text: 'Strong sourcing candidate. Limited concentration or compliance exposure. Prioritize for procurement. For AbilityOne items, maintain routine PSR monitoring and secondary producer rotation.'
+        };
+      }
+      if (s >= 55 && r <= 62) {
+        return {
+          level: 'PROCEED WITH CAUTION',
+          cls: 'bg-amber-900 border-amber-700 text-amber-300',
+          text: 'Acceptable profile with moderate risk. Focus due diligence on top suppliers and any flagged issues. For AbilityOne NSNs, verify current PSR status and surge capacity with the designated CNA before large commitments.'
+        };
+      }
+      return {
+        level: 'ELEVATED REVIEW',
+        cls: 'bg-rose-900 border-rose-700 text-rose-300',
+        text: 'Elevated risk or thin data. Conduct deeper validation and price reasonableness analysis before commitment. Review all flags. For AbilityOne items, confirm mandatory-source status and explore secondary workshops immediately.'
+      };
+    }
+
+    function generateDefaultInsights(result, sourcing, supply) {
+      const ins = [];
+      if (sourcing > 70) ins.push('High sourcing attractiveness supported by recent data richness and supplier diversity.');
+      if (supply < 40) ins.push('Low overall supply risk — diversified or stable producer base.');
+      if ((result.supplier_data?.concentration_risk || '').toLowerCase() === 'high') {
+        ins.push('High supplier concentration detected — single-source risk should be mitigated.');
+      }
+      ins.push('Data synthesized from WebFLIS, FPDS, and live sanctions screening.');
+      if (result.full_analyst_report || result.FullAnalystReport) ins.push('Expanded AbilityOne-aware analysis available in the Full Analyst Report section.');
+      return ins;
+    }
+
+    function exportJSON() {
+      if (!currentResult) return;
+      const blob = new Blob([JSON.stringify(currentResult, null, 2)], {type: 'application/json'});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `insight-forge-${currentNSN}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+    }
+
+    function exportExcel() {
+      if (!currentNSN) return;
+      window.location = `/api/export-excel/${currentNSN}`;
+    }
+
+    // Boot
+    window.onload = () => {
+      setDeployStamp();
+      const input = document.getElementById('nsn-input');
+      input.focus();
+      input.select();
+    };
+  </script>
+</body>
+</html>
