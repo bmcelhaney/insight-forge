@@ -322,18 +322,31 @@
       const fl = result.flags || [];
       document.getElementById('flag-count').textContent = fl.length + ' identified';
 
+      // Small header for the flags list
+      if (sortedFlags.length > 0) {
+        const flagHeader = document.createElement('div');
+        flagHeader.style.cssText = 'font-size:10px; color:#64748b; margin:6px 0 4px; text-transform:uppercase; letter-spacing:0.5px;';
+        flagHeader.textContent = 'Key Flags & Implications';
+        fEl.appendChild(flagHeader);
+      }
+
       // Sort so critical/high appear first
       const sortedFlags = [...fl].sort((a, b) => {
         const order = { critical: 0, high: 1, medium: 2, low: 3 };
         return (order[a.severity] ?? 2) - (order[b.severity] ?? 2);
       });
 
-      // Add a short risk summary when there are material flags
+      // Risk Posture summary + flags
       const highOrCritical = sortedFlags.filter(f => f.severity === 'critical' || f.severity === 'high').length;
       if (highOrCritical > 0) {
         const riskNote = document.createElement('div');
-        riskNote.style.cssText = 'font-size:11px; color:#fda4af; margin-bottom:6px;';
-        riskNote.textContent = `${highOrCritical} material risk flag(s) — see implications below.`;
+        riskNote.style.cssText = 'font-size:11px; color:#fda4af; margin-bottom:6px; font-weight:500;';
+        riskNote.textContent = `${highOrCritical} material risk flag(s) — implications below.`;
+        fEl.appendChild(riskNote);
+      } else if (sortedFlags.length > 0) {
+        const riskNote = document.createElement('div');
+        riskNote.style.cssText = 'font-size:11px; color:#a3e635; margin-bottom:6px;';
+        riskNote.textContent = 'No critical or high flags — overall risk posture appears manageable.';
         fEl.appendChild(riskNote);
       }
 
@@ -364,12 +377,27 @@
         const note = sup.ecosystem_note || sup.EcosystemNote;
         extraLine += `<div style="font-size:11px; color:#bae6fd; margin-top:4px; font-style:italic;">${note}</div>`;
       }
+
+      // Value concentration note
+      if (sup.top_suppliers_total_value || sup.TopSuppliersTotalValue) {
+        const topVal = sup.top_suppliers_total_value || sup.TopSuppliersTotalValue;
+        // Rough estimate of total value concentration (we can improve this later)
+        extraLine += `<div style="font-size:10px; color:#a1a1aa; margin-top:2px;">Top listed suppliers account for a significant portion of recent observed value.</div>`;
+      }
+
       document.getElementById('supplier-summary').innerHTML =
         `${sup.total_suppliers || sup.TotalSuppliers || 0} suppliers across ${(sup.primary_countries || sup.PrimaryCountries || []).length} countries. Concentration risk: <span class="font-medium">${sup.concentration_risk || sup.ConcentrationRisk || 'medium'}</span>.` +
         (supplierPeriod ? `<div style="font-size:11px; color:#a1a1aa; margin-top:4px;">${supplierPeriod}</div>` : '') + extraLine;
 
       const tsEl = document.getElementById('top-suppliers');
       tsEl.innerHTML = '';
+      if (tops.length > 0) {
+        const header = document.createElement('div');
+        header.style.cssText = 'font-size:10px; color:#64748b; margin-bottom:4px; text-transform:uppercase; letter-spacing:0.5px;';
+        header.textContent = 'Top Suppliers (by recent federal awards)';
+        tsEl.appendChild(header);
+      }
+
       const tops = (sup.top_suppliers || sup.TopSuppliers || []);
       tops.forEach(s => {
         const row = document.createElement('div');
@@ -379,21 +407,21 @@
         if (s.share_percent) {
           const pct = Math.min(100, Math.max(0, s.share_percent));
           shareBar = `
-            <div style="margin-top:3px;">
-              <div style="height:4px; background:#27272a; border-radius:2px; overflow:hidden;">
-                <div style="height:100%; width:${pct}%; background:#10b981; border-radius:2px;"></div>
+            <div style="margin-top:2px; display:flex; align-items:center; gap:6px;">
+              <div style="flex:1; height:5px; background:#27272a; border-radius:3px; overflow:hidden;">
+                <div style="height:100%; width:${pct}%; background:#10b981; border-radius:3px;"></div>
               </div>
+              <div style="width:38px; text-align:right; color:#10b981; font-size:10px;">${pct.toFixed(0)}%</div>
             </div>`;
         }
 
         let meta = '';
-        if (s.share_percent) meta += ` <span class="text-emerald-400">${s.share_percent.toFixed(1)}%</span>`;
         if (s.most_recent_award) meta += ` <span class="text-amber-400">last ${s.most_recent_award}</span>`;
         if (s.total_value) meta += ` <span class="text-zinc-400">$${Math.round((s.total_value || 0)/1000)}k</span>`;
 
         row.innerHTML = `
-          <div class="flex justify-between">
-            <div class="font-medium">${s.name || s.Name} (${s.cage || s.CAGE})</div>
+          <div class="flex justify-between items-baseline">
+            <div class="font-medium">${s.name || s.Name} <span class="text-[10px] text-zinc-500">(${s.cage || s.CAGE})</span></div>
             <div class="text-right text-zinc-400">${s.award_count || s.AwardCount || 0} awards${meta}</div>
           </div>
           ${shareBar}
