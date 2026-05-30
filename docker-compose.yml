@@ -1,0 +1,14 @@
+version: '3.8'
+
+services:
+  insight-forge:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      - IF_ENV=development
+      - IF_PORT=8080
+      - IF_DUCKDB_PATH=/app/data/insight-forge.duckdb
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
