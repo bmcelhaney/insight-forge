@@ -98,17 +98,41 @@ func deriveWebFLISItem(fsc, entityID string, r *rand.Rand) (itemName, unitOfIssu
 		unitOfIssue = "KT"
 		techChars = "Includes sockets, wrenches, pliers, drivers in blow-mold case, commercial + custom components"
 		basePrice = 185 + r.Intn(90)
-	default:
-		// Generic but still varied federal hardware/consumable
-		itemNames := []string{
-			"BRACKET, ANGLE, STEEL", "SEAL, O-RING, SYNTHETIC RUBBER",
-			"WASHER, FLAT, STAINLESS", "CLAMP, HOSE, WORM DRIVE",
-			"CONNECTOR, ELECTRICAL, CIRCULAR",
+
+	case "7530": // Paper and paperboard products (forms, pads, labels, envelopes)
+		itemNames7530 := []string{
+			"PAD, WRITING PAPER, WHITE, 8.5X11",
+			"FORM, PRINTED, STANDARD, 8.5X11",
+			"LABEL, PRESSURE SENSITIVE, 2X4 IN",
+			"ENVELOPE, PLAIN, KRAFT, 10X13",
+			"PAPER, BOND, WHITE, 8.5X11, 20 LB",
 		}
-		itemName = itemNames[r.Intn(len(itemNames))]
+		itemName = itemNames7530[r.Intn(len(itemNames7530))]
+		unitOfIssue = "BX"
+		techChars = "Standard office paper product, 500 sheets per ream or 100-500 labels/pads per box, suitable for laser/inkjet or handwritten use"
+		basePrice = 8 + r.Intn(22)
+
+	case "7510": // Office supplies (binders, tape, correction fluid, etc.)
+		itemName = "BINDER, LOOSE LEAF, 3 RING, 1 IN"
+		if r.Intn(3) == 0 {
+			itemName = "TAPE, PRESSURE SENSITIVE, TRANSPARENT"
+		}
+		unitOfIssue = "BX"
+		techChars = "Standard GSA office supply item, durable construction for daily administrative use"
+		basePrice = 4 + r.Intn(12)
+
+	case "7540": // Standard forms
+		itemName = "FORM, STANDARD, SF 1449, SOLICITATION/CONTRACT/ORDER"
+		unitOfIssue = "PG"
+		techChars = "Official federal standard form, 8.5x11, multi-part or single sheet versions available"
+		basePrice = 15 + r.Intn(18)
+
+	default:
+		// Conservative fallback — do NOT invent specific wrong item names
+		itemName = "FEDERAL STOCK ITEM (FSC " + fsc + ")"
 		unitOfIssue = "EA"
-		techChars = "Federal stock item, MIL-spec compliant where applicable, current revision"
-		basePrice = 12 + r.Intn(85)
+		techChars = "Item identity and characteristics limited in current prototype data. Real WebFLIS record would contain precise nomenclature, packaging, and technical details."
+		basePrice = 15 + r.Intn(60)
 	}
 	return itemName, unitOfIssue, techChars, basePrice
 }

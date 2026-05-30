@@ -1014,6 +1014,12 @@ Synthesized from WebFLIS item master, 36 months of FPDS award transactions, live
 			}
 		}
 
+		// If the prototype returned the conservative "FEDERAL STOCK ITEM" placeholder,
+		// tone down the language so we don't sound like we know the exact item.
+		if strings.HasPrefix(itemDesc, "FEDERAL STOCK ITEM") {
+			itemDesc = "Item (prototype data limited for this FSC)"
+		}
+
 		out.Summary = fmt.Sprintf(
 			"%s (NSN %s) shows sourcing attractiveness of %.0f with supply risk at %.0f. %s Production is concentrated at %s risk with %d vendors observed across %d countries. %s",
 			itemDesc, entityID, viability, risk,
