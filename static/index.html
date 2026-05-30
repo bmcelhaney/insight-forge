@@ -92,6 +92,7 @@
           <div>
             <div class="text-xs text-zinc-400">ANALYZED NSN</div>
             <div id="nsn-header" class="font-mono text-4xl font-semibold tracking-tighter"></div>
+            <div id="item-identity" class="mt-1 text-sm text-zinc-300 hidden"></div>
           </div>
           <div id="recommendation-badge"
                class="px-4 py-1.5 rounded-2xl text-sm font-medium border"></div>
@@ -300,6 +301,21 @@
 
       // Executive Summary
       document.getElementById('summary').textContent = result.summary || result.Summary || 'No summary generated.';
+
+      // Item Identity (from WebFLIS prototype data) - new for arbitrary NSNs
+      const itemIdEl = document.getElementById('item-identity');
+      const itemName = result.item_name || result.ItemName || '';
+      if (itemName) {
+        const unit = result.unit_of_issue || result.UnitOfIssue || '';
+        const tech = result.technical_characteristics || result.TechnicalCharacteristics || '';
+        let html = `<span class="font-semibold text-emerald-300">Item:</span> ${itemName}`;
+        if (unit) html += ` <span class="text-zinc-500">(${unit})</span>`;
+        if (tech) html += `<div class="text-xs text-zinc-400 mt-0.5">${tech}</div>`;
+        itemIdEl.innerHTML = html;
+        itemIdEl.classList.remove('hidden');
+      } else {
+        itemIdEl.classList.add('hidden');
+      }
 
       // Key Insights
       const ig = document.getElementById('key-insights');

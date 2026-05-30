@@ -54,6 +54,9 @@ type InsightResult struct {
 	DemandSignals         DemandSignals  `json:"demand_signals"`
 	Citations             []string       `json:"citations,omitempty"`
 	KeyInsights           []string       `json:"key_insights,omitempty"`
+	ItemName              string         `json:"item_name,omitempty"`
+	UnitOfIssue           string         `json:"unit_of_issue,omitempty"`
+	TechnicalCharacteristics string      `json:"technical_characteristics,omitempty"`
 	BasedOnSnapshotIDs    []string       `json:"based_on_snapshot_ids"`
 	GeneratedAt           time.Time      `json:"generated_at"`
 	GeneratedBy           string         `json:"generated_by"`

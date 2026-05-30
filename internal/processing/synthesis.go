@@ -63,6 +63,22 @@ func Synthesize(ctx context.Context, entityID string, snapshots []models.DataSna
 	result.RelatedNSNs = related
 	result.DemandSignals = demand
 
+	// Surface WebFLIS item identity for all NSNs (critical for non-special cases to have a description)
+	for _, s := range snapshots {
+		if s.SourceCode == "WEBFLIS" {
+			if name, ok := s.RawResponse["item_name"].(string); ok && name != "" {
+				result.ItemName = name
+			}
+			if uoi, ok := s.RawResponse["unit_of_issue"].(string); ok && uoi != "" {
+				result.UnitOfIssue = uoi
+			}
+			if tech, ok := s.RawResponse["technical_characteristics"].(string); ok && tech != "" {
+				result.TechnicalCharacteristics = tech
+			}
+			break
+		}
+	}
+
 	// Rich, program-aware analysis (especially for AbilityOne NSNs)
 	rich := generateRichAnalysis(entityID, result.ViabilityScore, result.RiskScore, flags, supplierView, demand, snapshots)
 	result.Summary = rich.Summary
@@ -858,15 +874,28 @@ Synthesized from WebFLIS item master, 36 months of FPDS award transactions, live
 
 	default:
 		// Significantly upgraded dynamic path for any NSN (the quality floor for Monday demo).
-		// Uses the now category-aware SupplierView + DemandSignals + snapshots to produce
-		// structured, believable analyst-grade content instead of thin placeholder text.
+		// Lead with actual item identity when available + specific analytical takeaway.
+		itemDesc := "Federal stock item"
+		for _, s := range snaps {
+			if s.SourceCode == "WEBFLIS" {
+				if name, ok := s.RawResponse["item_name"].(string); ok && name != "" {
+					itemDesc = name
+					break
+				}
+			}
+		}
+
 		out.Summary = fmt.Sprintf(
-			"NSN %s shows a sourcing attractiveness of %.0f with supply risk assessed at %.0f. %d risk flags surfaced during multi-source synthesis. The supplier base spans %d primary countries with %d recorded vendors in recent federal data.",
-			entityID, viability, risk, len(flags), len(suppliers.PrimaryCountries), suppliers.TotalSuppliers)
+			"%s (NSN %s) shows sourcing attractiveness of %.0f with supply risk at %.0f. %s Production is concentrated at %s risk with %d vendors observed across %d countries. %s",
+			itemDesc, entityID, viability, risk,
+			suppliers.EcosystemNote,
+			suppliers.ConcentrationRisk,
+			suppliers.TotalSuppliers, len(suppliers.PrimaryCountries),
+			demand.DemandNote)
 
 		out.MarketCommentary = fmt.Sprintf(
-			"Analysis synthesized from WebFLIS item characteristics, FPDS award history, and live sanctions screening. The item falls into FSC %s. Supplier concentration is rated %s. This is an automated but structured synthesis — high-value or mission-critical NSNs should receive targeted manual follow-up beyond current extractor coverage.",
-			getFSC(entityID), suppliers.ConcentrationRisk)
+			"Multi-source synthesis for FSC %s using WebFLIS characteristics and FPDS award patterns. %s Concentration posture and demand character are the primary drivers of the current scores. Prototype data — high-stakes requirements need direct validation with producers.",
+			getFSC(entityID), suppliers.ContinuityAssessment)
 
 		out.FullReport = buildDynamicFullReport(entityID, viability, risk, flags, suppliers, demand, snaps)
 
