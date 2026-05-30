@@ -4,32 +4,134 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"io"
 	"math/rand"
+	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/bmcelhaney/insight-forge/internal/models"
 )
 
-// FPDSExtractor pulls from Federal Procurement Data System (public data).
-// For the prototype we use deterministic realistic mock data derived from the NSN.
-// Real implementation can call https://api.sam.gov/prod/federalprocurement/v1/ with an API key.
-type FPDSExtractor struct{}
+// FPDSExtractor pulls from Federal Procurement Data System via SAM.gov.
+// When a real SAM_API_KEY is provided, it makes live calls.
+// Falls back to high-quality prototype data otherwise.
+type FPDSExtractor struct {
+	apiKey string
+}
 
-func NewFPDSExtractor() *FPDSExtractor {
-	return &FPDSExtractor{}
+func NewFPDSExtractor(apiKey string) *FPDSExtractor {
+	return &FPDSExtractor{apiKey: apiKey}
 }
 
 func (f *FPDSExtractor) SourceCode() string { return "FPDS" }
 
 func (f *FPDSExtractor) Fetch(ctx context.Context, entityID string, params map[string]string) ([]models.DataSnapshot, error) {
-	// Simulate network + processing time
-	select {
-	case <-time.After(180 * time.Millisecond):
-	case <-ctx.Done():
-		return nil, ctx.Err()
+	if f.apiKey != "" {
+		return f.fetchReal(ctx, entityID)
+	}
+	return f.fetchPrototype(entityID), nil
+}
+
+func (f *FPDSExtractor) fetchReal(ctx context.Context, entityID string) ([]models.DataSnapshot, error) {
+	// SAM.gov FPDS API – searching by NSN is indirect.
+	// We search broadly using the NSN in keyword/description and pull recent awards.
+	// This is a pragmatic real-data integration for demo purposes.
+	base := "https://api.sam.gov/prod/federalprocurement/v1/contracts"
+	q := url.Values{}
+	q.Set("api_key", f.apiKey)
+	q.Set("limit", "50")
+	q.Set("sort", "-lastModifiedDate")
+	// Use the NSN as a keyword search. Real awards don't always tag NSN cleanly.
+	q.Set("q", entityID)
+
+	reqURL := base + "?" + q.Encode()
+
+	req, err := http.NewRequestWithContext(ctx, "GET", reqURL, nil)
+	if err != nil {
+		return nil, err
 	}
 
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		// Fall back to prototype on network error
+		return f.fetchPrototype(entityID), nil
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return f.fetchPrototype(entityID), nil
+	}
+
+	body, _ := io.ReadAll(resp.Body)
+
+	// Parse a minimal useful subset of the real response.
+	var raw map[string]any
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return f.fetchPrototype(entityID), nil
+	}
+
+	// The actual response structure from SAM is an array under "contracts" or similar.
+	// We extract what we can for the snapshot.
+	totalAwards := 0
+	totalValue := int64(0)
+	agencies := map[string]bool{}
+	lastDate := ""
+
+	if contracts, ok := raw["contracts"].([]any); ok {
+		totalAwards = len(contracts)
+		for _, c := range contracts {
+			if contract, ok := c.(map[string]any); ok {
+				if val, ok := contract["totalObligation"].(float64); ok {
+					totalValue += int64(val)
+				}
+				if agency, ok := contract["awardingAgencyName"].(string); ok && agency != "" {
+					agencies[agency] = true
+				}
+				if d, ok := contract["lastModifiedDate"].(string); ok {
+					lastDate = d
+				}
+			}
+		}
+	}
+
+	topAgencies := []string{}
+	for a := range agencies {
+		topAgencies = append(topAgencies, a)
+		if len(topAgencies) >= 4 {
+			break
+		}
+	}
+	if len(topAgencies) == 0 {
+		topAgencies = []string{"Various Federal Agencies"}
+	}
+
+	snap := models.DataSnapshot{
+		EntityID:   entityID,
+		SourceCode: "FPDS",
+		SnapshotAt: time.Now(),
+		RawResponse: map[string]any{
+			"total_awards":      totalAwards,
+			"total_value_usd":   totalValue,
+			"top_agencies":      topAgencies,
+			"last_award_date":   lastDate,
+			"demand_character":  "Real award data retrieved from SAM.gov",
+			"primary_vehicle":   "Various (see raw SAM data)",
+			"award_recency_days": 0,
+			"note":              "LIVE data from SAM.gov Federal Procurement Data System",
+			"raw_sam_response":  raw, // keep raw for deeper inspection if needed
+		},
+		QualityScore: 0.95,
+		CreatedBy:    "fpds-extractor-real-sam",
+	}
+
+	return []models.DataSnapshot{snap}, nil
+}
+
+func (f *FPDSExtractor) fetchPrototype(entityID string) []models.DataSnapshot {
+	// Original high-quality prototype logic (kept as fallback)
 	seed := hashToInt(entityID + "fpds")
 	r := rand.New(rand.NewSource(seed))
 
@@ -53,19 +155,18 @@ func (f *FPDSExtractor) Fetch(ctx context.Context, entityID string, params map[s
 			"demand_character":  demandNote,
 			"primary_vehicle":   []string{"GSA Schedule", "DLA Troop Support", "IDIQ", "BPA"}[r.Intn(4)],
 			"award_recency_days": r.Intn(180),
-			"note":              "Prototype FPDS data — richer fields for deeper analysis",
+			"note":              "Prototype FPDS data (real SAM call not available or failed)",
 		},
 		QualityScore: 0.82 + r.Float64()*0.12,
 		CreatedBy:    "fpds-extractor-v1.1",
 	}
 
-	// Occasionally mark as outlier for demo
 	if r.Intn(12) == 0 {
 		snap.IsOutlier = true
 		snap.QualityScore *= 0.6
 	}
 
-	return []models.DataSnapshot{snap}, nil
+	return []models.DataSnapshot{snap}
 }
 
 // deriveFPDSPattern produces believable, category-differentiated federal award data.

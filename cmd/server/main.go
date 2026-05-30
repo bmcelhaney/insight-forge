@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"net/http"
+	"os"
 	"strconv"
 
 	"github.com/bmcelhaney/insight-forge/internal/config"
@@ -32,7 +33,8 @@ func main() {
 		cfg.Port = *portFlag
 	}
 
-	extractorReg := extraction.NewDefaultRegistry()
+	samAPIKey := os.Getenv("SAM_API_KEY")
+	extractorReg := extraction.NewDefaultRegistry(samAPIKey)
 
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)

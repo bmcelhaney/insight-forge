@@ -12,7 +12,8 @@ type Registry struct {
 }
 
 // NewDefaultRegistry returns the standard set of extractors for Insight Forge.
-func NewDefaultRegistry() *Registry {
+// Pass a non-empty samAPIKey to enable real SAM.gov FPDS calls.
+func NewDefaultRegistry(samAPIKey string) *Registry {
 	r := &Registry{
 		extractors: make(map[string]Extractor),
 	}
@@ -21,7 +22,7 @@ func NewDefaultRegistry() *Registry {
 	w := NewWebFLISExtractor()
 	r.extractors[w.SourceCode()] = w
 
-	f := NewFPDSExtractor()
+	f := NewFPDSExtractor(samAPIKey)
 	r.extractors[f.SourceCode()] = f
 
 	s := NewSanctionsExtractor()
