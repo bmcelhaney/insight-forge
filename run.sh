@@ -36,6 +36,9 @@ echo "=========================================="
 
 mkdir -p data
 
+# Make sure the weird sprite Go location is in PATH
+export PATH="/.sprite/bin:$PATH"
+
 BASE_PATH=${BASE_PATH:-""}
 
 IF_PORT=$PORT \
