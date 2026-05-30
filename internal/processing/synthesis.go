@@ -336,20 +336,22 @@ Synthesized from WebFLIS item master, 36 months of FPDS award transactions, live
 EXTRACTOR FINDINGS
 WebFLIS: Item record is mature and stable with clear specification references. No recent changes or supersessions noted.
 
-FPDS Award History: High volume of awards over the past 36 months across multiple agencies and vehicles. Production is visibly distributed; no single workshop dominates beyond roughly one-third of observed volume. Award values are low per unit but the aggregate annual spend is material.
+FPDS Award History (36 months): High volume across multiple agencies and vehicles. Production is well distributed (no workshop > ~13% share). Aggregate spend is material despite low unit price.
 
-Sanctions / OFAC: Clean result. No adverse findings against known producing CAGEs.
+Sanctions / OFAC: Clean. No issues on known producing CAGEs.
 
-AbilityOne PSR / NIB Data: Confirmed active mandatory-source status with multiple qualified producers listed.
+AbilityOne PSR / NIB Data: Confirmed active mandatory-source with multiple qualified producers.
 
-DATA LIMITATIONS
-Public data does not provide workshop-level capacity or current backlog information. Pricing granularity is limited to GSA schedule rates; actual delivered pricing can vary with volume and contract vehicle. Direct labor hour attribution per NSN is not publicly broken out at the transaction level.
+DATA GAPS & RECOMMENDED MANUAL FOLLOW-UP
+Public data does not provide workshop-level capacity or current backlog. Pricing is limited to GSA schedule rates (actual delivered pricing varies). Direct labor hour attribution per NSN is not broken out publicly.
+
+Recommended: Request current capacity and direct labor reports from NIB PSR before large recurring orders.
 
 SUPPLIER & RISK DISCUSSION
-Concentration risk is low to moderate because production is intentionally diversified across the NIB network. This is one of the better-distributed AbilityOne items from a supply continuity standpoint. The main commercial risk is leakage through micro-purchases or unauthorized substitutions rather than formal competition.
+Concentration risk is low because production is intentionally diversified across the NIB network. This is one of the best-distributed AbilityOne items for supply continuity. Main risk is micro-purchase leakage or unauthorized substitutions.
 
 RECOMMENDATIONS
-Maintain mandatory-source status. Periodically rotate orders across at least three qualified workshops to keep secondary capacity warm. No immediate need for deeper commercial market research on covered purchases.`
+Maintain mandatory-source status. Rotate orders across at least three qualified workshops to keep secondary capacity warm. No immediate need for commercial market research on covered purchases.`
 
 		out.PricingTrend = "Stable / slight downward volume pressure from digital"
 		out.ConcentrationIndex = 0.38
@@ -364,17 +366,19 @@ Maintain mandatory-source status. Periodically rotate orders across at least thr
 		out.FullReport = `SUMMARY
 8105-01-517-1352 (Bag, Plastic, Reclosable) is a high-volume mandatory-source consumable under the AbilityOne Program. It benefits from one of the broader producer bases in the Program, with production spread across at least four qualified NIB and SourceAmerica workshops.
 
-EXTRACTOR FINDINGS & METHODOLOGY
+EXTRACTOR FINDINGS
 WebFLIS: Standard item record with clear packaging and material specifications. No data anomalies noted.
 
-FPDS: Strong, recurring award patterns across DLA Troop Support, VA, and other vehicles. Volume is predictable rather than lumpy. Multiple workshops are visibly receiving awards.
+FPDS (36 months): Strong, recurring award patterns across DLA Troop Support, VA, and other vehicles. Volume is predictable. Multiple workshops visibly receiving awards.
 
 Sanctions Check: Clean.
 
 Program Cross-Reference: Confirmed active AbilityOne status with documented multi-workshop production capability.
 
-DATA GAPS
+DATA GAPS & RECOMMENDED MANUAL FOLLOW-UP
 Workshop-level capacity and current utilization rates are not publicly visible. Detailed sub-tier resin and film supplier information is not captured in federal award data.
+
+Recommended: Engage NIB/SourceAmerica for current capacity data before high-volume or time-sensitive orders.
 
 SUPPLIER & RISK ASSESSMENT
 Because production is distributed across more workshops than many other AbilityOne items, single-point supply risk is materially lower. This NSN is one of the more resilient from a continuity perspective within the Program.
@@ -392,17 +396,19 @@ Continue mandatory-source treatment. Maintain routine rotation across qualified 
 		out.FullReport = `SUMMARY
 7125-01-151-5435 (Shelf, Metal, Storage) is a project-oriented AbilityOne item with higher complexity and value than most consumables. Production occurs in SourceAmerica workshops employing individuals who are blind or have significant disabilities.
 
-EXTRACTOR OBSERVATIONS
+EXTRACTOR FINDINGS
 WebFLIS: Item is well-defined with dimensional and load-bearing specifications. Record appears stable.
 
-FPDS: Awards are lumpy and project-linked rather than recurring consumable volume. Large single awards appear periodically when agencies execute facility projects.
+FPDS: Awards are lumpy and project-linked. Large single awards appear periodically when agencies execute facility projects.
 
 Sanctions: Clean result.
 
 Program Data: Confirmed AbilityOne status with more limited workshop participation than simpler items due to equipment and skill requirements.
 
-KEY LIMITATIONS
+DATA GAPS & RECOMMENDED MANUAL FOLLOW-UP
 Public data provides little visibility into current workshop capacity or backlog for large fabricated items. Subcontracted component sourcing (hardware, finishes) is not visible.
+
+Recommended: For any project >100 units, obtain current capacity statements from at least two qualified producers early in planning.
 
 RISK & RECOMMENDATION DISCUSSION
 Concentration is higher than for pens or bags. For very large orders, capacity constraints are a realistic concern. Agencies should identify at least two qualified producers early in project planning. This item rewards proactive source validation more than steady-state consumables.`
@@ -426,10 +432,12 @@ Sanctions: No issues identified.
 
 Program Cross-Reference: Confirmed AbilityOne status. Producer base is narrower than for lower-complexity items.
 
-IMPORTANT DATA GAPS & RISKS
-Because many components are commercially sourced before kitting, there is indirect exposure to commercial supply chain disruptions and price volatility that does not exist for simpler AbilityOne items. Public federal data provides almost no visibility into which specific commercial sub-tier suppliers are being used by the kitting workshops.
+DATA GAPS & RECOMMENDED MANUAL FOLLOW-UP
+Many components are commercially sourced before kitting, creating indirect exposure to commercial supply chain disruptions and price volatility. Public federal data provides almost no visibility into which specific commercial sub-tier suppliers are being used by the kitting workshops.
 
-RECOMMENDATIONS
+Recommended: For mission-critical requirements, request detailed component sourcing information and current capacity from the producing agency during due diligence.
+
+RISKS & RECOMMENDATIONS
 For mission-critical or high-volume requirements, request detailed component sourcing information from the producing agency during due diligence. Maintain relationships with at least two qualified kit producers. This NSN benefits more from proactive supply chain transparency than most other AbilityOne items.`
 		out.PricingTrend = "Stable with component cost pass-through"
 		out.ConcentrationIndex = 0.55
