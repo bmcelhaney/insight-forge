@@ -27,6 +27,10 @@ func NewDefaultRegistry() *Registry {
 	s := NewSanctionsExtractor()
 	r.extractors[s.SourceCode()] = s
 
+	// New wider-search extractor for program/socio-economic context (especially valuable for AbilityOne and CNA-style work)
+	pi := NewProgramIntelligenceExtractor()
+	r.extractors[pi.SourceCode()] = pi
+
 	// Future: MCRL, SAM.gov, historical award feeds, technical manuals, etc.
 	return r
 }
