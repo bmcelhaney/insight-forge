@@ -329,7 +329,7 @@
         div.className = `px-3 py-1 rounded-xl text-sm border ${cls}`;
         let html = `<strong>${f.type}</strong> — ${f.description}`;
         if (f.implication) {
-          html += `<div style="font-size:10px; opacity:0.9; margin-top:2px;">${f.implication}</div>`;
+          html += `<div style="font-size:10px; color:#cbd5e1; margin-top:3px; padding-left:8px; border-left:2px solid rgba(255,255,255,0.15);">${f.implication}</div>`;
         }
         div.innerHTML = html;
         fEl.appendChild(div);
