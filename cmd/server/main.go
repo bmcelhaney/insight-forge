@@ -113,6 +113,12 @@ func main() {
 	})
 
 	addr := ":" + strconv.Itoa(cfg.Port)
-	fmt.Printf("Insight Forge Analyst Platform starting — commit=%s buildTime=%s port=%s\n", commit, buildTime, addr)
+	fmt.Printf("\n")
+	fmt.Printf("========================================\n")
+	fmt.Printf("  Insight Forge Analyst Platform\n")
+	fmt.Printf("  Commit:    %s\n", commit)
+	fmt.Printf("  Built:     %s\n", buildTime)
+	fmt.Printf("  Listening: %s\n", addr)
+	fmt.Printf("========================================\n\n")
 	http.ListenAndServe(addr, r)
 }
