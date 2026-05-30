@@ -322,6 +322,12 @@
       const fl = result.flags || [];
       document.getElementById('flag-count').textContent = fl.length + ' identified';
 
+      // Sort so critical/high appear first
+      const sortedFlags = [...fl].sort((a, b) => {
+        const order = { critical: 0, high: 1, medium: 2, low: 3 };
+        return (order[a.severity] ?? 2) - (order[b.severity] ?? 2);
+      });
+
       // Add a short risk summary when there are material flags
       const highOrCritical = sortedFlags.filter(f => f.severity === 'critical' || f.severity === 'high').length;
       if (highOrCritical > 0) {
@@ -330,12 +336,6 @@
         riskNote.textContent = `${highOrCritical} material risk flag(s) — see implications below.`;
         fEl.appendChild(riskNote);
       }
-
-      // Sort so critical/high appear first
-      const sortedFlags = [...fl].sort((a, b) => {
-        const order = { critical: 0, high: 1, medium: 2, low: 3 };
-        return (order[a.severity] ?? 2) - (order[b.severity] ?? 2);
-      });
 
       sortedFlags.forEach(f => {
         const div = document.createElement('div');
