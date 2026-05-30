@@ -487,7 +487,6 @@ func reverseTail(s string) string {
 	}
 	return string(runes)
 }
-}
 
 func buildDemandSignals(snaps []models.DataSnapshot) models.DemandSignals {
 	fsc := ""
