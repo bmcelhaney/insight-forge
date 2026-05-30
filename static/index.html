@@ -305,6 +305,12 @@
       const ig = document.getElementById('key-insights');
       ig.innerHTML = '';
       const insights = result.key_insights || generateDefaultInsights(result, sVal, rVal);
+      if (insights.length > 0) {
+        const header = document.createElement('div');
+        header.style.cssText = 'grid-column: 1 / -1; font-size:10px; color:#64748b; margin-bottom:4px; text-transform:uppercase; letter-spacing:0.5px;';
+        header.textContent = 'Key Takeaways from Multi-Source Analysis';
+        ig.appendChild(header);
+      }
       insights.forEach(i => {
         const d = document.createElement('div');
         d.className = 'flex gap-2';
@@ -336,16 +342,16 @@
         fEl.appendChild(flagHeader);
       }
 
-      // Risk Posture summary
+      // Risk Posture summary (short analytical paragraph)
       const highOrCritical = sortedFlags.filter(f => f.severity === 'critical' || f.severity === 'high').length;
       const riskPosture = document.createElement('div');
       riskPosture.style.cssText = 'font-size:11px; margin:4px 0 8px; padding:10px 12px; background:#1f2937; border-radius:6px; border-left:3px solid #64748b; line-height:1.45;';
       if (highOrCritical > 0) {
         riskPosture.style.borderLeftColor = '#fda4af';
-        riskPosture.innerHTML = `<span style="color:#fda4af; font-weight:600; display:block; margin-bottom:4px;">Risk Posture Summary</span> ${highOrCritical} material flag(s) present. Primary concerns center on geographic concentration and limited sub-tier / capacity visibility. <strong>Mitigation priority:</strong> dual-sourcing agreements and proactive capacity monitoring with NIB PSR. Review the detailed implications below for specific actions.`;
+        riskPosture.innerHTML = `<span style="color:#fda4af; font-weight:600; display:block; margin-bottom:4px;">Risk Posture Summary</span> ${highOrCritical} material flag(s) present. Primary concerns center on geographic concentration in key production regions and limited visibility into sub-tier suppliers and real-time workshop capacity. <strong>Mitigation priority:</strong> Secure dual-sourcing agreements and request proactive capacity updates from NIB PSR before large or surge commitments. The detailed flag implications below provide specific actions.`;
       } else if (sortedFlags.length > 0) {
         riskPosture.style.borderLeftColor = '#a3e635';
-        riskPosture.innerHTML = `<span style="color:#a3e635; font-weight:600; display:block; margin-bottom:4px;">Risk Posture Summary</span> Manageable overall. No critical or high flags in current synthesis. Continue routine monitoring of capacity and program signals.`;
+        riskPosture.innerHTML = `<span style="color:#a3e635; font-weight:600; display:block; margin-bottom:4px;">Risk Posture Summary</span> Manageable overall. No critical or high flags identified in current synthesis. Continue routine monitoring of capacity, program signals, and any emerging concentration trends.`;
       } else {
         riskPosture.style.borderLeftColor = '#a3e635';
         riskPosture.innerHTML = `<span style="color:#a3e635; font-weight:600; display:block; margin-bottom:4px;">Risk Posture Summary</span> Clean profile. No flags identified in current synthesis.`;
@@ -414,13 +420,13 @@
       let divLabel = '';
       let scoreColor = '#64748b';
       if (concRisk === 'low') {
-        divLabel = 'Diversification: Strong — broad, resilient base with low single-point risk.';
+        divLabel = 'Diversification Score: Strong — broad, resilient base with low single-point risk.';
         scoreColor = '#10b981';
       } else if (concRisk === 'medium') {
-        divLabel = 'Diversification: Moderate — acceptable spread but monitor lead producers closely.';
+        divLabel = 'Diversification Score: Moderate — acceptable spread but monitor lead producers closely.';
         scoreColor = '#fbbf24';
       } else if (concRisk === 'elevated' || concRisk === 'high') {
-        divLabel = 'Diversification: Concentrated — elevated capacity and continuity risk on large orders.';
+        divLabel = 'Diversification Score: Concentrated — elevated capacity and continuity risk on large orders.';
         scoreColor = '#f87171';
       }
       if (divLabel) {
@@ -592,13 +598,33 @@
 
     function generateDefaultInsights(result, sourcing, supply) {
       const ins = [];
-      if (sourcing > 70) ins.push('High sourcing attractiveness supported by recent data richness and supplier diversity.');
-      if (supply < 40) ins.push('Low overall supply risk — diversified or stable producer base.');
-      if ((result.supplier_data?.concentration_risk || '').toLowerCase() === 'high') {
-        ins.push('High supplier concentration detected — single-source risk should be mitigated.');
+      const sup = result.supplier_data || result.SupplierData || {};
+      const dem = result.demand_signals || result.DemandSignals || {};
+
+      if (sourcing > 70) {
+        let msg = 'High sourcing attractiveness supported by recent data richness and supplier diversity.';
+        if (sup.ecosystem_note || sup.EcosystemNote) {
+          msg = 'High sourcing attractiveness driven by ' + (sup.ecosystem_note || sup.EcosystemNote).toLowerCase().replace(/\.$/, '') + '.';
+        }
+        ins.push(msg);
       }
-      ins.push('Data synthesized from WebFLIS, FPDS, and live sanctions screening.');
-      if (result.full_analyst_report || result.FullAnalystReport) ins.push('Expanded AbilityOne-aware analysis available in the Full Analyst Report section.');
+      if (supply < 40) {
+        let msg = 'Low overall supply risk — diversified or stable producer base.';
+        if (sup.continuity_assessment || sup.ContinuityAssessment) {
+          msg = 'Low overall supply risk. ' + (sup.continuity_assessment || sup.ContinuityAssessment);
+        }
+        ins.push(msg);
+      }
+      if ((sup.concentration_risk || sup.ConcentrationRisk || '').toLowerCase() === 'high' || (sup.concentration_risk || sup.ConcentrationRisk || '').toLowerCase() === 'elevated') {
+        ins.push('Elevated supplier concentration detected — capacity and continuity risk should be explicitly mitigated via dual-sourcing or buffers.');
+      }
+      if (dem.yoy_change || dem.YoYChange) {
+        ins.push('Demand trend: ' + (dem.yoy_change || dem.YoYChange) + ' with ' + (dem.peak_periods || dem.PeakPeriods || 'seasonal patterns') + '.');
+      }
+      ins.push('Core data synthesized from WebFLIS, FPDS award history, and live OFAC sanctions screening.');
+      if (result.full_analyst_report || result.FullAnalystReport) {
+        ins.push('Expanded analyst-grade report with extractor findings, data gaps, and NSN-specific ContinuityAssessment and DemandNote available below.');
+      }
       return ins;
     }
 
