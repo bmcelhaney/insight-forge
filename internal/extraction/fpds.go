@@ -80,17 +80,32 @@ func (f *FPDSExtractor) fetchReal(ctx context.Context, entityID string) ([]model
 	agencies := map[string]bool{}
 	lastDate := ""
 
-	if contracts, ok := raw["contracts"].([]any); ok {
-		totalAwards = len(contracts)
-		for _, c := range contracts {
+	// Try common response shapes from SAM.gov federalprocurement API
+	contractsRaw, ok := raw["contracts"].([]any)
+	if !ok {
+		// Alternative shape sometimes seen
+		if embedded, ok := raw["_embedded"].(map[string]any); ok {
+			contractsRaw, _ = embedded["contracts"].([]any)
+		}
+	}
+
+	if contractsRaw != nil {
+		totalAwards = len(contractsRaw)
+		for _, c := range contractsRaw {
 			if contract, ok := c.(map[string]any); ok {
 				if val, ok := contract["totalObligation"].(float64); ok {
+					totalValue += int64(val)
+				} else if val, ok := contract["total_obligation"].(float64); ok {
 					totalValue += int64(val)
 				}
 				if agency, ok := contract["awardingAgencyName"].(string); ok && agency != "" {
 					agencies[agency] = true
+				} else if agency, ok := contract["awarding_agency_name"].(string); ok && agency != "" {
+					agencies[agency] = true
 				}
 				if d, ok := contract["lastModifiedDate"].(string); ok {
+					lastDate = d
+				} else if d, ok := contract["last_modified_date"].(string); ok {
 					lastDate = d
 				}
 			}
@@ -113,15 +128,16 @@ func (f *FPDSExtractor) fetchReal(ctx context.Context, entityID string) ([]model
 		SourceCode: "FPDS",
 		SnapshotAt: time.Now(),
 		RawResponse: map[string]any{
-			"total_awards":      totalAwards,
-			"total_value_usd":   totalValue,
-			"top_agencies":      topAgencies,
-			"last_award_date":   lastDate,
-			"demand_character":  "Real award data retrieved from SAM.gov",
-			"primary_vehicle":   "Various (see raw SAM data)",
+			"total_awards":       totalAwards,
+			"total_value_usd":    totalValue,
+			"top_agencies":       topAgencies,
+			"last_award_date":    lastDate,
+			"demand_character":   "Real award data retrieved from SAM.gov",
+			"primary_vehicle":    "Various (see raw SAM data)",
 			"award_recency_days": 0,
-			"note":              "LIVE data from SAM.gov Federal Procurement Data System",
-			"raw_sam_response":  raw, // keep raw for deeper inspection if needed
+			"data_source":        "live_sam_gov",
+			"note":               "LIVE data from SAM.gov Federal Procurement Data System (real API call)",
+			"raw_sam_response":   raw, // keep raw for deeper inspection if needed
 		},
 		QualityScore: 0.95,
 		CreatedBy:    "fpds-extractor-real-sam",
@@ -155,7 +171,8 @@ func (f *FPDSExtractor) fetchPrototype(entityID string) []models.DataSnapshot {
 			"demand_character":  demandNote,
 			"primary_vehicle":   []string{"GSA Schedule", "DLA Troop Support", "IDIQ", "BPA"}[r.Intn(4)],
 			"award_recency_days": r.Intn(180),
-			"note":              "Prototype FPDS data (real SAM call not available or failed)",
+			"data_source":        "prototype",
+			"note":               "Prototype FPDS data (real SAM call not available or failed)",
 		},
 		QualityScore: 0.82 + r.Float64()*0.12,
 		CreatedBy:    "fpds-extractor-v1.1",

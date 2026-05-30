@@ -648,9 +648,10 @@ func buildDynamicFullReport(entityID string, viability, risk float64, flags []mo
 		}
 	}
 
-	// Pull FPDS specifics
+	// Pull FPDS specifics + detect if we got real SAM data
 	primaryVehicle := ""
 	awardRecency := ""
+	fpdsIsLive := false
 	for _, s := range snaps {
 		if s.SourceCode == "FPDS" {
 			if v, ok := s.RawResponse["primary_vehicle"].(string); ok {
@@ -658,6 +659,9 @@ func buildDynamicFullReport(entityID string, viability, risk float64, flags []mo
 			}
 			if days, ok := s.RawResponse["award_recency_days"].(int); ok {
 				awardRecency = fmt.Sprintf("%d days since last observed award", days)
+			}
+			if ds, ok := s.RawResponse["data_source"].(string); ok && ds == "live_sam_gov" {
+				fpdsIsLive = true
 			}
 			break
 		}
@@ -738,6 +742,7 @@ Acquisition advice: %s
 
 EXTRACTOR SYNTHESIS
 FPDS patterns indicate %s. %s
+%s
 Sanctions screening returned clean on known producing entities.
 Program context: %s
 Socio-economic overlay: %s
@@ -764,6 +769,12 @@ RISK FLAGS & IMPLICATIONS
 		demand.DemandNote,
 		itemName, demand.TotalAwards, unitPrice, techChars, acqCode,
 		demand.DemandNote, awardRecency,
+		func() string {
+			if fpdsIsLive {
+				return "FPDS: Using LIVE data from SAM.gov (real API call successful)"
+			}
+			return "FPDS: Using prototype data (no SAM_API_KEY or call failed)"
+		}(),
 		programContext, socioNotes,
 		suppliers.EcosystemNote, suppliers.ContinuityAssessment,
 		demand.DemandNote,

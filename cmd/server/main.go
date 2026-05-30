@@ -47,13 +47,16 @@ func main() {
 
 	// Health (used by reset.sh / test_release.sh gates)
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
+		samKeyPresent := os.Getenv("SAM_API_KEY") != ""
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{
-			"status":    "ok",
-			"service":   "insight-forge",
-			"commit":    commit,
-			"buildTime": buildTime,
-			"version":   "analyst-v2-gated",
+		json.NewEncoder(w).Encode(map[string]any{
+			"status":          "ok",
+			"service":         "insight-forge",
+			"commit":          commit,
+			"buildTime":       buildTime,
+			"version":         "analyst-v2-gated",
+			"real_fpds_active": samKeyPresent,
+			"note":            "If real_fpds_active=true, FPDS will use live SAM.gov data when available",
 		})
 	})
 
