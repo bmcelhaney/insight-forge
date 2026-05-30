@@ -139,21 +139,6 @@
           <div id="key-insights" class="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-2 text-sm"></div>
         </div>
 
-        <!-- Full Analyst Report -->
-        <div class="analyst-card bg-zinc-900 border border-zinc-700 rounded-3xl p-6">
-          <div class="section-header text-zinc-400 mb-3">Full Analyst Report</div>
-          <div id="full-report" class="bg-zinc-950 border border-zinc-800 rounded-2xl p-4 text-xs leading-relaxed whitespace-pre-wrap font-mono max-h-[380px] overflow-auto"></div>
-        </div>
-
-        <!-- Flags -->
-        <div class="analyst-card bg-zinc-900 border border-zinc-700 rounded-3xl p-6">
-          <div class="section-header text-zinc-400 mb-3 flex items-center gap-2">
-            <span>Flags &amp; Risk Drivers</span>
-            <span id="flag-count" class="text-xs px-2 py-0.5 bg-zinc-800 rounded"></span>
-          </div>
-          <div id="flags" class="flex flex-wrap gap-2"></div>
-        </div>
-
         <!-- Two Column: Suppliers + Demand -->
         <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
           <div class="analyst-card bg-zinc-900 border border-zinc-700 rounded-3xl p-6">
@@ -169,10 +154,25 @@
           </div>
         </div>
 
+        <!-- Flags -->
+        <div class="analyst-card bg-zinc-900 border border-zinc-700 rounded-3xl p-6">
+          <div class="section-header text-zinc-400 mb-3 flex items-center gap-2">
+            <span>Flags &amp; Risk Drivers</span>
+            <span id="flag-count" class="text-xs px-2 py-0.5 bg-zinc-800 rounded"></span>
+          </div>
+          <div id="flags" class="flex flex-wrap gap-2"></div>
+        </div>
+
         <!-- Related / Alternative NSNs -->
         <div class="analyst-card bg-zinc-900 border border-zinc-700 rounded-3xl p-6">
           <div class="section-header text-zinc-400 mb-3">Related &amp; Equivalent NSNs</div>
           <div id="related-nsns" class="grid grid-cols-1 md:grid-cols-2 gap-3"></div>
+        </div>
+
+        <!-- Full Analyst Report (moved to bottom as the deep deliverable) -->
+        <div class="analyst-card bg-zinc-900 border border-zinc-700 rounded-3xl p-6">
+          <div class="section-header text-zinc-400 mb-3">Full Analyst Report</div>
+          <div id="full-report" class="bg-zinc-950 border border-zinc-800 rounded-2xl p-4 text-xs leading-relaxed whitespace-pre-wrap font-mono max-h-[380px] overflow-auto"></div>
         </div>
 
         <!-- Actions -->
