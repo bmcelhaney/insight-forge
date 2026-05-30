@@ -14,6 +14,12 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 )
 
+// These are set at build time via -ldflags in reset.sh
+var (
+	commit    = "dev"
+	buildTime = "unknown"
+)
+
 func main() {
 	portFlag := flag.Int("port", 0, "Override port from config (used by test_release.sh gate)")
 	flag.Parse()
@@ -41,9 +47,20 @@ func main() {
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{
-			"status":  "ok",
-			"service": "insight-forge",
-			"version": "analyst-v2-gated",
+			"status":    "ok",
+			"service":   "insight-forge",
+			"commit":    commit,
+			"buildTime": buildTime,
+			"version":   "analyst-v2-gated",
+		})
+	})
+
+	// Version endpoint for deployment verification
+	r.Get("/version", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{
+			"commit":    commit,
+			"buildTime": buildTime,
 		})
 	})
 
@@ -96,6 +113,6 @@ func main() {
 	})
 
 	addr := ":" + strconv.Itoa(cfg.Port)
-	fmt.Printf("Insight Forge Analyst Platform running on %s\n", addr)
+	fmt.Printf("Insight Forge Analyst Platform starting — commit=%s buildTime=%s port=%s\n", commit, buildTime, addr)
 	http.ListenAndServe(addr, r)
 }

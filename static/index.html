@@ -42,7 +42,7 @@
       </div>
       <div class="text-right">
         <div class="text-xs text-zinc-400">Dedicated Sprite • Real-time Multi-Source Synthesis</div>
-        <div id="deploy-stamp" class="text-[10px] text-zinc-500 mt-0.5"></div>
+        <div id="version-info" class="text-[10px] font-mono text-emerald-400 mt-0.5"></div>
       </div>
     </div>
 
@@ -201,10 +201,20 @@
     let currentResult = null;
     let currentNSN = '';
 
-    function setDeployStamp() {
-      const el = document.getElementById('deploy-stamp');
-      const d = new Date();
-      el.textContent = 'Deployed ' + d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+    async function loadVersionInfo() {
+      try {
+        const res = await fetch('/health');
+        if (!res.ok) return;
+        const data = await res.json();
+        const el = document.getElementById('version-info');
+        if (el && data.commit) {
+          const short = data.commit.substring(0, 7);
+          el.textContent = `commit ${short} • ${data.buildTime || ''}`;
+          el.title = `Full commit: ${data.commit}`;
+        }
+      } catch (e) {
+        // silent fail - version display is nice-to-have
+      }
     }
 
     function showError(msg) {
@@ -414,7 +424,7 @@
 
     // Boot
     window.onload = () => {
-      setDeployStamp();
+      loadVersionInfo();
       const input = document.getElementById('nsn-input');
       input.focus();
       input.select();

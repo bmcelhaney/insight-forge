@@ -24,7 +24,9 @@ echo "    Testing the 5 canonical AbilityOne NSNs..."
 
 # 1. Build a temporary binary (ensures we test exactly what will ship)
 echo "==> Building production binary for functional test..."
-go build -o "$BINARY" ./cmd/server
+COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+go build -ldflags="-s -w -X main.commit=${COMMIT} -X main.buildTime=${BUILD_TIME}" -o "$BINARY" ./cmd/server
 chmod +x "$BINARY"
 
 # 2. Start server on the test port (isolated)
@@ -137,5 +139,20 @@ fi
 
 echo ""
 echo "==> All 5 AbilityOne NSNs passed functional gates."
+
+# Final sanity: confirm the test binary is reporting the commit we built
+LIVE=$(curl -s --max-time 3 "${BASE}/version" | python3 -c '
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    print(d.get("commit", ""))
+except:
+    print("")
+' 2>/dev/null || echo "")
+
+if [ "$LIVE" != "$COMMIT" ] && [ -n "$LIVE" ]; then
+    echo "WARNING: Test binary reports commit '${LIVE}' but we built '${COMMIT}'"
+fi
+
 echo "==> Release is cleared for deployment."
 exit 0
