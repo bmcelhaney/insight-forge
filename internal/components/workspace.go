@@ -28,6 +28,15 @@ type WorkspaceProps struct {
 func Workspace(props WorkspaceProps) g.Node {
 	return Div(
 		Class("grid grid-cols-1 xl:grid-cols-12 gap-6"),
+		// Optional subpath banner (helpful when running under /insightforge)
+		g.If(props.BasePath != "",
+			Div(Class("xl:col-span-12 mb-2"),
+				Div(Class("alert alert-info py-2 text-sm"),
+					g.Text("Running under subpath: "),
+					Span(Class("font-mono font-bold"), g.Text(props.BasePath)),
+				),
+			),
+		),
 		// Left sidebar: Search + Recent
 		Div(Class("xl:col-span-3"),
 			SearchPanel(props),
