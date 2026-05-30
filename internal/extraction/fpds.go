@@ -1,6 +1,7 @@
 package extraction
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -30,24 +31,35 @@ func NewFPDSExtractor(apiKey string) *FPDSExtractor {
 func (f *FPDSExtractor) SourceCode() string { return "FPDS" }
 
 func (f *FPDSExtractor) Fetch(ctx context.Context, entityID string, params map[string]string) ([]models.DataSnapshot, error) {
+	// Try real sources first for legitimate data (user request: no mock data where possible).
+	// 1. SAM.gov if we have a key
 	if f.apiKey != "" {
 		snaps, err := f.fetchReal(ctx, entityID)
-		if err == nil {
-			return snaps, nil
-		}
-		// On real call failure, return prototype data but include the error + URL for debugging
-		proto := f.fetchPrototype(entityID)
-		if len(proto) > 0 {
-			proto[0].RawResponse["sam_call_error"] = err.Error()
-			proto[0].RawResponse["note"] = "Real SAM.gov call failed — see sam_call_error. Falling back to prototype data."
-			// Try to extract the URL we attempted from the error if possible
-			if strings.Contains(err.Error(), "http") {
-				// crude but helpful
+		if err == nil && len(snaps) > 0 {
+			if ta, ok := snaps[0].RawResponse["total_awards"].(int); ok && ta > 0 {
+				return snaps, nil
 			}
 		}
-		return proto, nil
 	}
-	return f.fetchPrototype(entityID), nil
+
+	// 2. USAspending.gov (public API, often better for NSN/keyword award searches)
+	snaps, err := f.fetchRealFromUSASpending(ctx, entityID)
+	if err == nil && len(snaps) > 0 {
+		if ta, ok := snaps[0].RawResponse["total_awards"].(int); ok && ta > 0 {
+			return snaps, nil
+		}
+	}
+
+	// All real sources failed or returned no usable data → fall back with clear diagnostics
+	proto := f.fetchPrototype(entityID)
+	if len(proto) > 0 {
+		proto[0].RawResponse["real_data_error"] = "Both SAM.gov (if key provided) and USAspending returned no usable award data or errors. Using prototype."
+		if err != nil {
+			proto[0].RawResponse["last_real_attempt_error"] = err.Error()
+		}
+		proto[0].RawResponse["note"] = "Real award data sources unavailable for this NSN/key. Prototype data in use."
+	}
+	return proto, nil
 }
 
 func (f *FPDSExtractor) fetchReal(ctx context.Context, entityID string) ([]models.DataSnapshot, error) {
@@ -199,6 +211,99 @@ func (f *FPDSExtractor) fetchPrototype(entityID string) []models.DataSnapshot {
 	}
 
 	return []models.DataSnapshot{snap}
+}
+
+func (f *FPDSExtractor) fetchRealFromUSASpending(ctx context.Context, entityID string) ([]models.DataSnapshot, error) {
+	endpoint := "https://api.usaspending.gov/api/v2/search/spending_by_award/"
+
+	payload := map[string]any{
+		"filters": map[string]any{
+			"keywords":         []string{entityID},
+			"award_type_codes": []string{"A", "B", "C", "D"}, // contracts
+		},
+		"fields": []string{"awarding_agency_name", "total_obligation", "last_modified_date"},
+		"limit":  50,
+		"page":   1,
+	}
+
+	jsonBody, _ := json.Marshal(payload)
+	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(jsonBody))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("network error calling USAspending: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("USAspending returned HTTP %d: %s", resp.StatusCode, string(body))
+	}
+
+	body, _ := io.ReadAll(resp.Body)
+
+	var raw map[string]any
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil, fmt.Errorf("failed to parse USAspending JSON: %w", err)
+	}
+
+	results, _ := raw["results"].([]any)
+
+	totalAwards := len(results)
+	totalValue := int64(0)
+	agencies := map[string]bool{}
+	lastDate := ""
+
+	for _, r := range results {
+		if res, ok := r.(map[string]any); ok {
+			if val, ok := res["total_obligation"].(float64); ok {
+				totalValue += int64(val)
+			}
+			if agency, ok := res["awarding_agency_name"].(string); ok && agency != "" {
+				agencies[agency] = true
+			}
+			if d, ok := res["last_modified_date"].(string); ok {
+				lastDate = d
+			}
+		}
+	}
+
+	topAgencies := []string{}
+	for a := range agencies {
+		topAgencies = append(topAgencies, a)
+		if len(topAgencies) >= 4 {
+			break
+		}
+	}
+	if len(topAgencies) == 0 {
+		topAgencies = []string{"Various Federal Agencies"}
+	}
+
+	snap := models.DataSnapshot{
+		EntityID:   entityID,
+		SourceCode: "FPDS",
+		SnapshotAt: time.Now(),
+		RawResponse: map[string]any{
+			"total_awards":      totalAwards,
+			"total_value_usd":   totalValue,
+			"top_agencies":      topAgencies,
+			"last_award_date":   lastDate,
+			"demand_character":  "Real award data from USAspending.gov (keyword search)",
+			"primary_vehicle":   "Various (see USAspending results)",
+			"award_recency_days": 0,
+			"data_source":        "live_usaspending",
+			"note":               "LIVE data from USAspending.gov public API",
+			"raw_response":       raw,
+		},
+		QualityScore: 0.9,
+		CreatedBy:    "fpds-extractor-usaspending",
+	}
+
+	return []models.DataSnapshot{snap}, nil
 }
 
 // deriveFPDSPattern produces believable, category-differentiated federal award data.
