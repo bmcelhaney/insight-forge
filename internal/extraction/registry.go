@@ -36,6 +36,10 @@ func NewDefaultRegistry(samAPIKey string) *Registry {
 	tc := NewTechnicalContextExtractor()
 	r.extractors[tc.SourceCode()] = tc
 
+	// GSA Advantage web scraping for real AbilityOne (JWOD) pricing - direct POST + HTML scrape as specified
+	gsa := NewGSAAdvantageExtractor()
+	r.extractors[gsa.SourceCode()] = gsa
+
 	// Future: MCRL, SAM.gov, historical award feeds, technical manuals, etc.
 	return r
 }

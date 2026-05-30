@@ -663,6 +663,23 @@ func buildDynamicFullReport(entityID string, viability, risk float64, flags []mo
 		}
 	}
 
+	// Pull real GSA Advantage pricing (AbilityOne/JWOD focus)
+	var gsaPrices []map[string]any
+	for _, s := range snaps {
+		if s.SourceCode == "GSA_ADVANTAGE" {
+			if p, ok := s.RawResponse["prices_found"].([]map[string]any); ok {
+				gsaPrices = p
+			} else if p, ok := s.RawResponse["prices_found"].([]any); ok {
+				for _, item := range p {
+					if m, ok := item.(map[string]any); ok {
+						gsaPrices = append(gsaPrices, m)
+					}
+				}
+			}
+			break
+		}
+	}
+
 	// Pull Program + Technical context
 	var programContext, socioNotes, techNotes, maintNotes string
 	for _, s := range snaps {
@@ -682,6 +699,24 @@ func buildDynamicFullReport(entityID string, viability, risk float64, flags []mo
 				maintNotes = mn
 			}
 		}
+	}
+
+	// Format GSA Advantage pricing for the report (real AbilityOne data via scraping)
+	gsaPricingSection := ""
+	if len(gsaPrices) > 0 {
+		gsaPricingSection = "\nGSA ADVANTAGE PRICING (AbilityOne / JWOD - Live Web Scrape)\n"
+		for i, p := range gsaPrices {
+			if i >= 3 {
+				break
+			}
+			price := p["price"]
+			ctx := ""
+			if c, ok := p["context"].(string); ok {
+				ctx = c
+			}
+			gsaPricingSection += fmt.Sprintf("- $%v USD  [%s]\n", price, ctx)
+		}
+		gsaPricingSection += "Sourced via direct POST + HTML scrape of GSA Advantage (cat=ADV.JWOD).\n"
 	}
 
 	// Build a more varied, data-driven report
@@ -714,7 +749,11 @@ SUPPLIER ECOSYSTEM
 DEMAND & MARKET DYNAMICS
 %s
 
+GSA ADVANTAGE PRICING (AbilityOne)
+%s
+
 TECHNICAL & MAINTENANCE CONSIDERATIONS
+%s
 %s
 %s
 
@@ -728,6 +767,7 @@ RISK FLAGS & IMPLICATIONS
 		programContext, socioNotes,
 		suppliers.EcosystemNote, suppliers.ContinuityAssessment,
 		demand.DemandNote,
+		gsaPricingSection,
 		techNotes, maintNotes)
 
 	// Flags
