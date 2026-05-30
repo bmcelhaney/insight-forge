@@ -97,7 +97,7 @@ type SupplierSummary struct {
 type RelatedNSN struct {
 	NSN         string  `json:"nsn"`
 	Description string  `json:"description"`
-	Relation    string  `json:"relation"` // "supersedes", "alternative", "common_supplier", "same_program"
+	Relation    string  `json:"relation"` // "supersedes", "direct_equivalent"
 	Confidence  float64 `json:"confidence"`
 }
 

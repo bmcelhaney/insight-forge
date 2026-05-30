@@ -170,8 +170,8 @@
 
         <!-- Related / Alternative NSNs -->
         <div class="analyst-card bg-zinc-900 border border-zinc-700 rounded-3xl p-6">
-          <div class="section-header text-zinc-400 mb-3">Related &amp; Alternative NSNs for Consideration</div>
-          <div id="related-nsns" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3"></div>
+          <div class="section-header text-zinc-400 mb-3">Related &amp; Equivalent NSNs</div>
+          <div id="related-nsns" class="grid grid-cols-1 md:grid-cols-2 gap-3"></div>
         </div>
 
         <!-- Actions -->
@@ -575,8 +575,8 @@
         let relColor = '#64748b';
         let relLabel = r.relation || 'related';
         if (r.relation === 'supersedes') relColor = '#10b981';
+        else if (r.relation === 'direct_equivalent') relColor = '#14b8a6';
         else if (r.relation === 'alternative') relColor = '#3b82f6';
-        else if (r.relation === 'common_supplier') relColor = '#8b5cf6';
 
         const conf = Math.round((r.confidence || 0) * 100);
         a.innerHTML = `
