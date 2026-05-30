@@ -50,6 +50,10 @@ pkill -9 -f "insightforge" 2>/dev/null || true
 pkill -9 -f "go run.*cmd/server" 2>/dev/null || true
 pkill -9 -f "/home/sprite/insightforge/bin/insightforge" 2>/dev/null || true
 
+# Extra aggressive kill for the legacy binary name/location
+killall -9 insightforge 2>/dev/null || true
+pkill -9 -f "insightforge" 2>/dev/null || true
+
 # Kill anything listening on the target port (more reliable than pkill alone)
 if command -v fuser >/dev/null 2>&1; then
     fuser -k -9 ${PORT}/tcp 2>/dev/null || true
@@ -62,7 +66,9 @@ sleep 2
 # Remove known old binary locations that have caused "old code still running" problems
 echo "==> Removing known stale binary locations..."
 rm -f /home/sprite/insightforge/bin/insightforge 2>/dev/null || true
+rm -rf /home/sprite/insightforge/bin/ 2>/dev/null || true
 rm -f ./insightforge 2>/dev/null || true
+rm -f ./insight-forge 2>/dev/null || true
 
 # 2. Ensure dependencies are resolved (critical after git clean -fd or fresh clones)
 echo "==> Ensuring go modules are tidy (fixes missing go.sum after clean)..."
