@@ -6,29 +6,42 @@ set -euo pipefail
 # This version is deliberately paranoid because previous deployment methods
 # repeatedly left old binaries running.
 #
-# It will:
-#   - Kill every possible old process aggressively (multiple name patterns + port)
-#   - Remove known old binary locations
-#   - Build with the current git commit embedded
-#   - Run the functional gate
-#   - Start the binary
-#   - VERIFY that the live /version endpoint returns the exact commit we just built
-#   - Only then declare success
+# Key behavior:
+#   - Always fetches origin/main and hard-resets the tree to it first
+#     (so the "Target commit" is never stuck on an old local checkout)
+#   - Kills every possible old process aggressively
+#   - Removes known stale binary locations
+#   - Builds with the target commit embedded
+#   - Runs the full functional gate
+#   - Verifies that the live /version exactly matches the commit just built
+#   - Only declares success if the verification passes
 
 PORT="${PORT:-8080}"
 APP_NAME="insight-forge"
 LOG_FILE="/tmp/${APP_NAME}.log"
 BINARY_PATH="./${APP_NAME}"
-COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
-BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
 # Make sure we can find Go on the sprite
 export PATH="/home/sprite/.sprite/bin:/root/.sprite/bin:$HOME/.sprite/bin:$HOME/go/bin:/usr/local/go/bin:/usr/local/bin:/usr/bin:$PATH"
 
+# Always target the absolute latest on origin/main, regardless of local checkout state
+echo "==> Fetching latest from origin..."
+git fetch origin
+
+TARGET_COMMIT=$(git rev-parse --short origin/main 2>/dev/null || echo "unknown")
+BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
 echo "==> Insight Forge HARDENED Reset + Version-Verified Gate (port ${PORT})"
-echo "    Target commit: ${COMMIT}"
+echo "    Target commit: ${TARGET_COMMIT}"
 echo "    Dedicated sprite: nib-insightforge"
 echo ""
+
+# Move the working tree to exactly the target commit before building
+echo "==> Resetting to ${TARGET_COMMIT}..."
+git reset --hard origin/main
+git clean -fd
+
+COMMIT=${TARGET_COMMIT}
 
 # 1. Extremely aggressive cleanup of every possible old instance
 echo "==> Killing every possible old insight-forge / insightforge process..."
