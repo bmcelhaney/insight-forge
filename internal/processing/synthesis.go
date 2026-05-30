@@ -302,6 +302,11 @@ Production is moderately concentrated within the NIB network (Fort Worth ≈ 42%
 
 The enriched data shows good diversification across 6+ workshops. The new ContinuityAssessment notes: "good geographic spread within the NIB system" with the primary risk remaining single-facility exposure in Texas. The grouped flags confirm this assessment (one medium concentration flag on Texas exposure + one data-quality flag on sub-tier visibility). Top 3 suppliers represent over 70% of recent observed value.
 
+DEMAND FORECAST / OUTLOOK
+Steady, predictable demand with a clear and reliable seasonal pattern (Q4 peaks). Near-term outlook remains positive with low volatility. Longer-term risk is limited to gradual shifts in federal procurement priorities or AbilityOne program changes. 
+
+Recommended action: Maintain steady sourcing rotation and monitor Q4 surge planning 6-9 months ahead. The current +4% YoY trend is supportive, but any sustained move below flat would warrant closer attention to program-level demand signals.
+
 RISKS & OPPORTUNITIES
 Primary risk remains geographic concentration at a single Texas facility (explicitly called out in the medium concentration flag). A major regional disruption would require rapid reallocation to secondary NIB workshops. The data-quality flag highlights limited visibility into sub-tier suppliers and real-time capacity.
 
@@ -363,6 +368,11 @@ Concentration risk is low because production is intentionally diversified across
 
 The enriched data shows excellent diversification (no workshop > ~13% share). The new ContinuityAssessment rates it as having "excellent diversification" with "very low risk of single-point disruption." The only flag is a medium data-quality one around capacity visibility. Top 5 suppliers represent the bulk of recent volume.
 
+DEMAND FORECAST / OUTLOOK
+Gradual structural decline from digital substitution is the dominant trend (-7% YoY). Near-term outlook is still solid due to strong seasonal peaks, but the long-term trajectory is downward unless offset by new use cases or program defense.
+
+Recommended action: Track digital substitution metrics quarterly and work with NIB on positioning strategies if decline accelerates beyond 10% YoY. The strong back-to-school and year-end peaks remain a reliable bright spot in the near term.
+
 RISKS & OPPORTUNITIES
 Low structural risk due to deliberate dispersion across workshops. The main long-term threat is gradual volume erosion from digital alternatives (visible in the -7% YoY). Opportunity exists to defend relevance through quality and reliable supply. The flags confirm that capacity visibility is the main area needing manual follow-up.
 
@@ -415,6 +425,13 @@ Recommended: Engage NIB/SourceAmerica for current capacity data before high-volu
 SUPPLIER & RISK ASSESSMENT
 Because production is distributed across more workshops than many other AbilityOne items, single-point supply risk is materially lower. This NSN is one of the more resilient from a continuity perspective within the Program.
 
+The enriched data confirms very strong diversification (top producer only ~10%). The ContinuityAssessment rates it as having "very strong diversification" and the "lowest structural supply risk among the five." No concentration flag appears in the current synthesis.
+
+DEMAND FORECAST / OUTLOOK
+Strong growth (+11% YoY) with highly predictable Q4 seasonality driven by holiday logistics. Near-term outlook is very positive. Longer-term risk is mainly commodity price volatility in resin/film rather than demand destruction.
+
+Recommended action: Consider multi-year volume commitments with producers during periods of stable or favorable resin pricing. The current growth trend is supportive, but resin price spikes could pressure margins.
+
 RISKS & OPPORTUNITIES
 Low concentration risk is a strength. The main long-term risk is commodity price volatility in resin/film. Opportunity exists to lock in favorable long-term pricing with producers during stable periods.
 
@@ -463,6 +480,13 @@ Recommended: For any project >100 units, obtain current capacity statements from
 SUPPLIER & CONCENTRATION ANALYSIS
 Concentration is meaningfully higher than for pens or bags. San Antonio Lighthouse holds the largest observed share. This creates real (but manageable) capacity risk on very large orders.
 
+The enriched data shows San Antonio as the clear leader. The new ContinuityAssessment notes elevated concentration risk due to equipment and skill barriers and recommends securing written capacity commitments for any order >100 units while maintaining a second qualified source.
+
+DEMAND FORECAST / OUTLOOK
+Extremely lumpy, project-driven demand with very high year-to-year variability. There is no reliable baseline volume — demand is almost entirely tied to the timing and scale of major facility projects. Near-term outlook depends entirely on the buyer's capital project pipeline.
+
+Recommended action: Maintain close relationships with key agencies' facilities/planning teams and require early visibility into upcoming large projects. This is not a "run-rate" item.
+
 RISKS & OPPORTUNITIES
 Primary risk is capacity constraint on large, time-sensitive projects. Because of the higher value and socio-economic impact per unit, this NSN is worth proactive dual-sourcing.
 
@@ -510,6 +534,13 @@ Recommended: For mission-critical or recurring requirements, request full bill-o
 
 SUPPLIER & CONCENTRATION ANALYSIS
 Narrower producer base combined with heavy reliance on commercial sub-components before kitting creates elevated supply-chain risk compared to simpler AbilityOne items.
+
+The enriched data shows Fort Worth as the dominant producer (~33%). The new ContinuityAssessment flags this as the "highest complexity risk profile" with significant exposure to commercial component supply chains. It strongly recommends dual-sourcing and full BOM transparency.
+
+DEMAND FORECAST / OUTLOOK
+Highly irregular and concentrated demand (a handful of large orders can drive the majority of annual volume). There is almost no steady-state demand. The near-term outlook is binary — either a major kit procurement lands or it doesn't.
+
+Recommended action: Treat this as a key-account / major program item. Maintain active pipeline visibility with the largest buyers (especially DLA and major services) and avoid treating it as a routine consumable.
 
 RISKS & OPPORTUNITIES
 Primary risk is sub-tier component disruption or price volatility. Because this is a higher-value kit, the socio-economic return per federal dollar is strong — worth protecting with proactive transparency.
