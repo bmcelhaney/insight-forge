@@ -29,25 +29,53 @@ Open http://localhost:8080
 
 ## Quick Start (Dedicated Sprite - Recommended)
 
-You now have a **dedicated sprite** called `nib-insightforge` (public URL: https://nib-insightforge-bsmmx.sprites.app).
+You now have a **dedicated sprite** called `nib-insightforge`.
 
-This is the cleanest and recommended way to run Insight Forge.
+This is the cleanest and recommended way to run Insight Forge — zero proxying, zero shared-machine drama.
 
-### On the new sprite (nib-insightforge)
-
-Enter the sprite:
-
-```bash
-sprite console -o bill-nib -s nib-insightforge
-```
-
-Inside the sprite console:
+### On the new sprite (paste this block)
 
 ```bash
 cd /home/sprite
 git clone https://<YOUR_GITHUB_PAT>@github.com/bmcelhaney/insight-forge.git
 cd insight-forge
 git pull origin main
+mkdir -p data
+chmod +x run.sh
+./run.sh 8080
+```
+
+Then in another terminal (or background it with nohup):
+
+```bash
+# Health check
+curl http://localhost:8080/health
+
+# The app is now serving the full beautiful UI at your sprite's public URL on port 8080
+```
+
+Test with NSNs: `1234567890123` and `1234567890001`
+
+**Exports**: After any analysis the "Export JSON (Pricing Tool)" and "Excel Evidence Bundle (5 sheets)" buttons produce real downloadable artifacts.
+
+## Local Quick Start
+
+```bash
+go mod tidy
+go run ./cmd/server
+```
+
+Open http://localhost:8080
+
+## Architecture
+
+- Pure Go + chi
+- DuckDB as immutable single source of truth (snapshots + results + audit)
+- Parallel extractors (WebFLIS, FPDS, Sanctions, extensible)
+- Real synthesis engine (viability 0-100 + risk 0-100 + flags + demand + supplier view)
+- Beautiful self-contained UI (Tailwind + DaisyUI + Chart.js, no fragile reactive deps)
+- One-click JSON for pricing tools + full multi-sheet Excel evidence bundle
+- Designed for dedicated sprite isolation (or later Azure containerization)
 
 # Run it (dedicated sprite - clean and simple)
 ./run.sh 8080

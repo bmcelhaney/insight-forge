@@ -28,10 +28,8 @@ func New(path string) (*DB, error) {
 		return nil, fmt.Errorf("open duckdb at %s: %w", path, err)
 	}
 
-	// Recommended pragmas for analytical workload
+	// Recommended pragmas for analytical workload (avoid journal_mode/synchronous - caused "unrecognized" on some sprite DuckDB builds)
 	pragmas := []string{
-		"PRAGMA journal_mode=WAL;",
-		"PRAGMA synchronous=NORMAL;",
 		"PRAGMA memory_limit='4GB';",
 	}
 	for _, p := range pragmas {

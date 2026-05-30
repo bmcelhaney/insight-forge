@@ -1,63 +1,45 @@
 #!/usr/bin/env bash
 #
-# Insight Forge - Runner
+# Insight Forge — Dedicated Sprite Runner (nib-insightforge)
 #
-# On the dedicated sprite (nib-insightforge):
+# On your new dedicated sprite:
+#   cd /home/sprite/insight-forge
+#   chmod +x run.sh
 #   ./run.sh 8080
 #
-# On a shared sprite (not recommended anymore):
-#   BASE_PATH=/insightforge ./run.sh 8091
+# Or with explicit nohup for background:
+#   nohup ./run.sh 8080 > insightforge.log 2>&1 &
 #
-# Usage:
-#   ./run.sh        # defaults to port 8091
-#   ./run.sh 8080   # specific port
-#
-# Isolation: Own directory + own DuckDB file.
+# The app now serves a complete beautiful UI at the root (or under BASE_PATH if set).
+# No more Stitchify proxy hell. Own domain / own port / own DuckDB.
 
 set -e
 
-# Default safe port (different from typical Stitchify/PriorityForge ports)
-PORT=${1:-8091}
-
-# Ensure we're in the right directory
+PORT=${1:-8080}
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
 echo "=========================================="
-echo "  Insight Forge - Sprite Prototype"
+echo "  INSIGHT FORGE — DEDICATED SPRITE"
 echo "=========================================="
+echo "Directory : $(pwd)"
+echo "Port      : $PORT"
+echo "DuckDB    : ./data/insight-forge.duckdb"
 echo ""
-echo "Running in: $(pwd)"
-echo "Using port: $PORT"
+echo "After it starts:"
+echo "  curl http://localhost:$PORT/health"
+echo "  Then open the public URL for your sprite on port $PORT"
 echo ""
-echo "Isolation notes:"
-echo "  • Own directory: /home/sprite/insight-forge"
-echo "  • Own database:  ./data/insight-forge.duckdb"
-echo "  • Will NOT affect Stitchify or PriorityForge"
-echo ""
-echo "After starting, you have two options:"
-echo ""
-echo "  A) For local testing from your Mac:"
-echo "     sprite proxy $PORT"
-echo "     Then open http://localhost:$PORT"
-echo ""
-echo "  B) For production-like access on the sprite domain (recommended):"
-echo "     Set up rewrites in Stitchify's next.config.ts (see docs)"
-echo "     Then access via https://nib-sprite.../insightforge"
-echo ""
+echo "Test NSNs: 1234567890123   or   1234567890001"
 echo "Press Ctrl+C to stop."
-echo ""
+echo "=========================================="
 
-# Create data dir if it doesn't exist
 mkdir -p data
 
-# Run with explicit environment for clarity
-# Set BASE_PATH if you want the app mounted under a subpath on the sprite
-# (e.g. so it appears at https://nib-sprite.../insightforge)
 BASE_PATH=${BASE_PATH:-""}
 
 IF_PORT=$PORT \
 IF_DUCKDB_PATH=./data/insight-forge.duckdb \
 IF_BASE_PATH=$BASE_PATH \
-IF_ENV=prototype \
+IF_ENV=production \
 go run ./cmd/server
