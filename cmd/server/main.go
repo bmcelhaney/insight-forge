@@ -75,49 +75,81 @@ func main() {
 		fmt.Fprint(w, html)
 	})
 
-	// === Datastar SSE endpoint for reactive analysis ===
+	// === Datastar SSE endpoint for reactive analysis (with live partial updates) ===
 	r.Post("/datastar/analyze", func(w http.ResponseWriter, r *http.Request) {
 		sse := datastar.NewSSE(w, r)
 
-		var req struct {
-			NSN string `json:"nsn"`
-		}
-		// Datastar sends form data or JSON depending on config; handle both
 		nsn := r.FormValue("nsn")
 		if nsn == "" {
+			var req struct{ NSN string `json:"nsn"` }
 			json.NewDecoder(r.Body).Decode(&req)
 			nsn = req.NSN
 		}
-
 		if nsn == "" {
 			sse.PatchElements(`<div class="alert alert-error">NSN is required</div>`)
 			return
 		}
 
-		// Show analyzing state immediately
-		recent, _ := database.GetRecentAnalyses(r.Context(), 8)
+		ctx := r.Context()
+
+		// Known sources for this prototype (order matters for nice progress UX)
+		sources := []string{"WEBFLIS", "FPDS", "SANCTIONS"}
+		totalSources := len(sources)
+
+		// Initial analyzing state
+		recent, _ := database.GetRecentAnalyses(ctx, 8)
 		analyzingProps := components.WorkspaceProps{
-			NSN:         nsn,
-			RecentNSNs:  recent,
-			IsAnalyzing: true,
+			NSN:              nsn,
+			RecentNSNs:       recent,
+			IsAnalyzing:      true,
+			CompletedSources: []string{},
+			TotalSources:     totalSources,
 		}
 		analyzingHTML, _ := components.RenderWorkspaceToString(analyzingProps)
 		sse.PatchElements(analyzingHTML)
 
-		// Run extraction + synthesis
-		ctx := r.Context()
-		snaps, _ := extractorReg.FetchAll(ctx, nsn, nil, nil)
-		result, _ := processing.Synthesize(ctx, nsn, snaps)
+		var accumulatedSnaps []models.DataSnapshot
+		var completed []string
 
-		_ = database.StoreSnapshots(ctx, snaps)
-		_ = database.StoreResult(ctx, result)
+		for _, source := range sources {
+			// Fetch this source
+			snaps, err := extractorReg.FetchAll(ctx, nsn, []string{source}, nil)
+			if err == nil && len(snaps) > 0 {
+				accumulatedSnaps = append(accumulatedSnaps, snaps...)
+			}
+			completed = append(completed, source)
 
-		// Re-render full workspace with results
+			// Partial synthesis with what we have so far
+			partialResult, _ := processing.Synthesize(ctx, nsn, accumulatedSnaps)
+
+			// Persist partial (last one will be the final)
+			_ = database.StoreSnapshots(ctx, snaps)
+			_ = database.StoreResult(ctx, partialResult)
+
+			// Live patch to the UI
+			partialRecent, _ := database.GetRecentAnalyses(ctx, 8)
+			partialProps := components.WorkspaceProps{
+				NSN:              nsn,
+				Result:           &partialResult,
+				Snapshots:        accumulatedSnaps,
+				RecentNSNs:       partialRecent,
+				IsAnalyzing:      true, // still "analyzing" until the very last
+				CompletedSources: append([]string{}, completed...),
+				TotalSources:     totalSources,
+			}
+			partialHTML, _ := components.RenderWorkspaceToString(partialProps)
+			sse.PatchElements(partialHTML)
+		}
+
+		// Final state - mark as complete
 		finalRecent, _ := database.GetRecentAnalyses(ctx, 8)
+		finalResult, _ := processing.Synthesize(ctx, nsn, accumulatedSnaps)
+		_ = database.StoreResult(ctx, finalResult)
+
 		finalProps := components.WorkspaceProps{
-			NSN:       nsn,
-			Result:    &result,
-			Snapshots: snaps,
+			NSN:        nsn,
+			Result:     &finalResult,
+			Snapshots:  accumulatedSnaps,
 			RecentNSNs: finalRecent,
 		}
 		finalHTML, _ := components.RenderWorkspaceToString(finalProps)

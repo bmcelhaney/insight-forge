@@ -3,6 +3,7 @@ package components
 import (
 	"bytes"
 	"fmt"
+	"strings"
 
 	"github.com/bmcelhaney/insight-forge/internal/models"
 	g "github.com/maragudk/gomponents"
@@ -12,12 +13,14 @@ import (
 
 // WorkspaceProps holds everything needed to render the full reactive workspace.
 type WorkspaceProps struct {
-	NSN            string
-	Result         *models.InsightResult
-	Snapshots      []models.DataSnapshot
-	RecentNSNs     []string
-	IsAnalyzing    bool
-	ErrorMessage   string
+	NSN               string
+	Result            *models.InsightResult
+	Snapshots         []models.DataSnapshot
+	RecentNSNs        []string
+	IsAnalyzing       bool
+	CompletedSources  []string   // for live progress
+	TotalSources      int
+	ErrorMessage      string
 }
 
 // Workspace is the main reactive component rendered via Datastar.
@@ -92,10 +95,15 @@ func MainDataPanel(props WorkspaceProps) g.Node {
 	}
 
 	if props.IsAnalyzing {
+		progressText := "Gathering intelligence from sources..."
+		if len(props.CompletedSources) > 0 && props.TotalSources > 0 {
+			progressText = fmt.Sprintf("Completed %d/%d sources: %s", len(props.CompletedSources), props.TotalSources, strings.Join(props.CompletedSources, ", "))
+		}
 		return Div(Class("card bg-base-100 shadow-xl"),
 			Div(Class("card-body"),
 				Progress(Class("progress progress-primary w-full")),
-				P(Class("text-center mt-3"), g.Text("Running extractors in parallel...")),
+				P(Class("text-center mt-3 text-sm"), g.Text(progressText)),
+				P(Class("text-center text-xs opacity-60"), g.Text("Partial results will update live as sources complete")),
 			),
 		)
 	}
@@ -125,10 +133,8 @@ func MainDataPanel(props WorkspaceProps) g.Node {
 			),
 
 			Div(Class("mt-6"),
-				H4(Class("font-semibold mb-2"), g.Text("Supplier Concentration (prototype)")),
-				Div(Class("text-sm"),
-					g.Text("18 vendors across US, CA, DE • Concentration risk: Medium"),
-				),
+				H4(Class("font-semibold mb-2"), g.Text("Demand Signals")),
+				g.Raw(DemandSignalsChart(props.Result)),
 			),
 		),
 	)
