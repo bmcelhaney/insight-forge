@@ -54,22 +54,26 @@ type Extractor interface {
 }
 ```
 
-## Current Status
+## Current Status (late May 2026)
 
 **Strongly isolated from other apps on the sprite.**
 
 - Directory: `/home/sprite/insight-forge` (separate from `stitchify.poc` and PriorityForge)
 - Database: `./data/insight-forge.duckdb` (completely independent DuckDB file)
-- Port: Configurable via `IF_PORT` (default 8080 — use a different port on the shared sprite)
+- Port: Use `./run.sh` (defaults to safe port 8091)
 - No shared processes, static files, or dependencies with Stitchify or PriorityForge
 
 ## Implementation Progress
 
 - Full domain models + synthesis engine (viability + risk scoring)
-- Parallel extractors (WebFLIS, FPDS, Sanctions) with realistic data
-- Reactive Datastar + Gomponents workspace (sidebar + center + insight card)
-- History / recent analyses
-- JSON export for pricing tool
+- Parallel extractors (WebFLIS, FPDS, Sanctions) with realistic prototype data
+- **Live partial progress** — UI updates live after each source completes
+- Reactive Datastar + Gomponents workspace with go-echarts charts
+- History / recent analyses + one-click re-run
+- Exports:
+  - Structured JSON for pricing tool
+  - Full multi-sheet Excel evidence bundle
+- Easy runner script: `./run.sh`
 - Follows Stitchify Go Framework structure and patterns exactly
 
 ## Running Safely on Shared nib-sprite

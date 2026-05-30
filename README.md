@@ -7,9 +7,16 @@ NSN intelligence web application — deep multi-source analysis, viability & ris
 **Primary Repo**: https://github.com/bmcelhaney/insight-forge  
 **Hosting (prototype)**: Running on `nib-sprite` (bill-nib org)
 
-## Status
+## Status (May 2026)
 
-Scaffolding in progress. See `ARCHITECTURE.md` for current decisions and how this maps to the Stitchify Go Framework.
+**High-fidelity prototype** — actively developed.
+
+- Live reactive workspace with partial progress updates as sources complete
+- go-echarts visualizations
+- Full multi-sheet Excel evidence bundle + JSON export for pricing tool
+- Designed to run safely alongside Stitchify and PriorityForge on the same nib-sprite
+
+See `ARCHITECTURE.md` for architecture decisions and isolation details.
 
 ## Quick Start (Local)
 
@@ -22,22 +29,27 @@ Open http://localhost:8080
 
 ## Quick Start (on nib-sprite)
 
-**Important**: This app is fully isolated. It lives in its own directory and uses its own DuckDB file. It will not affect your Stitchify or PriorityForge apps.
+**Important**: This app is **fully isolated**. It lives in its own directory and uses its own DuckDB file. It will **not** affect your Stitchify or PriorityForge apps on the sprite.
+
+### Easiest way
 
 ```bash
-git clone https://github.com/bmcelhaney/insight-forge.git /home/sprite/insight-forge
 cd /home/sprite/insight-forge
-
-# Run on a free port so it doesn't conflict with other apps on the sprite
-IF_PORT=8091 go run ./cmd/server
+git pull origin main
+./run.sh          # defaults to safe port 8091
 ```
 
-Then expose it with something like:
+Then expose it:
 ```bash
 sprite proxy 8091
 ```
 
-Recommended ports for this prototype on the shared sprite: 8090–8100 range.
+You can also specify a different port:
+```bash
+./run.sh 8105
+```
+
+Recommended safe ports on the shared sprite: **8090–8110** range.
 
 ## Key Concepts
 

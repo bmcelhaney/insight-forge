@@ -157,6 +157,17 @@ func main() {
 		sse.PatchElements(finalHTML)
 	})
 
+	// Simple error display helper for Datastar
+	r.Get("/datastar/error", func(w http.ResponseWriter, r *http.Request) {
+		msg := r.URL.Query().Get("msg")
+		if msg == "" {
+			msg = "Something went wrong during analysis."
+		}
+		html := fmt.Sprintf(`<div class="alert alert-error shadow-lg"><span>%s</span></div>`, msg)
+		w.Header().Set("Content-Type", "text/html")
+		w.Write([]byte(html))
+	})
+
 	// === Analyze / Ingest endpoint (JSON API for tools) ===
 	r.Post("/api/analyze", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
