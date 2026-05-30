@@ -51,7 +51,11 @@ echo "==> Removing known stale binary locations..."
 rm -f /home/sprite/insightforge/bin/insightforge 2>/dev/null || true
 rm -f ./insightforge 2>/dev/null || true
 
-# 2. Build with commit embedded so we can prove what is running
+# 2. Ensure dependencies are resolved (critical after git clean -fd or fresh clones)
+echo "==> Ensuring go modules are tidy (fixes missing go.sum after clean)..."
+go mod tidy || echo "Warning: go mod tidy had issues, attempting build anyway..."
+
+# 3. Build with commit embedded so we can prove what is running
 echo "==> Building with embedded commit ${COMMIT}..."
 go build -ldflags="-s -w -X main.commit=${COMMIT} -X main.buildTime=${BUILD_TIME}" \
     -o "${BINARY_PATH}" ./cmd/server
