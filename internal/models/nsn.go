@@ -79,11 +79,13 @@ type SupplierView struct {
 
 // SupplierSummary for top vendors.
 type SupplierSummary struct {
-	Name         string  `json:"name"`
-	CAGE         string  `json:"cage"`
-	AwardCount   int     `json:"award_count"`
-	TotalValue   float64 `json:"total_value"`
-	Country      string  `json:"country"`
+	Name            string  `json:"name"`
+	CAGE            string  `json:"cage"`
+	AwardCount      int     `json:"award_count"`
+	TotalValue      float64 `json:"total_value"`
+	Country         string  `json:"country"`
+	SharePercent    float64 `json:"share_percent,omitempty"`   // estimated share of total awards
+	MostRecentAward string  `json:"most_recent_award,omitempty"` // e.g. "2025-04"
 }
 
 // RelatedNSN for the network graph / alternatives.
@@ -102,4 +104,6 @@ type DemandSignals struct {
 	RecentTrend         string   `json:"recent_trend"` // "increasing", "stable", "declining"
 	ProgramAssociations []string `json:"program_associations"`
 	AwardPeriod         string   `json:"award_period"` // e.g. "Jan 2023 – Dec 2025 (36 months)"
+	YoYChange           string   `json:"yoy_change,omitempty"`     // e.g. "+8% vs prior year"
+	PeakPeriods         string   `json:"peak_periods,omitempty"`   // e.g. "Q4 2024, Q1 2025"
 }

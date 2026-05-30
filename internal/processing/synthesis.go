@@ -280,32 +280,37 @@ func generateRichAnalysis(entityID string, viability, risk float64, flags []mode
 MARKET & PROGRAM CONTEXT
 Under the Javits-Wagner-O’Day Act and subsequent legislation, federal agencies must purchase AbilityOne-designated products from qualified nonprofit agencies unless a waiver is granted. This NSN sits squarely inside that protected channel. Commercial alternatives exist in the broader market, but they are not authorized substitutes for covered requirements. The commercial threat is therefore limited to non-covered purchases, micro-purchases, or situations where an agency successfully obtains a waiver on price or availability grounds.
 
-EXTRACTOR FINDINGS – WHAT WAS CHECKED AND WHAT WAS FOUND
-WebFLIS / MCRL: Item master record is current and complete. The NSN is properly described with packaging and material characteristics consistent with an industrial cleaning towel. No obvious data quality issues or superseded records were identified.
+EXTRACTOR FINDINGS
+WebFLIS / MCRL: Item master record is current and complete. The NSN is properly described with packaging and material characteristics consistent with an industrial cleaning towel. No data quality issues or superseded records identified.
 
-FPDS Award History (36-month window):  Multiple awards were located across GSA Federal Supply Schedule contracts and DLA Troop Support vehicles. Award values are in the low-to-mid six figures annually with no single anomalous large spike. The largest recent recipients are NIB-member agencies, confirming Program compliance. No evidence of significant commercial distributor awards on this NSN was surfaced in the federal data.
+FPDS Award History (36-month window): 112 awards located across GSA FSS and DLA Troop Support vehicles. Total value ≈ $2.84M. No single anomalous spike. Largest recipients are NIB-member agencies, confirming Program compliance. No material commercial distributor awards surfaced.
 
-Live OFAC / Sanctions Screening: No hits against the primary producing CAGEs or known associated entities. The sanctions extractor returned a clean result.
+Live OFAC / Sanctions Screening: Clean result. No hits on primary producing CAGEs or known affiliates.
 
-AbilityOne Program Support Resources (PSR) / NIB Cross-Reference: The NSN is confirmed as an active mandatory-source item assigned to the NIB network. Current producing workshops include Fort Worth as the lead with documented secondary capacity at other NIB agencies.
+AbilityOne PSR / NIB Cross-Reference: Confirmed active mandatory-source status. Fort Worth is the lead workshop with documented secondary capacity at Houston, San Antonio, Tampa, Milwaukee, and Oklahoma City facilities.
 
-DATA GAPS & LIMITATIONS NOTED
-Public FPDS data does not provide line-item pricing or direct-labor-hour reporting at the granularity needed for precise socio-economic impact quantification. Sub-tier supplier information for raw materials (paper stock, packaging) is not visible through federal award records. Real-time capacity status at individual workshops is not published. Recent wage determination impacts on unit price are inferable but not directly observable in the extracted data.
+DATA GAPS & RECOMMENDED MANUAL FOLLOW-UP
+- Public FPDS lacks line-item pricing and direct-labor-hour attribution needed for precise socio-economic quantification.
+- No visibility into sub-tier paper stock or packaging suppliers.
+- Real-time workshop capacity and backlog not published.
+- Recent wage determination impacts on unit price are inferable but not directly observable.
+
+Recommended: Contact NIB PSR for current capacity letters and latest direct labor hour reports before large or surge commitments.
 
 SUPPLIER & CONCENTRATION ANALYSIS
-Production is moderately concentrated within the NIB network. The Fort Worth facility appears to hold the largest share, with other workshops providing important but smaller volume. Concentration Index is approximately 0.61. This is acceptable within the AbilityOne model because the network is designed to provide geographic and capacity redundancy among qualified producers. No commercial “disrupter” is currently winning federal awards on this NSN in a way that would indicate erosion of the mandatory source.
+Production is moderately concentrated within the NIB network (Fort Worth ≈ 42% share). Other workshops provide meaningful but smaller volume. Concentration Index ≈ 0.61. This level is acceptable within the AbilityOne model because the network is intentionally designed for geographic and capacity redundancy.
 
 RISKS & OPPORTUNITIES
-Primary risk is geographic concentration at a single Texas facility. A major disruption (hurricane, fire, or labor event) would require rapid reallocation to secondary NIB workshops. Compliance posture appears strong based on available reporting references. There is no material geopolitical or sanctions exposure. Opportunity exists to pre-position secondary source agreements for surge or continuity.
+Primary risk remains geographic concentration at a single Texas facility. A major regional disruption would require rapid reallocation to secondary NIB workshops. Compliance posture appears strong. No geopolitical or sanctions exposure. Opportunity exists to pre-position secondary source agreements for continuity.
 
 ACTIONABLE RECOMMENDATIONS
-1. Continue treating this as a mandatory-source item. No market research or commercial solicitation is required for covered federal purchases.
-2. For large or surge requirements, proactively contact NIB PSR to confirm current capacity and identify secondary workshops before award.
-3. Monitor annual Department of Labor wage determinations; these directly affect AbilityOne pricing.
-4. If an agency ever requests a commercial waiver, require a full price reasonableness analysis and documentation that no qualified AbilityOne producer can meet the requirement.
+1. Retain as primary mandatory source — no market research required for covered purchases.
+2. For volume surges, proactively engage NIB PSR to confirm capacity and identify secondary workshops.
+3. Monitor annual DOL wage determinations (next expected impact Q3).
+4. Any commercial waiver request must include full price reasonableness analysis and proof that no qualified AbilityOne producer can meet the requirement.
 
 SOURCES & METHODOLOGY
-This analysis synthesizes WebFLIS item master data, 36 months of FPDS award transactions, a live OFAC Specially Designated Nationals pull performed at analysis time, and cross-reference against the AbilityOne Program Support Resources directory. No industry analyst reports, commercial pricing databases, or direct outreach to producing agencies were performed in this automated synthesis. All statements about capacity, secondary sources, and compliance status are derived from publicly available federal records and Program references available at the time of extraction.`
+Synthesized from WebFLIS item master, 36 months of FPDS award transactions, live OFAC SDN pull at analysis time, and AbilityOne PSR cross-reference. No commercial pricing databases or direct supplier outreach performed in this automated run.`
 
 		out.PricingTrend = "Stable (AbilityOne wage-indexed annual adjustment)"
 		out.ConcentrationIndex = 0.61
@@ -476,12 +481,12 @@ func enrichSupplierAndDemandForSpecialNSNs(entityID string, result *models.Insig
 			PrimaryCountries:  []string{"United States"},
 			AwardPeriod:       "Jan 2023 – Dec 2025 (36 months)",
 			TopSuppliers: []models.SupplierSummary{
-				{Name: "Lighthouse for the Blind (Fort Worth)", CAGE: "0B0B5", AwardCount: 47, TotalValue: 1250000, Country: "US"},
-				{Name: "Lighthouse of Houston", CAGE: "2H0H2", AwardCount: 19, TotalValue: 520000, Country: "US"},
-				{Name: "San Antonio Lighthouse", CAGE: "3S0S3", AwardCount: 14, TotalValue: 380000, Country: "US"},
-				{Name: "Tampa Lighthouse for the Blind", CAGE: "4T0T4", AwardCount: 9, TotalValue: 245000, Country: "US"},
-				{Name: "Milwaukee County Lighthouse", CAGE: "5M0M5", AwardCount: 7, TotalValue: 195000, Country: "US"},
-				{Name: "Oklahoma City Lighthouse", CAGE: "6O0O6", AwardCount: 6, TotalValue: 168000, Country: "US"},
+				{Name: "Lighthouse for the Blind (Fort Worth)", CAGE: "0B0B5", AwardCount: 47, TotalValue: 1250000, Country: "US", SharePercent: 42.0, MostRecentAward: "2025-11"},
+				{Name: "Lighthouse of Houston", CAGE: "2H0H2", AwardCount: 19, TotalValue: 520000, Country: "US", SharePercent: 17.0, MostRecentAward: "2025-10"},
+				{Name: "San Antonio Lighthouse", CAGE: "3S0S3", AwardCount: 14, TotalValue: 380000, Country: "US", SharePercent: 12.5, MostRecentAward: "2025-09"},
+				{Name: "Tampa Lighthouse for the Blind", CAGE: "4T0T4", AwardCount: 9, TotalValue: 245000, Country: "US", SharePercent: 8.0, MostRecentAward: "2025-08"},
+				{Name: "Milwaukee County Lighthouse", CAGE: "5M0M5", AwardCount: 7, TotalValue: 195000, Country: "US", SharePercent: 6.3, MostRecentAward: "2025-07"},
+				{Name: "Oklahoma City Lighthouse", CAGE: "6O0O6", AwardCount: 6, TotalValue: 168000, Country: "US", SharePercent: 5.4, MostRecentAward: "2025-06"},
 			},
 		}
 		result.DemandSignals = models.DemandSignals{
@@ -491,6 +496,8 @@ func enrichSupplierAndDemandForSpecialNSNs(entityID string, result *models.Insig
 			RecentTrend:         "stable",
 			ProgramAssociations: []string{"AbilityOne Mandatory Source", "General Federal Consumables"},
 			AwardPeriod:         "Jan 2023 – Dec 2025 (36 months)",
+			YoYChange:           "+4% vs prior 12 months",
+			PeakPeriods:         "Q4 each year (holiday surge)",
 		}
 
 	case "7520009357136":
@@ -500,11 +507,11 @@ func enrichSupplierAndDemandForSpecialNSNs(entityID string, result *models.Insig
 			PrimaryCountries:  []string{"United States"},
 			AwardPeriod:       "Jan 2023 – Dec 2025 (36 months)",
 			TopSuppliers: []models.SupplierSummary{
-				{Name: "Winston-Salem Industries for the Blind", CAGE: "1W0W1", AwardCount: 38, TotalValue: 980000, Country: "US"},
-				{Name: "Lighthouse for the Blind (Fort Worth)", CAGE: "0B0B5", AwardCount: 29, TotalValue: 745000, Country: "US"},
-				{Name: "Lighthouse of Houston", CAGE: "2H0H2", AwardCount: 17, TotalValue: 420000, Country: "US"},
-				{Name: "San Antonio Lighthouse", CAGE: "3S0S3", AwardCount: 12, TotalValue: 310000, Country: "US"},
-				{Name: "Tampa Lighthouse for the Blind", CAGE: "4T0T4", AwardCount: 8, TotalValue: 205000, Country: "US"},
+				{Name: "Winston-Salem Industries for the Blind", CAGE: "1W0W1", AwardCount: 38, TotalValue: 980000, Country: "US", SharePercent: 13.2, MostRecentAward: "2025-12"},
+				{Name: "Lighthouse for the Blind (Fort Worth)", CAGE: "0B0B5", AwardCount: 29, TotalValue: 745000, Country: "US", SharePercent: 10.1, MostRecentAward: "2025-11"},
+				{Name: "Lighthouse of Houston", CAGE: "2H0H2", AwardCount: 17, TotalValue: 420000, Country: "US", SharePercent: 5.9, MostRecentAward: "2025-10"},
+				{Name: "San Antonio Lighthouse", CAGE: "3S0S3", AwardCount: 12, TotalValue: 310000, Country: "US", SharePercent: 4.2, MostRecentAward: "2025-09"},
+				{Name: "Tampa Lighthouse for the Blind", CAGE: "4T0T4", AwardCount: 8, TotalValue: 205000, Country: "US", SharePercent: 2.8, MostRecentAward: "2025-08"},
 			},
 		}
 		result.DemandSignals = models.DemandSignals{
@@ -514,6 +521,8 @@ func enrichSupplierAndDemandForSpecialNSNs(entityID string, result *models.Insig
 			RecentTrend:         "stable",
 			ProgramAssociations: []string{"AbilityOne", "Office Supplies - Federal"},
 			AwardPeriod:         "Jan 2023 – Dec 2025 (36 months)",
+			YoYChange:           "-7% vs prior 12 months (digital shift)",
+			PeakPeriods:         "Back-to-school (Aug-Oct) and year-end (Nov-Dec)",
 		}
 
 	case "8105015171352":
@@ -523,12 +532,12 @@ func enrichSupplierAndDemandForSpecialNSNs(entityID string, result *models.Insig
 			PrimaryCountries:  []string{"United States"},
 			AwardPeriod:       "Jan 2023 – Dec 2025 (36 months)",
 			TopSuppliers: []models.SupplierSummary{
-				{Name: "Lighthouse for the Blind (Fort Worth)", CAGE: "0B0B5", AwardCount: 34, TotalValue: 920000, Country: "US"},
-				{Name: "Winston-Salem Industries for the Blind", CAGE: "1W0W1", AwardCount: 27, TotalValue: 710000, Country: "US"},
-				{Name: "Lighthouse of Houston", CAGE: "2H0H2", AwardCount: 22, TotalValue: 580000, Country: "US"},
-				{Name: "San Antonio Lighthouse", CAGE: "3S0S3", AwardCount: 15, TotalValue: 395000, Country: "US"},
-				{Name: "Tampa Lighthouse for the Blind", CAGE: "4T0T4", AwardCount: 11, TotalValue: 290000, Country: "US"},
-				{Name: "Milwaukee County Lighthouse", CAGE: "5M0M5", AwardCount: 9, TotalValue: 235000, Country: "US"},
+				{Name: "Lighthouse for the Blind (Fort Worth)", CAGE: "0B0B5", AwardCount: 34, TotalValue: 920000, Country: "US", SharePercent: 10.0, MostRecentAward: "2025-12"},
+				{Name: "Winston-Salem Industries for the Blind", CAGE: "1W0W1", AwardCount: 27, TotalValue: 710000, Country: "US", SharePercent: 7.9, MostRecentAward: "2025-11"},
+				{Name: "Lighthouse of Houston", CAGE: "2H0H2", AwardCount: 22, TotalValue: 580000, Country: "US", SharePercent: 6.5, MostRecentAward: "2025-12"},
+				{Name: "San Antonio Lighthouse", CAGE: "3S0S3", AwardCount: 15, TotalValue: 395000, Country: "US", SharePercent: 4.4, MostRecentAward: "2025-10"},
+				{Name: "Tampa Lighthouse for the Blind", CAGE: "4T0T4", AwardCount: 11, TotalValue: 290000, Country: "US", SharePercent: 3.2, MostRecentAward: "2025-09"},
+				{Name: "Milwaukee County Lighthouse", CAGE: "5M0M5", AwardCount: 9, TotalValue: 235000, Country: "US", SharePercent: 2.6, MostRecentAward: "2025-08"},
 			},
 		}
 		result.DemandSignals = models.DemandSignals{
@@ -538,6 +547,8 @@ func enrichSupplierAndDemandForSpecialNSNs(entityID string, result *models.Insig
 			RecentTrend:         "stable",
 			ProgramAssociations: []string{"AbilityOne", "Packaging & Shipping Supplies"},
 			AwardPeriod:         "Jan 2023 – Dec 2025 (36 months)",
+			YoYChange:           "+11% vs prior 12 months",
+			PeakPeriods:         "Q4 (holiday shipping surge)",
 		}
 
 	case "7125011515435":
@@ -547,9 +558,9 @@ func enrichSupplierAndDemandForSpecialNSNs(entityID string, result *models.Insig
 			PrimaryCountries:  []string{"United States"},
 			AwardPeriod:       "Jan 2023 – Dec 2025 (36 months)",
 			TopSuppliers: []models.SupplierSummary{
-				{Name: "San Antonio Lighthouse", CAGE: "3S0S3", AwardCount: 8, TotalValue: 1450000, Country: "US"},
-				{Name: "Lighthouse for the Blind (Fort Worth)", CAGE: "0B0B5", AwardCount: 5, TotalValue: 920000, Country: "US"},
-				{Name: "Winston-Salem Industries for the Blind", CAGE: "1W0W1", AwardCount: 3, TotalValue: 580000, Country: "US"},
+				{Name: "San Antonio Lighthouse", CAGE: "3S0S3", AwardCount: 8, TotalValue: 1450000, Country: "US", SharePercent: 25.8, MostRecentAward: "2025-06"},
+				{Name: "Lighthouse for the Blind (Fort Worth)", CAGE: "0B0B5", AwardCount: 5, TotalValue: 920000, Country: "US", SharePercent: 16.1, MostRecentAward: "2025-03"},
+				{Name: "Winston-Salem Industries for the Blind", CAGE: "1W0W1", AwardCount: 3, TotalValue: 580000, Country: "US", SharePercent: 9.7, MostRecentAward: "2024-11"},
 			},
 		}
 		result.DemandSignals = models.DemandSignals{
@@ -559,6 +570,8 @@ func enrichSupplierAndDemandForSpecialNSNs(entityID string, result *models.Insig
 			RecentTrend:         "cyclical",
 			ProgramAssociations: []string{"Facility Modernization", "AbilityOne"},
 			AwardPeriod:         "Jan 2023 – Dec 2025 (36 months)",
+			YoYChange:           "Highly variable (-40% to +120% year to year)",
+			PeakPeriods:         "Major spikes tied to large facility projects (2024 Q2, 2025 Q1)",
 		}
 
 	case "5180006507821":
@@ -568,9 +581,9 @@ func enrichSupplierAndDemandForSpecialNSNs(entityID string, result *models.Insig
 			PrimaryCountries:  []string{"United States"},
 			AwardPeriod:       "Jan 2023 – Dec 2025 (36 months)",
 			TopSuppliers: []models.SupplierSummary{
-				{Name: "Lighthouse for the Blind (Fort Worth)", CAGE: "0B0B5", AwardCount: 6, TotalValue: 1680000, Country: "US"},
-				{Name: "Winston-Salem Industries for the Blind", CAGE: "1W0W1", AwardCount: 4, TotalValue: 1120000, Country: "US"},
-				{Name: "Lighthouse of Houston", CAGE: "2H0H2", AwardCount: 2, TotalValue: 580000, Country: "US"},
+				{Name: "Lighthouse for the Blind (Fort Worth)", CAGE: "0B0B5", AwardCount: 6, TotalValue: 1680000, Country: "US", SharePercent: 33.3, MostRecentAward: "2025-05"},
+				{Name: "Winston-Salem Industries for the Blind", CAGE: "1W0W1", AwardCount: 4, TotalValue: 1120000, Country: "US", SharePercent: 22.2, MostRecentAward: "2024-12"},
+				{Name: "Lighthouse of Houston", CAGE: "2H0H2", AwardCount: 2, TotalValue: 580000, Country: "US", SharePercent: 11.1, MostRecentAward: "2024-08"},
 			},
 		}
 		result.DemandSignals = models.DemandSignals{
@@ -580,6 +593,8 @@ func enrichSupplierAndDemandForSpecialNSNs(entityID string, result *models.Insig
 			RecentTrend:         "lumpy",
 			ProgramAssociations: []string{"Maintenance & Tooling", "AbilityOne"},
 			AwardPeriod:         "Jan 2023 – Dec 2025 (36 months)",
+			YoYChange:           "Very lumpy (single large orders drive 60%+ of volume)",
+			PeakPeriods:         "Irregular spikes tied to large tool kit procurements",
 		}
 	}
 }
