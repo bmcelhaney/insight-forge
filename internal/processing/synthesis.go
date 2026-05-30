@@ -364,12 +364,6 @@ Synthesized from WebFLIS item master, 36 months of FPDS award transactions, live
 			{Name: "Georgia-Pacific (commercial)", CAGE: "N/A", AwardCount: 0, Country: "US"},
 			{Name: "Kimberly-Clark Prof.", CAGE: "N/A", AwardCount: 0, Country: "US"},
 		}
-		out.PricingTrend = "Stable (AbilityOne wage-indexed annual adjustment)"
-		out.ConcentrationIndex = 0.61
-		out.TopDisrupters = []models.SupplierSummary{
-			{Name: "Georgia-Pacific (commercial)", CAGE: "N/A", AwardCount: 0, Country: "US"},
-			{Name: "Kimberly-Clark Prof.", CAGE: "N/A", AwardCount: 0, Country: "US"},
-		}
 
 	case "7520009357136":
 		out.Summary = "7520-00-935-7136 is a high-volume, longstanding AbilityOne mandatory-source black ball-point pen. Production is distributed across multiple National Industries for the Blind (NIB) workshops in several states. Demand remains substantial across both defense and civilian agencies despite gradual shifts toward digital workflows. The item carries very low unit price and extremely stable supply characteristics within the protected AbilityOne channel."
@@ -425,8 +419,6 @@ Strong, consistent federal data across WebFLIS, FPDS, and live sanctions. Minor 
 SOURCES & METHODOLOGY
 Synthesized from WebFLIS item master, 36 months of FPDS award transactions, live OFAC SDN pull at analysis time, and AbilityOne PSR cross-reference. No commercial pricing databases or direct supplier outreach performed in this automated run.`
 
-		out.PricingTrend = "Stable / slight downward volume pressure from digital"
-		out.ConcentrationIndex = 0.38
 		out.PricingTrend = "Stable / slight downward volume pressure from digital"
 		out.ConcentrationIndex = 0.38
 
@@ -593,9 +585,6 @@ Federal data is thinner due to lower volume and the mixed commercial + AbilityOn
 
 SOURCES & METHODOLOGY
 Synthesized from WebFLIS item master, 36 months of FPDS award transactions, live OFAC SDN pull at analysis time, and AbilityOne PSR cross-reference. No commercial pricing databases or direct supplier outreach performed in this automated run.`
-
-SOURCES & METHODOLOGY
-Synthesized from WebFLIS item master, 36 months of FPDS award transactions, live OFAC SDN pull at analysis time, and AbilityOne PSR cross-reference.`
 		out.PricingTrend = "Stable with component cost pass-through"
 		out.ConcentrationIndex = 0.55
 
