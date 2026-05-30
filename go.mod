@@ -9,8 +9,5 @@ require (
 	github.com/marcboeker/go-duckdb v1.8.3
 	github.com/spf13/viper v1.19.0
 	github.com/stretchr/testify v1.9.0
-	maragu.dev/gomponents-datastar v0.4.0
-	github.com/starfederation/datastar-go v0.5.1 // or latest compatible
 	github.com/xuri/excelize/v2 v2.8.1
-
 )
