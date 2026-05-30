@@ -44,33 +44,13 @@ git pull origin main
 BASE_PATH=/insightforge ./run.sh 8091
 ```
 
-2. Configure routing in **Stitchify** (the current gateway).
+2. The rewrites have already been applied on the sprite (with support for the `INSIGHT_FORGE_PORT` env var).
 
-   Edit `/home/sprite/stitchify.poc/next.config.ts` and add rewrites:
+3. When restarting the Next.js side of Stitchify, pass the port variable if not using the default:
 
-   ```ts
-   import type { NextConfig } from "next";
-
-   const nextConfig: NextConfig = {
-     output: "standalone",
-     async rewrites() {
-       return [
-         {
-           source: "/insightforge/:path*",
-           destination: "http://localhost:8091/:path*",
-         },
-         {
-           source: "/insightforge",
-           destination: "http://localhost:8091/",
-         },
-       ];
-     },
-   };
-
-   export default nextConfig;
+   ```bash
+   INSIGHT_FORGE_PORT=8091 npm run dev
    ```
-
-3. Restart the Next.js process in Stitchify so it picks up the new config.
 
 After that, the app should be reachable at `/insightforge` on the main sprite domain.
 

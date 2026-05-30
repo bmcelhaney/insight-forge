@@ -11,30 +11,43 @@ The `nib-sprite` Fly app currently uses **Stitchify’s Next.js** (on internal p
 
 ## Recommended Approach: Next.js Rewrites (Simplest)
 
-Add the following to Stitchify’s `next.config.ts`:
+The rewrites configuration has already been applied on the sprite.
+
+It uses an environment variable so you can easily change the target port:
 
 ```ts
+const INSIGHT_FORGE_PORT = process.env.INSIGHT_FORGE_PORT || "8091";
+
 async rewrites() {
   return [
     {
       source: "/insightforge/:path*",
-      destination: "http://localhost:8091/:path*",
+      destination: `http://localhost:${INSIGHT_FORGE_PORT}/:path*`,
     },
     {
       source: "/insightforge",
-      destination: "http://localhost:8091/",
+      destination: `http://localhost:${INSIGHT_FORGE_PORT}/`,
     },
   ];
 }
 ```
 
-Then run Insight Forge with:
+### How to run Insight Forge
 
 ```bash
+cd /home/sprite/insight-forge
+git pull origin main
+
 BASE_PATH=/insightforge IF_PORT=8091 ./run.sh
 ```
 
-Restart Stitchify’s Next.js process.
+When restarting Stitchify’s Next.js dev server, make sure to pass the port env var:
+
+```bash
+INSIGHT_FORGE_PORT=8091 npm run dev
+```
+
+(or however you normally start the Next.js side of Stitchify).
 
 This is the cleanest method and matches how many multi-service setups on a single Fly machine work.
 
