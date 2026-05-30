@@ -261,6 +261,21 @@ func deriveCategorySupplierView(fsc string) models.SupplierView {
 			EcosystemNote:          "Kitting workshops with significant commercial sub-component content. Higher complexity than pure manufactured AbilityOne items.",
 			ContinuityAssessment:   "Highest complexity risk profile. Heavy reliance on commercial supply chains before kitting. Full BOM transparency recommended.",
 		}
+	case "7220", "7210", "7230": // Floor coverings, furnishings, draperies (facilities)
+		return models.SupplierView{
+			TotalSuppliers:    6,
+			ConcentrationRisk: "medium",
+			PrimaryCountries:  []string{"United States"},
+			AwardPeriod:       "Jan 2023 – Dec 2025 (36 months)",
+			TopSuppliers: []models.SupplierSummary{
+				{Name: "Lighthouse for the Blind (Fort Worth)", CAGE: "0B0B5", AwardCount: 12, TotalValue: 680000, Country: "US", SharePercent: 22.0, MostRecentAward: "2025-08"},
+				{Name: "Winston-Salem Industries for the Blind", CAGE: "1W0W1", AwardCount: 9, TotalValue: 410000, Country: "US", SharePercent: 15.0, MostRecentAward: "2025-07"},
+				{Name: "San Antonio Lighthouse", CAGE: "3S0S3", AwardCount: 7, TotalValue: 295000, Country: "US", SharePercent: 11.0, MostRecentAward: "2025-06"},
+			},
+			TopSuppliersTotalValue: 1385000,
+			EcosystemNote:          "Facilities and furnishings production spread across NIB network. Moderate concentration typical for this category.",
+			ContinuityAssessment:   "Good resilience for standard facility sustainment. Larger projects may require early coordination with producers for volume.",
+		}
 	default:
 		// Generic but still varied federal hardware
 		return models.SupplierView{
@@ -512,9 +527,9 @@ func buildDemandSignals(snaps []models.DataSnapshot) models.DemandSignals {
 		}
 	}
 
-	// Category-aware demand profiles
+	// Category-aware demand profiles — expanded for more common federal FSCs
 	switch fsc {
-	case "7920", "7520", "8105":
+	case "7920", "7520", "8105", "8540":
 		return models.DemandSignals{
 			TotalAwards:         165,
 			TotalValueUSD:       1850000,
@@ -526,17 +541,17 @@ func buildDemandSignals(snaps []models.DataSnapshot) models.DemandSignals {
 			PeakPeriods:         "Q4 year-end surge + back-to-school for office items",
 			DemandNote:          "High-volume, relatively predictable consumable demand with clear seasonal peaks. Strong AbilityOne program protection.",
 		}
-	case "7125":
+	case "7125", "7220", "7210":
 		return models.DemandSignals{
 			TotalAwards:         29,
 			TotalValueUSD:       2650000,
-			TopAgencies:         []string{"VA", "Air Force", "Army Corps of Engineers"},
+			TopAgencies:         []string{"VA", "Air Force", "GSA", "Army Corps of Engineers"},
 			RecentTrend:         "cyclical",
 			ProgramAssociations: []string{"Facility Modernization", "Construction & Sustainment"},
 			AwardPeriod:         "Jan 2023 – Dec 2025 (36 months)",
 			YoYChange:           "Highly variable (-35% to +95%)",
-			PeakPeriods:         "Tied to large capital projects and base realignment",
-			DemandNote:          "Project-driven, lumpy demand. Volume is almost entirely dependent on the timing of facility and infrastructure work.",
+			PeakPeriods:         "Tied to large capital projects and facility sustainment cycles",
+			DemandNote:          "Project or sustainment-driven demand for floor coverings, furnishings, and storage. Volume tied to facility work and base operations.",
 		}
 	case "5180":
 		return models.DemandSignals{
@@ -558,7 +573,7 @@ func buildDemandSignals(snaps []models.DataSnapshot) models.DemandSignals {
 			RecentTrend:         "stable",
 			ProgramAssociations: []string{"Federal Sustainment", "Hardware & Components"},
 			AwardPeriod:         "Jan 2023 – Dec 2025 (36 months)",
-			DemandNote:          "Mixed sustainment demand. Moderate volume with occasional project spikes.",
+			DemandNote:          "Mixed sustainment demand. Moderate volume with occasional project spikes. Analysis based on available prototype award patterns.",
 		}
 	}
 }
