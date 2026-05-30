@@ -378,19 +378,14 @@
         extraLine += `<div style="font-size:11px; color:#bae6fd; margin-top:4px; font-style:italic;">${note}</div>`;
       }
 
-      // Value concentration note
-      if (sup.top_suppliers_total_value || sup.TopSuppliersTotalValue) {
-        const topVal = sup.top_suppliers_total_value || sup.TopSuppliersTotalValue;
-        // Rough estimate of total value concentration (we can improve this later)
-        extraLine += `<div style="font-size:10px; color:#a1a1aa; margin-top:2px;">Top listed suppliers account for a significant portion of recent observed value.</div>`;
-      }
-
       document.getElementById('supplier-summary').innerHTML =
         `${sup.total_suppliers || sup.TotalSuppliers || 0} suppliers across ${(sup.primary_countries || sup.PrimaryCountries || []).length} countries. Concentration risk: <span class="font-medium">${sup.concentration_risk || sup.ConcentrationRisk || 'medium'}</span>.` +
         (supplierPeriod ? `<div style="font-size:11px; color:#a1a1aa; margin-top:4px;">${supplierPeriod}</div>` : '') + extraLine;
 
       const tsEl = document.getElementById('top-suppliers');
       tsEl.innerHTML = '';
+
+      const tops = (sup.top_suppliers || sup.TopSuppliers || []);
       if (tops.length > 0) {
         const header = document.createElement('div');
         header.style.cssText = 'font-size:10px; color:#64748b; margin-bottom:4px; text-transform:uppercase; letter-spacing:0.5px;';
@@ -398,7 +393,6 @@
         tsEl.appendChild(header);
       }
 
-      const tops = (sup.top_suppliers || sup.TopSuppliers || []);
       tops.forEach(s => {
         const row = document.createElement('div');
         row.className = 'text-xs py-0.5 border-b border-zinc-800 last:border-none';
