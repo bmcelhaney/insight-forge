@@ -74,6 +74,7 @@ type SupplierView struct {
 	TopSuppliers        []SupplierSummary  `json:"top_suppliers"`
 	ConcentrationRisk   string             `json:"concentration_risk"` // low/medium/high
 	PrimaryCountries    []string           `json:"primary_countries"`
+	AwardPeriod         string             `json:"award_period"` // e.g. "Jan 2023 – Dec 2025 (36 months)"
 }
 
 // SupplierSummary for top vendors.
@@ -95,9 +96,10 @@ type RelatedNSN struct {
 
 // DemandSignals from FPDS and historical awards.
 type DemandSignals struct {
-	TotalAwards       int      `json:"total_awards"`
-	TotalValueUSD     float64  `json:"total_value_usd"`
-	TopAgencies       []string `json:"top_agencies"`
-	RecentTrend       string   `json:"recent_trend"` // "increasing", "stable", "declining"
+	TotalAwards         int      `json:"total_awards"`
+	TotalValueUSD       float64  `json:"total_value_usd"`
+	TopAgencies         []string `json:"top_agencies"`
+	RecentTrend         string   `json:"recent_trend"` // "increasing", "stable", "declining"
 	ProgramAssociations []string `json:"program_associations"`
+	AwardPeriod         string   `json:"award_period"` // e.g. "Jan 2023 – Dec 2025 (36 months)"
 }

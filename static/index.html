@@ -333,12 +333,14 @@
 
       // Supplier
       const sup = result.supplier_data || result.SupplierData || {};
+      const supplierPeriod = sup.award_period || sup.AwardPeriod || '';
       document.getElementById('supplier-summary').innerHTML =
-        `${sup.total_suppliers || sup.TotalSuppliers || 0} suppliers across ${(sup.primary_countries || sup.PrimaryCountries || []).length} countries. Concentration risk: <span class="font-medium">${sup.concentration_risk || sup.ConcentrationRisk || 'medium'}</span>.`;
+        `${sup.total_suppliers || sup.TotalSuppliers || 0} suppliers across ${(sup.primary_countries || sup.PrimaryCountries || []).length} countries. Concentration risk: <span class="font-medium">${sup.concentration_risk || sup.ConcentrationRisk || 'medium'}</span>.` +
+        (supplierPeriod ? `<div style="font-size:11px; color:#a1a1aa; margin-top:4px;">${supplierPeriod}</div>` : '');
 
       const tsEl = document.getElementById('top-suppliers');
       tsEl.innerHTML = '';
-      const tops = (sup.top_suppliers || sup.TopSuppliers || []).slice(0,4);
+      const tops = (sup.top_suppliers || sup.TopSuppliers || []);
       tops.forEach(s => {
         const row = document.createElement('div');
         row.className = 'flex justify-between text-xs py-0.5 border-b border-zinc-800 last:border-none';
@@ -348,12 +350,14 @@
 
       // Demand
       const dem = result.demand_signals || result.DemandSignals || {};
+      const demandPeriod = dem.award_period || dem.AwardPeriod || '';
       const dm = document.getElementById('demand-metrics');
       dm.innerHTML = `
         <div><span class="text-zinc-400">Total Awards:</span> <span class="font-semibold">${dem.total_awards || dem.TotalAwards || '—'}</span></div>
         <div><span class="text-zinc-400">Total Value:</span> <span class="font-semibold">$${(dem.total_value_usd || dem.TotalValueUSD || 0).toLocaleString()}</span></div>
         <div><span class="text-zinc-400">Recent Trend:</span> <span class="font-semibold">${dem.recent_trend || dem.RecentTrend || '—'}</span></div>
-        <div><span class="text-zinc-400">Key Programs:</span> <span class="font-semibold">${(dem.program_associations || dem.ProgramAssociations || []).join(', ') || '—'}</span></div>`;
+        <div><span class="text-zinc-400">Key Programs:</span> <span class="font-semibold">${(dem.program_associations || dem.ProgramAssociations || []).join(', ') || '—'}</span></div>` +
+        (demandPeriod ? `<div style="grid-column: 1 / -1; font-size:11px; color:#a1a1aa; margin-top:4px;">${demandPeriod}</div>` : '');
 
       // Related NSNs
       const relEl = document.getElementById('related-nsns');
