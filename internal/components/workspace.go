@@ -105,7 +105,12 @@ func MainDataPanel(props WorkspaceProps) g.Node {
 			H3(Class("card-title"), g.Text("Source Data & Trends")),
 			P(Class("text-sm"), g.Textf("%d snapshots captured across sources", len(props.Snapshots))),
 
-			// Simple source breakdown table (will evolve to go-echarts)
+			// Source quality visualization (go-echarts)
+			Div(Class("mt-4"),
+				g.Raw(SourceQualityChart(props.Snapshots)),
+			),
+
+			// Source breakdown table
 			Table(Class("table table-sm mt-4"),
 				Thead(Tr(Th(g.Text("Source")), Th(g.Text("Quality")), Th(g.Text("Captured")))),
 				Tbody(
