@@ -75,8 +75,9 @@ type SupplierView struct {
 	TopSuppliers          []SupplierSummary  `json:"top_suppliers"`
 	ConcentrationRisk     string             `json:"concentration_risk"` // low/medium/high
 	PrimaryCountries      []string           `json:"primary_countries"`
-	AwardPeriod           string             `json:"award_period"` // e.g. "Jan 2023 – Dec 2025 (36 months)"
-	TopSuppliersTotalValue float64           `json:"top_suppliers_total_value,omitempty"`
+	AwardPeriod             string  `json:"award_period"` // e.g. "Jan 2023 – Dec 2025 (36 months)"
+	TopSuppliersTotalValue  float64 `json:"top_suppliers_total_value,omitempty"`
+	EcosystemNote           string  `json:"ecosystem_note,omitempty"` // Short analytical note on overall supplier health/continuity
 }
 
 // SupplierSummary for top vendors.

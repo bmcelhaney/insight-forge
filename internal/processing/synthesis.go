@@ -575,6 +575,7 @@ func enrichSupplierAndDemandForSpecialNSNs(entityID string, result *models.Insig
 				{Name: "Oklahoma City Lighthouse", CAGE: "6O0O6", AwardCount: 6, TotalValue: 168000, Country: "US", SharePercent: 5.4, MostRecentAward: "2025-06"},
 			},
 			TopSuppliersTotalValue: 2763000,
+			EcosystemNote: "Production is deliberately diversified across the NIB network. Fort Worth is the clear lead but secondary workshops provide meaningful redundancy.",
 		}
 		result.DemandSignals = models.DemandSignals{
 			TotalAwards:         112,
@@ -604,6 +605,8 @@ func enrichSupplierAndDemandForSpecialNSNs(entityID string, result *models.Insig
 				{Name: "San Antonio Lighthouse", CAGE: "3S0S3", AwardCount: 12, TotalValue: 310000, Country: "US", SharePercent: 4.2, MostRecentAward: "2025-09"},
 				{Name: "Tampa Lighthouse for the Blind", CAGE: "4T0T4", AwardCount: 8, TotalValue: 205000, Country: "US", SharePercent: 2.8, MostRecentAward: "2025-08"},
 			},
+			TopSuppliersTotalValue: 2660000,
+			EcosystemNote: "One of the most diversified AbilityOne items. Low concentration risk due to intentional spread across multiple workshops. Strong supply continuity posture.",
 		}
 		result.DemandSignals = models.DemandSignals{
 			TotalAwards:         287,
@@ -633,6 +636,8 @@ func enrichSupplierAndDemandForSpecialNSNs(entityID string, result *models.Insig
 				{Name: "Tampa Lighthouse for the Blind", CAGE: "4T0T4", AwardCount: 11, TotalValue: 290000, Country: "US", SharePercent: 3.2, MostRecentAward: "2025-09"},
 				{Name: "Milwaukee County Lighthouse", CAGE: "5M0M5", AwardCount: 9, TotalValue: 235000, Country: "US", SharePercent: 2.6, MostRecentAward: "2025-08"},
 			},
+			TopSuppliersTotalValue: 3130000,
+			EcosystemNote: "Broad and resilient producer base across NIB and SourceAmerica. One of the lower concentration risk profiles in the program.",
 		}
 		result.DemandSignals = models.DemandSignals{
 			TotalAwards:         341,
@@ -659,6 +664,8 @@ func enrichSupplierAndDemandForSpecialNSNs(entityID string, result *models.Insig
 				{Name: "Lighthouse for the Blind (Fort Worth)", CAGE: "0B0B5", AwardCount: 5, TotalValue: 920000, Country: "US", SharePercent: 16.1, MostRecentAward: "2025-03"},
 				{Name: "Winston-Salem Industries for the Blind", CAGE: "1W0W1", AwardCount: 3, TotalValue: 580000, Country: "US", SharePercent: 9.7, MostRecentAward: "2024-11"},
 			},
+			TopSuppliersTotalValue: 2950000,
+			EcosystemNote: "Higher concentration than most AbilityOne items due to specialized fabrication requirements. Capacity risk is real on large projects.",
 		}
 		result.DemandSignals = models.DemandSignals{
 			TotalAwards:         31,
@@ -685,6 +692,8 @@ func enrichSupplierAndDemandForSpecialNSNs(entityID string, result *models.Insig
 				{Name: "Winston-Salem Industries for the Blind", CAGE: "1W0W1", AwardCount: 4, TotalValue: 1120000, Country: "US", SharePercent: 22.2, MostRecentAward: "2024-12"},
 				{Name: "Lighthouse of Houston", CAGE: "2H0H2", AwardCount: 2, TotalValue: 580000, Country: "US", SharePercent: 11.1, MostRecentAward: "2024-08"},
 			},
+			TopSuppliersTotalValue: 3380000,
+			EcosystemNote: "Narrower base and higher reliance on commercial sub-components before kitting. Elevated supply chain complexity compared to simpler AbilityOne items.",
 		}
 		result.DemandSignals = models.DemandSignals{
 			TotalAwards:         18,

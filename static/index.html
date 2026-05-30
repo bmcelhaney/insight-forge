@@ -321,15 +321,32 @@
       fEl.innerHTML = '';
       const fl = result.flags || [];
       document.getElementById('flag-count').textContent = fl.length + ' identified';
-      fl.forEach(f => {
+
+      // Add a short risk summary when there are material flags
+      const highOrCritical = sortedFlags.filter(f => f.severity === 'critical' || f.severity === 'high').length;
+      if (highOrCritical > 0) {
+        const riskNote = document.createElement('div');
+        riskNote.style.cssText = 'font-size:11px; color:#fda4af; margin-bottom:6px;';
+        riskNote.textContent = `${highOrCritical} material risk flag(s) — see implications below.`;
+        fEl.appendChild(riskNote);
+      }
+
+      // Sort so critical/high appear first
+      const sortedFlags = [...fl].sort((a, b) => {
+        const order = { critical: 0, high: 1, medium: 2, low: 3 };
+        return (order[a.severity] ?? 2) - (order[b.severity] ?? 2);
+      });
+
+      sortedFlags.forEach(f => {
         const div = document.createElement('div');
         let cls = 'flag-medium';
         if (f.severity === 'critical') cls = 'flag-critical';
         else if (f.severity === 'high') cls = 'flag-high';
-        div.className = `px-3 py-1 rounded-xl text-sm border ${cls}`;
-        let html = `<strong>${f.type}</strong> — ${f.description}`;
+        div.className = `px-3 py-1.5 rounded-xl text-sm border ${cls}`;
+
+        let html = `<div><strong>${f.type}</strong> — ${f.description}</div>`;
         if (f.implication) {
-          html += `<div style="font-size:10px; color:#cbd5e1; margin-top:3px; padding-left:8px; border-left:2px solid rgba(255,255,255,0.15);">${f.implication}</div>`;
+          html += `<div style="font-size:10px; color:#e0f2fe; margin-top:4px; padding-left:10px; border-left:3px solid rgba(103, 232, 249, 0.4); line-height:1.35;">${f.implication}</div>`;
         }
         div.innerHTML = html;
         fEl.appendChild(div);
@@ -343,6 +360,10 @@
         const val = sup.top_suppliers_total_value || sup.TopSuppliersTotalValue;
         extraLine = `<div style="font-size:11px; color:#a1a1aa; margin-top:2px;">Top suppliers represent $${(val/1000000).toFixed(2)}M in awards</div>`;
       }
+      if (sup.ecosystem_note || sup.EcosystemNote) {
+        const note = sup.ecosystem_note || sup.EcosystemNote;
+        extraLine += `<div style="font-size:11px; color:#bae6fd; margin-top:4px; font-style:italic;">${note}</div>`;
+      }
       document.getElementById('supplier-summary').innerHTML =
         `${sup.total_suppliers || sup.TotalSuppliers || 0} suppliers across ${(sup.primary_countries || sup.PrimaryCountries || []).length} countries. Concentration risk: <span class="font-medium">${sup.concentration_risk || sup.ConcentrationRisk || 'medium'}</span>.` +
         (supplierPeriod ? `<div style="font-size:11px; color:#a1a1aa; margin-top:4px;">${supplierPeriod}</div>` : '') + extraLine;
@@ -352,12 +373,31 @@
       const tops = (sup.top_suppliers || sup.TopSuppliers || []);
       tops.forEach(s => {
         const row = document.createElement('div');
-        row.className = 'flex justify-between text-xs py-0.5 border-b border-zinc-800 last:border-none';
-        let extra = '';
-        if (s.share_percent) extra += ` <span class="text-emerald-400">${s.share_percent.toFixed(1)}%</span>`;
-        if (s.most_recent_award) extra += ` <span class="text-amber-400">last ${s.most_recent_award}</span>`;
-        if (s.total_value) extra += ` <span class="text-zinc-400">$${Math.round((s.total_value || 0)/1000)}k</span>`;
-        row.innerHTML = `<div class="font-medium">${s.name || s.Name} (${s.cage || s.CAGE})</div><div class="text-right text-zinc-400">${s.award_count || s.AwardCount || 0} awards${extra}</div>`;
+        row.className = 'text-xs py-0.5 border-b border-zinc-800 last:border-none';
+        
+        let shareBar = '';
+        if (s.share_percent) {
+          const pct = Math.min(100, Math.max(0, s.share_percent));
+          shareBar = `
+            <div style="margin-top:3px;">
+              <div style="height:4px; background:#27272a; border-radius:2px; overflow:hidden;">
+                <div style="height:100%; width:${pct}%; background:#10b981; border-radius:2px;"></div>
+              </div>
+            </div>`;
+        }
+
+        let meta = '';
+        if (s.share_percent) meta += ` <span class="text-emerald-400">${s.share_percent.toFixed(1)}%</span>`;
+        if (s.most_recent_award) meta += ` <span class="text-amber-400">last ${s.most_recent_award}</span>`;
+        if (s.total_value) meta += ` <span class="text-zinc-400">$${Math.round((s.total_value || 0)/1000)}k</span>`;
+
+        row.innerHTML = `
+          <div class="flex justify-between">
+            <div class="font-medium">${s.name || s.Name} (${s.cage || s.CAGE})</div>
+            <div class="text-right text-zinc-400">${s.award_count || s.AwardCount || 0} awards${meta}</div>
+          </div>
+          ${shareBar}
+        `;
         tsEl.appendChild(row);
       });
 
