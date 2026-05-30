@@ -76,19 +76,38 @@ type Extractor interface {
 - Easy runner script: `./run.sh`
 - Follows Stitchify Go Framework structure and patterns exactly
 
-## Running Safely on Shared nib-sprite
+## Running on Shared nib-sprite (under /insightforge)
 
-To avoid any conflict with Stitchify or PriorityForge:
+The current production-like way to expose this app is under a subpath on the main `nib-sprite` domain by using rewrites inside Stitchify’s Next.js (which acts as the gateway on port 3000).
+
+### Steps
+
+1. Start Insight Forge with the base path:
 
 ```bash
-# Run on a non-conflicting port (example)
-IF_PORT=8091 go run ./cmd/server
-
-# Or with explicit data path
-IF_PORT=8091 IF_DUCKDB_PATH=/home/sprite/insight-forge/data/insight-forge.duckdb go run ./cmd/server
+BASE_PATH=/insightforge IF_PORT=8091 ./run.sh
 ```
 
-Later this will become its own Fly app (or Azure container) as planned.
+2. Add rewrites in Stitchify:
+
+Edit `/home/sprite/stitchify.poc/next.config.ts`:
+
+```ts
+async rewrites() {
+  return [
+    {
+      source: "/insightforge/:path*",
+      destination: `http://localhost:8091/:path*`,
+    },
+  ];
+}
+```
+
+3. Restart Stitchify’s Next.js process.
+
+This is the same pattern used for reaching PriorityForge and internal services today.
+
+Future plan: Move to its own Fly app (or Azure container) as originally discussed.
 
 ## Deviations from Framework (if any)
 

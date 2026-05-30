@@ -31,23 +31,61 @@ Open http://localhost:8080
 
 **Important**: This app is **fully isolated**. It lives in its own directory and uses its own DuckDB file. It will **not** affect your Stitchify or PriorityForge apps on the sprite.
 
-### Easiest way
+### Running under `/insightforge` on the sprite domain (recommended)
+
+This is the goal — making it available at `https://nib-sprite.../insightforge`.
+
+1. Start the app with the correct base path:
 
 ```bash
 cd /home/sprite/insight-forge
 git pull origin main
-./run.sh          # defaults to safe port 8091
+
+BASE_PATH=/insightforge ./run.sh 8091
 ```
 
-Then expose it:
+2. Configure routing in **Stitchify** (the current gateway).
+
+   Edit `/home/sprite/stitchify.poc/next.config.ts` and add rewrites:
+
+   ```ts
+   import type { NextConfig } from "next";
+
+   const nextConfig: NextConfig = {
+     output: "standalone",
+     async rewrites() {
+       return [
+         {
+           source: "/insightforge/:path*",
+           destination: "http://localhost:8091/:path*",
+         },
+         {
+           source: "/insightforge",
+           destination: "http://localhost:8091/",
+         },
+       ];
+     },
+   };
+
+   export default nextConfig;
+   ```
+
+3. Restart the Next.js process in Stitchify so it picks up the new config.
+
+After that, the app should be reachable at `/insightforge` on the main sprite domain.
+
+### Local testing from your Mac
+
+```bash
+./run.sh 8091
+```
+
+Then in another terminal:
 ```bash
 sprite proxy 8091
 ```
 
-You can also specify a different port:
-```bash
-./run.sh 8105
-```
+Open http://localhost:8091
 
 Recommended safe ports on the shared sprite: **8090–8110** range.
 
