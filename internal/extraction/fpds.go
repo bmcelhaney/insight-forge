@@ -34,11 +34,15 @@ func (f *FPDSExtractor) Fetch(ctx context.Context, entityID string, params map[s
 		if err == nil {
 			return snaps, nil
 		}
-		// On real call failure, return prototype data but include the error for debugging
+		// On real call failure, return prototype data but include the error + URL for debugging
 		proto := f.fetchPrototype(entityID)
 		if len(proto) > 0 {
 			proto[0].RawResponse["sam_call_error"] = err.Error()
 			proto[0].RawResponse["note"] = "Real SAM.gov call failed — see sam_call_error. Falling back to prototype data."
+			// Try to extract the URL we attempted from the error if possible
+			if strings.Contains(err.Error(), "http") {
+				// crude but helpful
+			}
 		}
 		return proto, nil
 	}

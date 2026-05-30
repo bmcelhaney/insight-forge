@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/bmcelhaney/insight-forge/internal/config"
 	"github.com/bmcelhaney/insight-forge/internal/extraction"
@@ -33,7 +34,7 @@ func main() {
 		cfg.Port = *portFlag
 	}
 
-	samAPIKey := os.Getenv("SAM_API_KEY")
+	samAPIKey := strings.TrimSpace(os.Getenv("SAM_API_KEY"))
 	extractorReg := extraction.NewDefaultRegistry(samAPIKey)
 
 	r := chi.NewRouter()
