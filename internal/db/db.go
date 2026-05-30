@@ -149,6 +149,29 @@ func (d *DB) GetSnapshots(ctx context.Context, entityID string) ([]models.DataSn
 	return out, nil
 }
 
+// GetRecentAnalyses returns the most recent NSNs that have been analyzed.
+func (d *DB) GetRecentAnalyses(ctx context.Context, limit int) ([]string, error) {
+	rows, err := d.QueryContext(ctx, `
+		SELECT DISTINCT entity_id 
+		FROM processed_results 
+		ORDER BY generated_at DESC 
+		LIMIT ?
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var nsns []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err == nil {
+			nsns = append(nsns, id)
+		}
+	}
+	return nsns, nil
+}
+
 func toJSON(v any) []byte {
 	b, _ := json.Marshal(v)
 	return b
