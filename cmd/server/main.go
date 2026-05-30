@@ -48,16 +48,14 @@ func main() {
 
 	// Health (used by reset.sh / test_release.sh gates)
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
-		samKeyPresent := os.Getenv("SAM_API_KEY") != ""
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{
-			"status":          "ok",
-			"service":         "insight-forge",
-			"commit":          commit,
-			"buildTime":       buildTime,
-			"version":         "analyst-v2-gated",
-			"real_fpds_active": samKeyPresent,
-			"note":            "If real_fpds_active=true, FPDS will use live SAM.gov data when available",
+			"status":    "ok",
+			"service":   "insight-forge",
+			"commit":    commit,
+			"buildTime": buildTime,
+			"version":   "analyst-v2-gated",
+			"note":      "Award data prefers USAspending.gov (real, public). SAM.gov path is currently disabled.",
 		})
 	})
 
@@ -118,31 +116,24 @@ func main() {
 		})
 	})
 
-	// Debug endpoint to test real FPDS / SAM.gov integration
+	// Debug endpoint for real award data (FPDS path)
 	r.Get("/debug/fpds/{nsn}", func(w http.ResponseWriter, r *http.Request) {
 		nsn := chi.URLParam(r, "nsn")
-		// Only fetch FPDS so it's clean
 		snaps, _ := extractorReg.FetchAll(r.Context(), nsn, []string{"FPDS"}, nil)
 
-		isLive := false
-		var samError string
+		dataSource := "unknown"
 		if len(snaps) > 0 {
-			if ds, ok := snaps[0].RawResponse["data_source"].(string); ok && ds == "live_sam_gov" {
-				isLive = true
-			}
-			if errStr, ok := snaps[0].RawResponse["sam_call_error"].(string); ok {
-				samError = errStr
+			if ds, ok := snaps[0].RawResponse["data_source"].(string); ok {
+				dataSource = ds
 			}
 		}
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{
-			"nsn":             nsn,
-			"using_real_sam":  isLive,
-			"sam_call_error":  samError,
-			"fpds_snapshots":  snaps,
-			"sam_key_present": os.Getenv("SAM_API_KEY") != "",
-			"note":            "If using_real_sam is true → live SAM.gov data. If sam_call_error is present → real call was attempted but failed.",
+			"nsn":            nsn,
+			"data_source":    dataSource,
+			"fpds_snapshots": snaps,
+			"note":           "data_source will be 'live_usaspending' (real) or 'prototype'. SAM.gov path is currently disabled.",
 		})
 	})
 

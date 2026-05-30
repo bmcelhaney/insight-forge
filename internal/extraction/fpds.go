@@ -31,33 +31,23 @@ func NewFPDSExtractor(apiKey string) *FPDSExtractor {
 func (f *FPDSExtractor) SourceCode() string { return "FPDS" }
 
 func (f *FPDSExtractor) Fetch(ctx context.Context, entityID string, params map[string]string) ([]models.DataSnapshot, error) {
-	// Try real sources first for legitimate data (user request: no mock data where possible).
-	// 1. SAM.gov if we have a key
-	if f.apiKey != "" {
-		snaps, err := f.fetchReal(ctx, entityID)
-		if err == nil && len(snaps) > 0 {
-			if ta, ok := snaps[0].RawResponse["total_awards"].(int); ok && ta > 0 {
-				return snaps, nil
-			}
-		}
-	}
+	// Real award data path (SAM.gov piece sidelined per user request — the available key does not have FPDS access).
+	// Primary real source: USAspending.gov (public, no key required).
 
-	// 2. USAspending.gov (public API, often better for NSN/keyword award searches)
 	snaps, err := f.fetchRealFromUSASpending(ctx, entityID)
 	if err == nil && len(snaps) > 0 {
 		if ta, ok := snaps[0].RawResponse["total_awards"].(int); ok && ta > 0 {
+			snaps[0].RawResponse["data_source"] = "live_usaspending"
+			snaps[0].RawResponse["note"] = "Real award data from USAspending.gov public API"
 			return snaps, nil
 		}
 	}
 
-	// All real sources failed or returned no usable data → fall back with clear diagnostics
+	// Clean prototype fallback (no SAM error spam)
 	proto := f.fetchPrototype(entityID)
 	if len(proto) > 0 {
-		proto[0].RawResponse["real_data_error"] = "Both SAM.gov (if key provided) and USAspending returned no usable award data or errors. Using prototype."
-		if err != nil {
-			proto[0].RawResponse["last_real_attempt_error"] = err.Error()
-		}
-		proto[0].RawResponse["note"] = "Real award data sources unavailable for this NSN/key. Prototype data in use."
+		proto[0].RawResponse["data_source"] = "prototype"
+		proto[0].RawResponse["note"] = "Prototype award data (real sources returned no usable results for this NSN)"
 	}
 	return proto, nil
 }
