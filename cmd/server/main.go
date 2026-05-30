@@ -124,9 +124,13 @@ func main() {
 		snaps, _ := extractorReg.FetchAll(r.Context(), nsn, []string{"FPDS"}, nil)
 
 		isLive := false
+		var samError string
 		if len(snaps) > 0 {
 			if ds, ok := snaps[0].RawResponse["data_source"].(string); ok && ds == "live_sam_gov" {
 				isLive = true
+			}
+			if errStr, ok := snaps[0].RawResponse["sam_call_error"].(string); ok {
+				samError = errStr
 			}
 		}
 
@@ -134,9 +138,10 @@ func main() {
 		json.NewEncoder(w).Encode(map[string]any{
 			"nsn":             nsn,
 			"using_real_sam":  isLive,
+			"sam_call_error":  samError,
 			"fpds_snapshots":  snaps,
 			"sam_key_present": os.Getenv("SAM_API_KEY") != "",
-			"note":            "If using_real_sam is true, this came from a live call to SAM.gov using your API key.",
+			"note":            "If using_real_sam is true → live SAM.gov data. If sam_call_error is present → real call was attempted but failed.",
 		})
 	})
 

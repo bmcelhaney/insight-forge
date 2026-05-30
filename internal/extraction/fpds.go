@@ -30,7 +30,17 @@ func (f *FPDSExtractor) SourceCode() string { return "FPDS" }
 
 func (f *FPDSExtractor) Fetch(ctx context.Context, entityID string, params map[string]string) ([]models.DataSnapshot, error) {
 	if f.apiKey != "" {
-		return f.fetchReal(ctx, entityID)
+		snaps, err := f.fetchReal(ctx, entityID)
+		if err == nil {
+			return snaps, nil
+		}
+		// On real call failure, return prototype data but include the error for debugging
+		proto := f.fetchPrototype(entityID)
+		if len(proto) > 0 {
+			proto[0].RawResponse["sam_call_error"] = err.Error()
+			proto[0].RawResponse["note"] = "Real SAM.gov call failed — see sam_call_error. Falling back to prototype data."
+		}
+		return proto, nil
 	}
 	return f.fetchPrototype(entityID), nil
 }
@@ -56,13 +66,13 @@ func (f *FPDSExtractor) fetchReal(ctx context.Context, entityID string) ([]model
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		// Fall back to prototype on network error
-		return f.fetchPrototype(entityID), nil
+		return nil, fmt.Errorf("network error calling SAM.gov: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
-		return f.fetchPrototype(entityID), nil
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("SAM.gov returned HTTP %d: %s", resp.StatusCode, string(body))
 	}
 
 	body, _ := io.ReadAll(resp.Body)
@@ -70,7 +80,7 @@ func (f *FPDSExtractor) fetchReal(ctx context.Context, entityID string) ([]model
 	// Parse a minimal useful subset of the real response.
 	var raw map[string]any
 	if err := json.Unmarshal(body, &raw); err != nil {
-		return f.fetchPrototype(entityID), nil
+		return nil, fmt.Errorf("failed to parse SAM.gov JSON: %w", err)
 	}
 
 	// The actual response structure from SAM is an array under "contracts" or similar.
