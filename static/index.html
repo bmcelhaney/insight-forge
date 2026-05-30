@@ -322,6 +322,12 @@
       const fl = result.flags || [];
       document.getElementById('flag-count').textContent = fl.length + ' identified';
 
+      // Sort so critical/high appear first
+      const sortedFlags = [...fl].sort((a, b) => {
+        const order = { critical: 0, high: 1, medium: 2, low: 3 };
+        return (order[a.severity] ?? 2) - (order[b.severity] ?? 2);
+      });
+
       // Small header for the flags list
       if (sortedFlags.length > 0) {
         const flagHeader = document.createElement('div');
@@ -329,12 +335,6 @@
         flagHeader.textContent = 'Key Flags & Implications';
         fEl.appendChild(flagHeader);
       }
-
-      // Sort so critical/high appear first
-      const sortedFlags = [...fl].sort((a, b) => {
-        const order = { critical: 0, high: 1, medium: 2, low: 3 };
-        return (order[a.severity] ?? 2) - (order[b.severity] ?? 2);
-      });
 
       // Risk Posture summary + flags
       const highOrCritical = sortedFlags.filter(f => f.severity === 'critical' || f.severity === 'high').length;
