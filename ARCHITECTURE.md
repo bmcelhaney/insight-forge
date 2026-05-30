@@ -54,14 +54,37 @@ type Extractor interface {
 }
 ```
 
-## Current Status (Scaffolding Phase)
+## Current Status
 
-- [ ] Repo created
-- [ ] Skeleton following framework structure
-- [ ] Basic runnable server (health + placeholder workspace)
-- [ ] Initial DuckDB schema for NSNs
-- [ ] First extractor stub (WebFLIS)
-- [ ] Datastar reactive endpoint example
+**Strongly isolated from other apps on the sprite.**
+
+- Directory: `/home/sprite/insight-forge` (separate from `stitchify.poc` and PriorityForge)
+- Database: `./data/insight-forge.duckdb` (completely independent DuckDB file)
+- Port: Configurable via `IF_PORT` (default 8080 — use a different port on the shared sprite)
+- No shared processes, static files, or dependencies with Stitchify or PriorityForge
+
+## Implementation Progress
+
+- Full domain models + synthesis engine (viability + risk scoring)
+- Parallel extractors (WebFLIS, FPDS, Sanctions) with realistic data
+- Reactive Datastar + Gomponents workspace (sidebar + center + insight card)
+- History / recent analyses
+- JSON export for pricing tool
+- Follows Stitchify Go Framework structure and patterns exactly
+
+## Running Safely on Shared nib-sprite
+
+To avoid any conflict with Stitchify or PriorityForge:
+
+```bash
+# Run on a non-conflicting port (example)
+IF_PORT=8091 go run ./cmd/server
+
+# Or with explicit data path
+IF_PORT=8091 IF_DUCKDB_PATH=/home/sprite/insight-forge/data/insight-forge.duckdb go run ./cmd/server
+```
+
+Later this will become its own Fly app (or Azure container) as planned.
 
 ## Deviations from Framework (if any)
 

@@ -22,14 +22,22 @@ Open http://localhost:8080
 
 ## Quick Start (on nib-sprite)
 
+**Important**: This app is fully isolated. It lives in its own directory and uses its own DuckDB file. It will not affect your Stitchify or PriorityForge apps.
+
 ```bash
 git clone https://github.com/bmcelhaney/insight-forge.git /home/sprite/insight-forge
 cd /home/sprite/insight-forge
-go mod tidy
-go run ./cmd/server
+
+# Run on a free port so it doesn't conflict with other apps on the sprite
+IF_PORT=8091 go run ./cmd/server
 ```
 
-(Use `sprite proxy 8080` or the sprite's routing to expose it.)
+Then expose it with something like:
+```bash
+sprite proxy 8091
+```
+
+Recommended ports for this prototype on the shared sprite: 8090–8100 range.
 
 ## Key Concepts
 
