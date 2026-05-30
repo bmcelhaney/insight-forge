@@ -515,12 +515,22 @@
         dm.appendChild(p);
       }
 
-      // Analytical note
+      // Demand Forecast / Outlook (prominent analytical block)
       if (dem.demand_note || dem.DemandNote) {
+        const noteContainer = document.createElement('div');
+        noteContainer.style.cssText = 'grid-column: 1 / -1; margin-top:8px; padding:8px 10px; background:#1e2937; border-radius:6px; border-left:3px solid #64748b;';
+
+        const label = document.createElement('div');
+        label.style.cssText = 'font-size:10px; color:#64748b; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:2px;';
+        label.textContent = 'Demand Forecast / Outlook';
+        noteContainer.appendChild(label);
+
         const note = document.createElement('div');
-        note.style.cssText = 'grid-column: 1 / -1; font-size:11px; color:#bae6fd; margin-top:6px; font-style:italic;';
+        note.style.cssText = 'font-size:11px; color:#bae6fd; line-height:1.4;';
         note.textContent = dem.demand_note || dem.DemandNote;
-        dm.appendChild(note);
+        noteContainer.appendChild(note);
+
+        dm.appendChild(noteContainer);
       }
 
       // Related NSNs

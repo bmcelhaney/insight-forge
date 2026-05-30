@@ -594,7 +594,7 @@ func enrichSupplierAndDemandForSpecialNSNs(entityID string, result *models.Insig
 			AwardPeriod:         "Jan 2023 – Dec 2025 (36 months)",
 			YoYChange:           "+4% vs prior 12 months",
 			PeakPeriods:         "Q4 each year (holiday surge)",
-			DemandNote:          "Steady, predictable demand with clear seasonal pattern. Low volatility makes this a reliable volume item within the AbilityOne channel.",
+			DemandNote:          "Steady, predictable demand with a clear and reliable seasonal pattern (Q4 peaks). Near-term outlook remains positive with low volatility. Longer-term risk is limited to gradual shifts in federal procurement priorities or AbilityOne program changes. Recommended action: Maintain steady sourcing rotation and monitor Q4 surge planning 6-9 months ahead.",
 		}
 		result.Flags = []models.RiskFlag{
 			{Type: "concentration", Severity: "medium", Description: "Geographic concentration in Texas (Fort Worth holds ~42% share).", Implication: "A regional disruption (hurricane, labor event) could require rapid reallocation to secondary workshops. Pre-identify surge capacity via NIB PSR."},
@@ -627,7 +627,7 @@ func enrichSupplierAndDemandForSpecialNSNs(entityID string, result *models.Insig
 			AwardPeriod:         "Jan 2023 – Dec 2025 (36 months)",
 			YoYChange:           "-7% vs prior 12 months (digital shift)",
 			PeakPeriods:         "Back-to-school (Aug-Oct) and year-end (Nov-Dec)",
-			DemandNote:          "Gradual volume pressure from digital alternatives is visible but manageable. Strong seasonal peaks remain reliable.",
+			DemandNote:          "Gradual structural decline from digital substitution is the dominant trend (-7% YoY). Near-term outlook is still solid due to strong seasonal peaks, but the long-term trajectory is downward unless offset by new use cases or program defense. Recommended action: Track digital substitution metrics quarterly and work with NIB on positioning strategies if decline accelerates beyond 10% YoY.",
 		}
 		result.Flags = []models.RiskFlag{
 			{Type: "data_quality", Severity: "medium", Description: "No public visibility into individual workshop capacity or backlog.", Implication: "For recurring high-volume needs, periodically request capacity updates from at least two NIB producers to maintain resilience."},
@@ -660,7 +660,7 @@ func enrichSupplierAndDemandForSpecialNSNs(entityID string, result *models.Insig
 			AwardPeriod:         "Jan 2023 – Dec 2025 (36 months)",
 			YoYChange:           "+11% vs prior 12 months",
 			PeakPeriods:         "Q4 (holiday shipping surge)",
-			DemandNote:          "Strong and growing demand with very predictable seasonality. One of the more resilient high-volume AbilityOne consumables.",
+			DemandNote:          "Strong growth (+11% YoY) with highly predictable Q4 seasonality driven by holiday logistics. Near-term outlook is very positive. Longer-term risk is mainly commodity price volatility in resin/film rather than demand destruction. Recommended action: Consider multi-year volume commitments with producers during periods of stable or favorable resin pricing.",
 		}
 		result.Flags = []models.RiskFlag{
 			{Type: "data_quality", Severity: "low", Description: "Limited public visibility into sub-tier resin/film suppliers.", Implication: "Monitor commodity price indices for packaging materials; request sourcing transparency from producers during annual reviews."},
@@ -690,7 +690,7 @@ func enrichSupplierAndDemandForSpecialNSNs(entityID string, result *models.Insig
 			AwardPeriod:         "Jan 2023 – Dec 2025 (36 months)",
 			YoYChange:           "Highly variable (-40% to +120% year to year)",
 			PeakPeriods:         "Major spikes tied to large facility projects (2024 Q2, 2025 Q1)",
-			DemandNote:          "Extremely lumpy demand driven by large capital projects. Requires close coordination with agency construction/renovation schedules.",
+			DemandNote:          "Extremely lumpy, project-driven demand with very high year-to-year variability. There is no reliable 'baseline' volume — demand is almost entirely tied to the timing and scale of major facility projects. Near-term outlook depends entirely on the buyer's capital project pipeline. Recommended action: Maintain close relationships with key agencies' facilities/planning teams and require early visibility into upcoming large projects.",
 		}
 		result.Flags = []models.RiskFlag{
 			{Type: "concentration", Severity: "high", Description: "Limited qualified producers (only 3 observed in recent data); higher equipment/skill barriers.", Implication: "For any requirement >100 units, engage at least two producers early and obtain written capacity commitments. Consider inventory buffers for large projects."},
@@ -720,7 +720,7 @@ func enrichSupplierAndDemandForSpecialNSNs(entityID string, result *models.Insig
 			AwardPeriod:         "Jan 2023 – Dec 2025 (36 months)",
 			YoYChange:           "Very lumpy (single large orders drive 60%+ of volume)",
 			PeakPeriods:         "Irregular spikes tied to large tool kit procurements",
-			DemandNote:          "Highly irregular demand with very high concentration in a small number of large orders. Requires strong pipeline visibility with major buyers.",
+			DemandNote:          "Highly irregular and concentrated demand (a handful of large orders can drive the majority of annual volume). There is almost no steady-state demand. The near-term outlook is binary — either a major kit procurement lands or it doesn't. Recommended action: Treat this as a key-account / major program item. Maintain active pipeline visibility with the largest buyers (especially DLA and major services) and avoid treating it as a routine consumable.",
 		}
 		result.Flags = []models.RiskFlag{
 			{Type: "concentration", Severity: "high", Description: "Narrow producer base and heavy reliance on commercial sub-components before kitting.", Implication: "Request full bill-of-materials sourcing transparency and dual-source commitments for any mission-critical or recurring tool kit requirements."},
