@@ -53,6 +53,7 @@ type InsightResult struct {
 	RelatedNSNs           []RelatedNSN   `json:"related_nsns"`
 	DemandSignals         DemandSignals  `json:"demand_signals"`
 	Citations             []string       `json:"citations,omitempty"`
+	KeyInsights           []string       `json:"key_insights,omitempty"`
 	BasedOnSnapshotIDs    []string       `json:"based_on_snapshot_ids"`
 	GeneratedAt           time.Time      `json:"generated_at"`
 	GeneratedBy           string         `json:"generated_by"`

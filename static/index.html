@@ -557,15 +557,36 @@
         dm.appendChild(noteContainer);
       }
 
-      // Related NSNs
+      // Related & Alternative NSNs
       const relEl = document.getElementById('related-nsns');
       relEl.innerHTML = '';
+
+      const relHeader = document.createElement('div');
+      relHeader.style.cssText = 'grid-column: 1 / -1; font-size:10px; color:#64748b; margin-bottom:4px; text-transform:uppercase; letter-spacing:0.5px;';
+      relHeader.textContent = 'Related & Alternative NSNs';
+      relEl.appendChild(relHeader);
+
       (result.related_nsns || result.RelatedNSNs || []).forEach(r => {
         const a = document.createElement('a');
         a.href = '#';
         a.onclick = (e) => { e.preventDefault(); document.getElementById('nsn-input').value = r.nsn; performAnalysis(r.nsn); };
         a.className = 'block bg-zinc-950 hover:bg-zinc-800 border border-zinc-700 p-3 rounded-2xl text-sm';
-        a.innerHTML = `<div class="font-mono">${r.nsn}</div><div class="text-xs text-zinc-400">${r.description} • ${r.relation} (${Math.round((r.confidence||0)*100)}%)</div>`;
+
+        let relColor = '#64748b';
+        let relLabel = r.relation || 'related';
+        if (r.relation === 'supersedes') relColor = '#10b981';
+        else if (r.relation === 'alternative') relColor = '#3b82f6';
+        else if (r.relation === 'common_supplier') relColor = '#8b5cf6';
+
+        const conf = Math.round((r.confidence || 0) * 100);
+        a.innerHTML = `
+          <div class="font-mono text-sm font-semibold">${r.nsn}</div>
+          <div class="text-xs text-zinc-400 mt-1">${r.description || ''}</div>
+          <div style="margin-top:4px; display:flex; align-items:center; gap:6px;">
+            <span style="color:${relColor}; font-size:10px; font-weight:600; text-transform:uppercase;">${relLabel}</span>
+            <span style="font-size:10px; color:#64748b;">${conf}% confidence</span>
+          </div>
+        `;
         relEl.appendChild(a);
       });
 
