@@ -109,4 +109,5 @@ type DemandSignals struct {
 	AwardPeriod         string   `json:"award_period"` // e.g. "Jan 2023 – Dec 2025 (36 months)"
 	YoYChange           string   `json:"yoy_change,omitempty"`     // e.g. "+8% vs prior year"
 	PeakPeriods         string   `json:"peak_periods,omitempty"`   // e.g. "Q4 2024, Q1 2025"
+	DemandNote          string   `json:"demand_note,omitempty"`    // Analytical note on demand health / outlook
 }

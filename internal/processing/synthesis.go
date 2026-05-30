@@ -586,6 +586,7 @@ func enrichSupplierAndDemandForSpecialNSNs(entityID string, result *models.Insig
 			AwardPeriod:         "Jan 2023 – Dec 2025 (36 months)",
 			YoYChange:           "+4% vs prior 12 months",
 			PeakPeriods:         "Q4 each year (holiday surge)",
+			DemandNote:          "Steady, predictable demand with clear seasonal pattern. Low volatility makes this a reliable volume item within the AbilityOne channel.",
 		}
 		result.Flags = []models.RiskFlag{
 			{Type: "concentration", Severity: "medium", Description: "Geographic concentration in Texas (Fort Worth holds ~42% share).", Implication: "A regional disruption (hurricane, labor event) could require rapid reallocation to secondary workshops. Pre-identify surge capacity via NIB PSR."},
@@ -617,6 +618,7 @@ func enrichSupplierAndDemandForSpecialNSNs(entityID string, result *models.Insig
 			AwardPeriod:         "Jan 2023 – Dec 2025 (36 months)",
 			YoYChange:           "-7% vs prior 12 months (digital shift)",
 			PeakPeriods:         "Back-to-school (Aug-Oct) and year-end (Nov-Dec)",
+			DemandNote:          "Gradual volume pressure from digital alternatives is visible but manageable. Strong seasonal peaks remain reliable.",
 		}
 		result.Flags = []models.RiskFlag{
 			{Type: "data_quality", Severity: "medium", Description: "No public visibility into individual workshop capacity or backlog.", Implication: "For recurring high-volume needs, periodically request capacity updates from at least two NIB producers to maintain resilience."},
@@ -648,6 +650,7 @@ func enrichSupplierAndDemandForSpecialNSNs(entityID string, result *models.Insig
 			AwardPeriod:         "Jan 2023 – Dec 2025 (36 months)",
 			YoYChange:           "+11% vs prior 12 months",
 			PeakPeriods:         "Q4 (holiday shipping surge)",
+			DemandNote:          "Strong and growing demand with very predictable seasonality. One of the more resilient high-volume AbilityOne consumables.",
 		}
 		result.Flags = []models.RiskFlag{
 			{Type: "data_quality", Severity: "low", Description: "Limited public visibility into sub-tier resin/film suppliers.", Implication: "Monitor commodity price indices for packaging materials; request sourcing transparency from producers during annual reviews."},
@@ -676,6 +679,7 @@ func enrichSupplierAndDemandForSpecialNSNs(entityID string, result *models.Insig
 			AwardPeriod:         "Jan 2023 – Dec 2025 (36 months)",
 			YoYChange:           "Highly variable (-40% to +120% year to year)",
 			PeakPeriods:         "Major spikes tied to large facility projects (2024 Q2, 2025 Q1)",
+			DemandNote:          "Extremely lumpy demand driven by large capital projects. Requires close coordination with agency construction/renovation schedules.",
 		}
 		result.Flags = []models.RiskFlag{
 			{Type: "concentration", Severity: "high", Description: "Limited qualified producers (only 3 observed in recent data); higher equipment/skill barriers.", Implication: "For any requirement >100 units, engage at least two producers early and obtain written capacity commitments. Consider inventory buffers for large projects."},
@@ -704,6 +708,7 @@ func enrichSupplierAndDemandForSpecialNSNs(entityID string, result *models.Insig
 			AwardPeriod:         "Jan 2023 – Dec 2025 (36 months)",
 			YoYChange:           "Very lumpy (single large orders drive 60%+ of volume)",
 			PeakPeriods:         "Irregular spikes tied to large tool kit procurements",
+			DemandNote:          "Highly irregular demand with very high concentration in a small number of large orders. Requires strong pipeline visibility with major buyers.",
 		}
 		result.Flags = []models.RiskFlag{
 			{Type: "concentration", Severity: "high", Description: "Narrow producer base and heavy reliance on commercial sub-components before kitting.", Implication: "Request full bill-of-materials sourcing transparency and dual-source commitments for any mission-critical or recurring tool kit requirements."},

@@ -426,16 +426,59 @@
       // Demand
       const dem = result.demand_signals || result.DemandSignals || {};
       const demandPeriod = dem.award_period || dem.AwardPeriod || '';
+
       const dm = document.getElementById('demand-metrics');
-      let demandExtra = '';
-      if (dem.yoy_change || dem.YoYChange) demandExtra += `<div style="grid-column: 1 / -1; font-size:11px; color:#a1a1aa; margin-top:2px;">YoY Change: <span class="text-zinc-300">${dem.yoy_change || dem.YoYChange}</span></div>`;
-      if (dem.peak_periods || dem.PeakPeriods) demandExtra += `<div style="grid-column: 1 / -1; font-size:11px; color:#a1a1aa;">Peak Periods: <span class="text-zinc-300">${dem.peak_periods || dem.PeakPeriods}</span></div>`;
-      dm.innerHTML = `
-        <div><span class="text-zinc-400">Total Awards:</span> <span class="font-semibold">${dem.total_awards || dem.TotalAwards || '—'}</span></div>
-        <div><span class="text-zinc-400">Total Value:</span> <span class="font-semibold">$${(dem.total_value_usd || dem.TotalValueUSD || 0).toLocaleString()}</span></div>
-        <div><span class="text-zinc-400">Recent Trend:</span> <span class="font-semibold">${dem.recent_trend || dem.RecentTrend || '—'}</span></div>
-        <div><span class="text-zinc-400">Key Programs:</span> <span class="font-semibold">${(dem.program_associations || dem.ProgramAssociations || []).join(', ') || '—'}</span></div>` +
-        (demandPeriod ? `<div style="grid-column: 1 / -1; font-size:11px; color:#a1a1aa; margin-top:4px;">${demandPeriod}</div>` : '') + demandExtra;
+      dm.innerHTML = '';
+
+      // Header
+      const demandHeader = document.createElement('div');
+      demandHeader.style.cssText = 'grid-column: 1 / -1; font-size:10px; color:#64748b; margin-bottom:4px; text-transform:uppercase; letter-spacing:0.5px;';
+      demandHeader.textContent = 'Demand Overview (36 months)';
+      dm.appendChild(demandHeader);
+
+      // Core metrics
+      const coreMetrics = [
+        { label: 'Total Awards', value: dem.total_awards || dem.TotalAwards || '—' },
+        { label: 'Total Value', value: '$' + (dem.total_value_usd || dem.TotalValueUSD || 0).toLocaleString() },
+        { label: 'Recent Trend', value: dem.recent_trend || dem.RecentTrend || '—' },
+        { label: 'Key Programs', value: (dem.program_associations || dem.ProgramAssociations || []).join(', ') || '—' },
+      ];
+
+      coreMetrics.forEach(m => {
+        const div = document.createElement('div');
+        div.innerHTML = `<span class="text-zinc-400">${m.label}:</span> <span class="font-semibold">${m.value}</span>`;
+        dm.appendChild(div);
+      });
+
+      // Period
+      if (demandPeriod) {
+        const p = document.createElement('div');
+        p.style.cssText = 'grid-column: 1 / -1; font-size:11px; color:#a1a1aa; margin-top:4px;';
+        p.textContent = demandPeriod;
+        dm.appendChild(p);
+      }
+
+      // YoY + Peak
+      if (dem.yoy_change || dem.YoYChange) {
+        const y = document.createElement('div');
+        y.style.cssText = 'grid-column: 1 / -1; font-size:11px; color:#a1a1aa; margin-top:2px;';
+        y.innerHTML = `YoY Change: <span class="text-zinc-300">${dem.yoy_change || dem.YoYChange}</span>`;
+        dm.appendChild(y);
+      }
+      if (dem.peak_periods || dem.PeakPeriods) {
+        const p = document.createElement('div');
+        p.style.cssText = 'grid-column: 1 / -1; font-size:11px; color:#a1a1aa;';
+        p.innerHTML = `Peak Periods: <span class="text-zinc-300">${dem.peak_periods || dem.PeakPeriods}</span>`;
+        dm.appendChild(p);
+      }
+
+      // Analytical note
+      if (dem.demand_note || dem.DemandNote) {
+        const note = document.createElement('div');
+        note.style.cssText = 'grid-column: 1 / -1; font-size:11px; color:#bae6fd; margin-top:6px; font-style:italic;';
+        note.textContent = dem.demand_note || dem.DemandNote;
+        dm.appendChild(note);
+      }
 
       // Related NSNs
       const relEl = document.getElementById('related-nsns');
