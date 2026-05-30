@@ -402,6 +402,10 @@
         const note = sup.ecosystem_note || sup.EcosystemNote;
         extraLine += `<div style="font-size:11px; color:#bae6fd; margin-top:4px; font-style:italic;">${note}</div>`;
       }
+      if (sup.continuity_assessment || sup.ContinuityAssessment) {
+        const note = sup.continuity_assessment || sup.ContinuityAssessment;
+        extraLine += `<div style="font-size:11px; color:#a5b4fc; margin-top:4px; font-style:italic;">${note}</div>`;
+      }
 
       document.getElementById('supplier-summary').innerHTML =
         `${sup.total_suppliers || sup.TotalSuppliers || 0} suppliers across ${(sup.primary_countries || sup.PrimaryCountries || []).length} countries. Concentration risk: <span class="font-medium">${sup.concentration_risk || sup.ConcentrationRisk || 'medium'}</span>.` +
@@ -465,7 +469,17 @@
       const coreMetrics = [
         { label: 'Total Awards', value: dem.total_awards || dem.TotalAwards || '—' },
         { label: 'Total Value', value: '$' + (dem.total_value_usd || dem.TotalValueUSD || 0).toLocaleString() },
-        { label: 'Recent Trend', value: dem.recent_trend || dem.RecentTrend || '—' },
+        { 
+          label: 'Recent Trend', 
+          value: (() => {
+            const trend = (dem.recent_trend || dem.RecentTrend || '').toLowerCase();
+            let arrow = '→';
+            let color = '#fbbf24';
+            if (trend.includes('increase') || trend.includes('up')) { arrow = '↑'; color = '#10b981'; }
+            else if (trend.includes('declin') || trend.includes('down') || trend.includes('decrease')) { arrow = '↓'; color = '#f87171'; }
+            return `<span style="color:${color}">${dem.recent_trend || dem.RecentTrend || '—'} ${arrow}</span>`;
+          })() 
+        },
         { label: 'Key Programs', value: (dem.program_associations || dem.ProgramAssociations || []).join(', ') || '—' },
       ];
 

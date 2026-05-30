@@ -300,8 +300,12 @@ Recommended: Contact NIB PSR for current capacity letters and latest direct labo
 SUPPLIER & CONCENTRATION ANALYSIS
 Production is moderately concentrated within the NIB network (Fort Worth ≈ 42% share). Other workshops provide meaningful but smaller volume. Concentration Index ≈ 0.61. This level is acceptable within the AbilityOne model because the network is intentionally designed for geographic and capacity redundancy.
 
+The enriched data shows good diversification across 6+ workshops. The new ContinuityAssessment notes: "good geographic spread within the NIB system" with the primary risk remaining single-facility exposure in Texas. The grouped flags confirm this assessment (one medium concentration flag on Texas exposure + one data-quality flag on sub-tier visibility). Top 3 suppliers represent over 70% of recent observed value.
+
 RISKS & OPPORTUNITIES
-Primary risk remains geographic concentration at a single Texas facility. A major regional disruption would require rapid reallocation to secondary NIB workshops. Compliance posture appears strong. No geopolitical or sanctions exposure. Opportunity exists to pre-position secondary source agreements for continuity.
+Primary risk remains geographic concentration at a single Texas facility (explicitly called out in the medium concentration flag). A major regional disruption would require rapid reallocation to secondary NIB workshops. The data-quality flag highlights limited visibility into sub-tier suppliers and real-time capacity.
+
+Compliance posture appears strong. No geopolitical or sanctions exposure. Opportunity exists to pre-position secondary source agreements for continuity and to request more granular capacity data from NIB PSR on a regular cadence.
 
 ACTIONABLE RECOMMENDATIONS
 1. Retain as primary mandatory source — no market research required for covered purchases.
@@ -576,6 +580,7 @@ func enrichSupplierAndDemandForSpecialNSNs(entityID string, result *models.Insig
 			},
 			TopSuppliersTotalValue: 2763000,
 			EcosystemNote: "Production is deliberately diversified across the NIB network. Fort Worth is the clear lead but secondary workshops provide meaningful redundancy.",
+			ContinuityAssessment: "Good geographic spread within the NIB system. Primary risk remains single-facility exposure in Texas. Recommend maintaining active relationships with at least three workshops.",
 		}
 		result.DemandSignals = models.DemandSignals{
 			TotalAwards:         112,
@@ -608,6 +613,7 @@ func enrichSupplierAndDemandForSpecialNSNs(entityID string, result *models.Insig
 			},
 			TopSuppliersTotalValue: 2660000,
 			EcosystemNote: "One of the most diversified AbilityOne items. Low concentration risk due to intentional spread across multiple workshops. Strong supply continuity posture.",
+			ContinuityAssessment: "Excellent diversification. Multiple workshops actively receiving awards. Very low risk of single-point disruption. Recommend continued rotation to keep capacity warm across the network.",
 		}
 		result.DemandSignals = models.DemandSignals{
 			TotalAwards:         287,
@@ -640,6 +646,7 @@ func enrichSupplierAndDemandForSpecialNSNs(entityID string, result *models.Insig
 			},
 			TopSuppliersTotalValue: 3130000,
 			EcosystemNote: "Broad and resilient producer base across NIB and SourceAmerica. One of the lower concentration risk profiles in the program.",
+			ContinuityAssessment: "Very strong diversification. Multiple workshops with consistent recent activity. Lowest structural supply risk among the five test NSNs. Easy to rotate volume without capacity concerns.",
 		}
 		result.DemandSignals = models.DemandSignals{
 			TotalAwards:         341,
@@ -669,6 +676,7 @@ func enrichSupplierAndDemandForSpecialNSNs(entityID string, result *models.Insig
 			},
 			TopSuppliersTotalValue: 2950000,
 			EcosystemNote: "Higher concentration than most AbilityOne items due to specialized fabrication requirements. Capacity risk is real on large projects.",
+			ContinuityAssessment: "Elevated concentration risk due to equipment and skill barriers. San Antonio is the dominant producer. Recommend securing written capacity commitments for any order >100 units and maintaining a second qualified source.",
 		}
 		result.DemandSignals = models.DemandSignals{
 			TotalAwards:         31,
@@ -698,6 +706,7 @@ func enrichSupplierAndDemandForSpecialNSNs(entityID string, result *models.Insig
 			},
 			TopSuppliersTotalValue: 3380000,
 			EcosystemNote: "Narrower base and higher reliance on commercial sub-components before kitting. Elevated supply chain complexity compared to simpler AbilityOne items.",
+			ContinuityAssessment: "Highest complexity risk profile among the five. Significant exposure to commercial component supply chains. Strongly recommend dual-sourcing and full BOM transparency for any recurring or mission-critical requirements.",
 		}
 		result.DemandSignals = models.DemandSignals{
 			TotalAwards:         18,
