@@ -98,13 +98,16 @@ func MainDataPanel(props WorkspaceProps) g.Node {
 	if props.IsAnalyzing {
 		progressText := "Gathering intelligence from sources..."
 		if len(props.CompletedSources) > 0 && props.TotalSources > 0 {
-			progressText = fmt.Sprintf("Completed %d/%d sources: %s", len(props.CompletedSources), props.TotalSources, strings.Join(props.CompletedSources, ", "))
+			progressText = fmt.Sprintf("Completed %d/%d sources", len(props.CompletedSources), props.TotalSources)
 		}
 		return Div(Class("card bg-base-100 shadow-xl"),
 			Div(Class("card-body"),
 				Progress(Class("progress progress-primary w-full")),
-				P(Class("text-center mt-3 text-sm"), g.Text(progressText)),
-				P(Class("text-center text-xs opacity-60"), g.Text("Partial results will update live as sources complete")),
+				P(Class("text-center mt-3 font-medium"), g.Text(progressText)),
+				g.If(len(props.CompletedSources) > 0,
+					P(Class("text-center text-xs opacity-70 mt-1"), g.Text(strings.Join(props.CompletedSources, " → "))),
+				),
+				P(Class("text-center text-xs opacity-50 mt-2"), g.Text("Live updates as each source completes")),
 			),
 		)
 	}
@@ -133,9 +136,15 @@ func MainDataPanel(props WorkspaceProps) g.Node {
 				),
 			),
 
-			Div(Class("mt-6"),
-				H4(Class("font-semibold mb-2"), g.Text("Demand Signals")),
-				g.Raw(DemandSignalsChart(props.Result)),
+			Div(Class("mt-6 grid grid-cols-1 md:grid-cols-2 gap-6"),
+				Div(
+					H4(Class("font-semibold mb-2"), g.Text("Demand Signals")),
+					g.Raw(DemandSignalsChart(props.Result)),
+				),
+				Div(
+					H4(Class("font-semibold mb-2"), g.Text("Risk Factors")),
+					g.Raw(RiskBreakdownChart(props.Result)),
+				),
 			),
 		),
 	)

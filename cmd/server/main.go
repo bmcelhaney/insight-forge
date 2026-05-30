@@ -68,11 +68,11 @@ func main() {
 		basePath = basePath[:len(basePath)-1]
 	}
 
-	// Health
-	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{"status": "ok", "service": "insight-forge"})
-	})
+	// Health (available at both root and under base path for convenience)
+	r.Get("/health", healthHandler)
+	if basePath != "" && basePath != "/" {
+		r.Get(basePath+"/health", healthHandler)
+	}
 
 	// === Main Workspace - initial HTML load (under base path) ===
 	r.Get(basePath+"/", func(w http.ResponseWriter, r *http.Request) {
@@ -293,6 +293,15 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	_ = srv.Shutdown(ctx)
+}
+
+func healthHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"status":  "ok",
+		"service": "insight-forge",
+		"version": "prototype",
+	})
 }
 
 

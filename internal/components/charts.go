@@ -65,3 +65,39 @@ func DemandSignalsChart(result *models.InsightResult) string {
 	_ = bar.Render(&buf)
 	return buf.String()
 }
+
+// RiskBreakdownChart creates a simple horizontal bar for risk factors (prototype).
+func RiskBreakdownChart(result *models.InsightResult) string {
+	if result == nil || len(result.Flags) == 0 {
+		return ""
+	}
+
+	bar := charts.NewBar()
+	bar.SetGlobalOptions(
+		charts.WithTitleOpts(opts.Title{Title: "Risk Factors"}),
+		charts.WithLegendOpts(opts.Legend{Show: false}),
+	)
+
+	var xAxis []string
+	var data []opts.BarData
+
+	severityScore := map[string]float64{
+		"low": 20, "medium": 50, "high": 75, "critical": 95,
+	}
+
+	for _, f := range result.Flags {
+		xAxis = append(xAxis, f.Type)
+		score := severityScore[f.Severity]
+		if score == 0 {
+			score = 40
+		}
+		data = append(data, opts.BarData{Value: score})
+	}
+
+	bar.SetXAxis(xAxis).
+		AddSeries("Risk Level", data)
+
+	var buf bytes.Buffer
+	_ = bar.Render(&buf)
+	return buf.String()
+}
