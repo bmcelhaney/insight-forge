@@ -361,13 +361,16 @@ Recommended: Request current capacity and direct labor reports from NIB PSR befo
 SUPPLIER & RISK DISCUSSION
 Concentration risk is low because production is intentionally diversified across the NIB network. This is one of the best-distributed AbilityOne items for supply continuity. Main risk is micro-purchase leakage or unauthorized substitutions rather than formal competition.
 
+The enriched data shows excellent diversification (no workshop > ~13% share). The new ContinuityAssessment rates it as having "excellent diversification" with "very low risk of single-point disruption." The only flag is a medium data-quality one around capacity visibility. Top 5 suppliers represent the bulk of recent volume.
+
 RISKS & OPPORTUNITIES
-Low structural risk due to deliberate dispersion across workshops. The main long-term threat is gradual volume erosion from digital alternatives. Opportunity exists to defend relevance through quality and reliable supply.
+Low structural risk due to deliberate dispersion across workshops. The main long-term threat is gradual volume erosion from digital alternatives (visible in the -7% YoY). Opportunity exists to defend relevance through quality and reliable supply. The flags confirm that capacity visibility is the main area needing manual follow-up.
 
 ACTIONABLE RECOMMENDATIONS
-1. Maintain mandatory-source status with routine rotation across at least three qualified workshops.
-2. Monitor digital substitution trends; consider joint NIB marketing efforts if volume decline accelerates.
-3. No immediate need for commercial market research on covered purchases.
+1. Maintain mandatory-source status. Continue routine rotation across at least three qualified workshops to keep capacity warm.
+2. Monitor digital substitution trends quarterly. If the -7% YoY decline accelerates, engage NIB on joint positioning or product evolution.
+3. Periodically request capacity and direct labor reports from NIB PSR (the main data gap flagged).
+4. No need for broad commercial market research on covered purchases at this time.
 
 OVERALL CONFIDENCE IN THIS SYNTHESIS: High
 Strong, consistent federal data across WebFLIS, FPDS, and live sanctions. Minor limitations around real-time capacity only.
