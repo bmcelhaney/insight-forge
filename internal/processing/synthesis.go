@@ -64,7 +64,7 @@ func Synthesize(ctx context.Context, entityID string, snapshots []models.DataSna
 	result.DemandSignals = demand
 
 	// Rich, program-aware analysis (especially for AbilityOne NSNs)
-	rich := generateRichAnalysis(entityID, result.ViabilityScore, result.RiskScore, flags, supplierView, demand)
+	rich := generateRichAnalysis(entityID, result.ViabilityScore, result.RiskScore, flags, supplierView, demand, snapshots)
 	result.Summary = rich.Summary
 	result.MarketCommentary = rich.MarketCommentary
 	result.FullAnalystReport = rich.FullReport
@@ -564,7 +564,7 @@ type RichAnalysis struct {
 
 // generateRichAnalysis produces AbilityOne-aware, deep-dive content for the 5 canonical test NSNs
 // plus reasonable defaults. This directly addresses the "still way too generic" feedback.
-func generateRichAnalysis(entityID string, viability, risk float64, flags []models.RiskFlag, suppliers models.SupplierView, demand models.DemandSignals) RichAnalysis {
+func generateRichAnalysis(entityID string, viability, risk float64, flags []models.RiskFlag, suppliers models.SupplierView, demand models.DemandSignals, snaps []models.DataSnapshot) RichAnalysis {
 	out := RichAnalysis{
 		Citations: []string{"WebFLIS (DLA)", "FPDS (USAspending)", "OFAC SDN (live)", "MCRL", "AbilityOne Program PSR"},
 	}
