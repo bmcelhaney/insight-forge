@@ -31,6 +31,10 @@ func NewDefaultRegistry() *Registry {
 	pi := NewProgramIntelligenceExtractor()
 	r.extractors[pi.SourceCode()] = pi
 
+	// Additional technical/regulatory/maintenance context to give the general path more dimensions for arbitrary NSNs
+	tc := NewTechnicalContextExtractor()
+	r.extractors[tc.SourceCode()] = tc
+
 	// Future: MCRL, SAM.gov, historical award feeds, technical manuals, etc.
 	return r
 }

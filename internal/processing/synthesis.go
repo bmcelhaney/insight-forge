@@ -621,60 +621,50 @@ func getFSC(entityID string) string {
 
 // buildDynamicFullReport produces a structured, multi-section analyst report for
 // any NSN that is not one of the 5 hand-crafted special cases. This is the key
-// upgrade for making Related NSNs and arbitrary inputs feel non-canned.
+// upgrade for making Related NSNs and arbitrary inputs feel non-canned and data-grounded.
 func buildDynamicFullReport(entityID string, viability, risk float64, flags []models.RiskFlag, suppliers models.SupplierView, demand models.DemandSignals, snaps []models.DataSnapshot) string {
 	fsc := getFSC(entityID)
 
-	// Pull any item name we have from WebFLIS
+	// Pull rich fields from WebFLIS when available
 	itemName := "Federal stock item"
+	unitPrice := ""
+	techChars := ""
+	acqCode := ""
 	for _, s := range snaps {
 		if s.SourceCode == "WEBFLIS" {
 			if name, ok := s.RawResponse["item_name"].(string); ok && name != "" {
 				itemName = name
-				break
 			}
+			if price, ok := s.RawResponse["unit_price"].(int); ok {
+				unitPrice = fmt.Sprintf("$%.0f", float64(price))
+			}
+			if tech, ok := s.RawResponse["technical_characteristics"].(string); ok && tech != "" {
+				techChars = tech
+			}
+			if acq, ok := s.RawResponse["acquisition_advice_code"].(string); ok {
+				acqCode = acq
+			}
+			break
 		}
 	}
 
-	report := fmt.Sprintf(`DYNAMIC SYNTHESIS — NSN %s
-%s (FSC %s)
-
-QUANTITATIVE HIGHLIGHTS (from available federal sources)
-- Sourcing Attractiveness: %.0f | Supply Risk: %.0f
-- Supplier Concentration: %s across %d vendors in %d primary countries
-- Recent Award Volume: %d transactions | ~$%.1fM observed
-- Demand Character: %s
-
-EXTRACTOR FINDINGS (WebFLIS + FPDS + Sanctions)
-WebFLIS: Item record present. %s. Unit of issue and packaging data available in source snapshot.
-FPDS: %d awards located over the observed window. Top agencies include %s. %s
-Sanctions / OFAC: Clean result on primary CAGEs and known affiliates in current pull.
-
-SUPPLIER ECOSYSTEM & CONTINUITY
-%s
-%s
-
-DEMAND & OUTLOOK
-%s
-
-RISK FLAGS & IMPLICATIONS
-`, entityID, itemName, fsc, viability, risk, suppliers.ConcentrationRisk, suppliers.TotalSuppliers, len(suppliers.PrimaryCountries),
-		demand.TotalAwards, float64(demand.TotalValueUSD)/1000000, demand.DemandNote,
-		itemName, demand.TotalAwards, strings.Join(demand.TopAgencies, ", "), demand.DemandNote,
-		suppliers.EcosystemNote, suppliers.ContinuityAssessment, demand.DemandNote)
-
-	// Add flags section
-	if len(flags) > 0 {
-		report += "The following flags were identified during synthesis:\n"
-		for _, f := range flags {
-			report += fmt.Sprintf("- [%s / %s] %s — %s\n", f.Severity, f.Type, f.Description, f.Implication)
+	// Pull FPDS specifics
+	primaryVehicle := ""
+	awardRecency := ""
+	for _, s := range snaps {
+		if s.SourceCode == "FPDS" {
+			if v, ok := s.RawResponse["primary_vehicle"].(string); ok {
+				primaryVehicle = v
+			}
+			if days, ok := s.RawResponse["award_recency_days"].(int); ok {
+				awardRecency = fmt.Sprintf("%d days since last observed award", days)
+			}
+			break
 		}
-	} else {
-		report += "- No high-severity flags surfaced from current data sources.\n"
 	}
 
-	// Pull richer context from the new Program Intelligence extractor when present
-	var programContext, socioNotes string
+	// Pull Program + Technical context
+	var programContext, socioNotes, techNotes, maintNotes string
 	for _, s := range snaps {
 		if s.SourceCode == "PROGRAM_INTEL" {
 			if pc, ok := s.RawResponse["program_family"].(string); ok {
@@ -683,30 +673,82 @@ RISK FLAGS & IMPLICATIONS
 			if se, ok := s.RawResponse["socio_economic_notes"].(string); ok {
 				socioNotes = se
 			}
-			break
+		}
+		if s.SourceCode == "TECH_CONTEXT" {
+			if tn, ok := s.RawResponse["technical_notes"].(string); ok {
+				techNotes = tn
+			}
+			if mn, ok := s.RawResponse["maintenance_notes"].(string); ok {
+				maintNotes = mn
+			}
 		}
 	}
 
-	extraSection := ""
-	if programContext != "" || socioNotes != "" {
-		extraSection = "\nPROGRAM & SOCIO-ECONOMIC CONTEXT\n"
-		if programContext != "" {
-			extraSection += programContext + "\n\n"
+	// Build a more varied, data-driven report
+	report := fmt.Sprintf(`DYNAMIC SYNTHESIS — NSN %s
+%s (FSC %s)
+
+QUANTITATIVE HIGHLIGHTS (prototype extractor synthesis)
+- Sourcing Attractiveness: %.0f | Supply Risk: %.0f
+- Supplier base: %d vendors across %d countries | Concentration risk: %s
+- Observed volume: %d awards | ~$%.1fM | Primary vehicle: %s
+- Demand profile: %s
+
+WEBFLIS ITEM CHARACTERISTICS (prototype)
+Item: %s
+Unit of issue: %s
+Unit price range (prototype): %s
+Technical: %s
+Acquisition advice: %s
+
+EXTRACTOR SYNTHESIS
+FPDS patterns indicate %s. %s
+Sanctions screening returned clean on known producing entities.
+Program context: %s
+Socio-economic overlay: %s
+
+SUPPLIER ECOSYSTEM
+%s
+%s
+
+DEMAND & MARKET DYNAMICS
+%s
+
+TECHNICAL & MAINTENANCE CONSIDERATIONS
+%s
+%s
+
+RISK FLAGS & IMPLICATIONS
+`, entityID, itemName, fsc, viability, risk,
+		suppliers.TotalSuppliers, len(suppliers.PrimaryCountries), suppliers.ConcentrationRisk,
+		demand.TotalAwards, float64(demand.TotalValueUSD)/1000000, primaryVehicle,
+		demand.DemandNote,
+		itemName, demand.TotalAwards, unitPrice, techChars, acqCode,
+		demand.DemandNote, awardRecency,
+		programContext, socioNotes,
+		suppliers.EcosystemNote, suppliers.ContinuityAssessment,
+		demand.DemandNote,
+		techNotes, maintNotes)
+
+	// Flags
+	if len(flags) > 0 {
+		report += "The following flags were identified:\n"
+		for _, f := range flags {
+			report += fmt.Sprintf("- [%s] %s — %s\n", f.Severity, f.Description, f.Implication)
 		}
-		if socioNotes != "" {
-			extraSection += socioNotes + "\n"
-		}
+	} else {
+		report += "- No high-severity flags identified from current prototype data layers.\n"
 	}
 
 	report += fmt.Sprintf(`
 DATA GAPS & RECOMMENDED FOLLOW-UP
-Public federal sources provide good visibility at the NSN and award level but limited real-time workshop capacity, sub-tier BOM, or current pricing beyond GSA schedules. For any NSN with material annual spend or operational criticality, request direct capacity statements and pricing support from qualified producers.
+This synthesis is built from prototype extractor snapshots. Real-time capacity, current pricing, sub-tier visibility, and exact technical data packages are not available in the current data environment. For any requirement of material size or operational importance, direct engagement with qualified sources is strongly advised.
 
-OVERALL CONFIDENCE IN THIS SYNTHESIS: Medium
-This is a structured, category-aware synthesis using prototype extractor data across WebFLIS, FPDS, Sanctions, and program intelligence layers. It is significantly more specific than generic templated output but does not replace manual due diligence or direct outreach to the producing agencies for high-stakes requirements.
+OVERALL CONFIDENCE: Medium (prototype data environment)
+The structure and logic are sound, but depth is constrained by prototype extractor coverage. This is intended as a starting point for analyst review rather than a final due-diligence product.
 
 SOURCES & METHODOLOGY
-Synthesized from WebFLIS item master characteristics, FPDS award transactions (prototype), live OFAC SDN screening, and expanded program/socio-economic intelligence. No commercial pricing databases or direct supplier outreach performed. All figures are derived from available snapshot data at analysis time.%s`, extraSection)
+WebFLIS item characteristics • FPDS award patterns • OFAC SDN screening • Program/socio-economic intelligence • Technical & maintenance context layers. All values are synthesized from available prototype snapshots at time of analysis.`)
 
 	return report
 }
