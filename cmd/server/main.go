@@ -14,6 +14,7 @@ import (
 	"github.com/bmcelhaney/insight-forge/internal/components"
 	"github.com/bmcelhaney/insight-forge/internal/config"
 	"github.com/bmcelhaney/insight-forge/internal/db"
+	"github.com/bmcelhaney/insight-forge/internal/export"
 	"github.com/bmcelhaney/insight-forge/internal/extraction"
 	"github.com/bmcelhaney/insight-forge/internal/models"
 	"github.com/bmcelhaney/insight-forge/internal/processing"
@@ -207,7 +208,7 @@ func main() {
 		json.NewEncoder(w).Encode(result)
 	})
 
-	// === Export structured payload for pricing tool ===
+	// === Export structured payload for pricing tool (JSON) ===
 	r.Get("/api/export/{nsn}", func(w http.ResponseWriter, r *http.Request) {
 		nsn := chi.URLParam(r, "nsn")
 		result, _ := database.GetLatestResult(r.Context(), nsn)
@@ -225,6 +226,24 @@ func main() {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="insight-forge-%s.json"`, nsn))
 		json.NewEncoder(w).Encode(payload)
+	})
+
+	// === Export full evidence bundle as Excel (.xlsx) ===
+	r.Get("/api/export-excel/{nsn}", func(w http.ResponseWriter, r *http.Request) {
+		nsn := chi.URLParam(r, "nsn")
+
+		f, err := export.GenerateExcelBundle(r.Context(), database, nsn)
+		if err != nil {
+			http.Error(w, "failed to generate excel", http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="insight-forge-%s.xlsx"`, nsn))
+
+		if err := f.Write(w); err != nil {
+			slog.Error("failed to write excel", "error", err)
+		}
 	})
 
 	addr := fmt.Sprintf(":%d", cfg.Port)

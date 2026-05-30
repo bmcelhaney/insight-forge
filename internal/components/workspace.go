@@ -180,11 +180,16 @@ func InsightCard(props WorkspaceProps) g.Node {
 				),
 			),
 
-			Div(Class("card-actions justify-end mt-6"),
+			Div(Class("card-actions justify-end mt-6 gap-2"),
 				Button(
 					Class("btn btn-primary btn-sm"),
-					ds.On("click", fmt.Sprintf(`@post('/api/export/%s', {}, {download: true})`, r.EntityID)),
-					g.Text("Export JSON → Pricing Tool"),
+					ds.On("click", fmt.Sprintf(`window.location = '/api/export/%s'`, r.EntityID)),
+					g.Text("Export JSON"),
+				),
+				Button(
+					Class("btn btn-accent btn-sm"),
+					ds.On("click", fmt.Sprintf(`window.location = '/api/export-excel/%s'`, r.EntityID)),
+					g.Text("Export Excel Bundle"),
 				),
 				Button(
 					Class("btn btn-ghost btn-sm"),

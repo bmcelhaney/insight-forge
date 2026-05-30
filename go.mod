@@ -11,4 +11,6 @@ require (
 	github.com/stretchr/testify v1.9.0
 	maragu.dev/gomponents-datastar v0.4.0
 	github.com/starfederation/datastar-go v0.5.1 // or latest compatible
+	github.com/xuri/excelize/v2 v2.8.1
+
 )
