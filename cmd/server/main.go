@@ -117,6 +117,29 @@ func main() {
 		})
 	})
 
+	// Debug endpoint to test real FPDS / SAM.gov integration
+	r.Get("/debug/fpds/{nsn}", func(w http.ResponseWriter, r *http.Request) {
+		nsn := chi.URLParam(r, "nsn")
+		// Only fetch FPDS so it's clean
+		snaps, _ := extractorReg.FetchAll(r.Context(), nsn, []string{"FPDS"}, nil)
+
+		isLive := false
+		if len(snaps) > 0 {
+			if ds, ok := snaps[0].RawResponse["data_source"].(string); ok && ds == "live_sam_gov" {
+				isLive = true
+			}
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"nsn":             nsn,
+			"using_real_sam":  isLive,
+			"fpds_snapshots":  snaps,
+			"sam_key_present": os.Getenv("SAM_API_KEY") != "",
+			"note":            "If using_real_sam is true, this came from a live call to SAM.gov using your API key.",
+		})
+	})
+
 	addr := ":" + strconv.Itoa(cfg.Port)
 	fmt.Printf("\n")
 	fmt.Printf("========================================\n")
