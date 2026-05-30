@@ -70,13 +70,13 @@ func (f *FPDSExtractor) fetchReal(ctx context.Context, entityID string) ([]model
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("network error calling SAM.gov: %w", err)
+		return nil, fmt.Errorf("network error calling SAM.gov (url=%s): %w", reqURL, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("SAM.gov returned HTTP %d: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("SAM.gov returned HTTP %d (url=%s): %s", resp.StatusCode, reqURL, string(body))
 	}
 
 	body, _ := io.ReadAll(resp.Body)
