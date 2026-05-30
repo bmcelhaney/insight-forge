@@ -345,9 +345,10 @@
         const row = document.createElement('div');
         row.className = 'flex justify-between text-xs py-0.5 border-b border-zinc-800 last:border-none';
         let extra = '';
-        if (s.share_percent) extra += ` • ${s.share_percent.toFixed(1)}%`;
-        if (s.most_recent_award) extra += ` • last ${s.most_recent_award}`;
-        row.innerHTML = `<div>${s.name || s.Name} (${s.cage || s.CAGE})</div><div class="text-zinc-400">${s.award_count || s.AwardCount || 0} awards${extra}</div>`;
+        if (s.share_percent) extra += ` <span class="text-emerald-400">${s.share_percent.toFixed(1)}%</span>`;
+        if (s.most_recent_award) extra += ` <span class="text-amber-400">last ${s.most_recent_award}</span>`;
+        if (s.total_value) extra += ` <span class="text-zinc-400">$${Math.round((s.total_value || 0)/1000)}k</span>`;
+        row.innerHTML = `<div class="font-medium">${s.name || s.Name} (${s.cage || s.CAGE})</div><div class="text-right text-zinc-400">${s.award_count || s.AwardCount || 0} awards${extra}</div>`;
         tsEl.appendChild(row);
       });
 
@@ -356,8 +357,8 @@
       const demandPeriod = dem.award_period || dem.AwardPeriod || '';
       const dm = document.getElementById('demand-metrics');
       let demandExtra = '';
-      if (dem.yoy_change || dem.YoYChange) demandExtra += `<div style="grid-column: 1 / -1; font-size:11px; color:#a1a1aa;">YoY: ${dem.yoy_change || dem.YoYChange}</div>`;
-      if (dem.peak_periods || dem.PeakPeriods) demandExtra += `<div style="grid-column: 1 / -1; font-size:11px; color:#a1a1aa;">Peak: ${dem.peak_periods || dem.PeakPeriods}</div>`;
+      if (dem.yoy_change || dem.YoYChange) demandExtra += `<div style="grid-column: 1 / -1; font-size:11px; color:#a1a1aa; margin-top:2px;">YoY Change: <span class="text-zinc-300">${dem.yoy_change || dem.YoYChange}</span></div>`;
+      if (dem.peak_periods || dem.PeakPeriods) demandExtra += `<div style="grid-column: 1 / -1; font-size:11px; color:#a1a1aa;">Peak Periods: <span class="text-zinc-300">${dem.peak_periods || dem.PeakPeriods}</span></div>`;
       dm.innerHTML = `
         <div><span class="text-zinc-400">Total Awards:</span> <span class="font-semibold">${dem.total_awards || dem.TotalAwards || '—'}</span></div>
         <div><span class="text-zinc-400">Total Value:</span> <span class="font-semibold">$${(dem.total_value_usd || dem.TotalValueUSD || 0).toLocaleString()}</span></div>
