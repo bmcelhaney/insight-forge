@@ -1,19 +1,18 @@
 #!/usr/bin/env bash
 #
-# Insight Forge - Easy runner for the nib-sprite prototype
+# Insight Forge - Runner
 #
-# This script makes it simple to run Insight Forge on the shared sprite
-# without conflicting with Stitchify or PriorityForge.
+# On the dedicated sprite (nib-insightforge):
+#   ./run.sh 8080
+#
+# On a shared sprite (not recommended anymore):
+#   BASE_PATH=/insightforge ./run.sh 8091
 #
 # Usage:
-#   ./run.sh                          # runs on port 8091
-#   ./run.sh 8100                     # custom port
-#   BASE_PATH=/insightforge ./run.sh  # serve under subpath (for nib-sprite.fly.dev/insightforge)
+#   ./run.sh        # defaults to port 8091
+#   ./run.sh 8080   # specific port
 #
-# Isolation guarantees:
-# - Runs from its own directory (/home/sprite/insight-forge)
-# - Uses its own DuckDB file (./data/insight-forge.duckdb)
-# - No shared state with other apps on the sprite
+# Isolation: Own directory + own DuckDB file.
 
 set -e
 

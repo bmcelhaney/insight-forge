@@ -27,45 +27,57 @@ go run ./cmd/server
 
 Open http://localhost:8080
 
-## Quick Start (on nib-sprite)
+## Quick Start (Dedicated Sprite - Recommended)
 
-**Important**: This app is **fully isolated**. It lives in its own directory and uses its own DuckDB file. It will **not** affect your Stitchify or PriorityForge apps on the sprite.
+You now have a **dedicated sprite** called `nib-insightforge` (public URL: https://nib-insightforge-bsmmx.sprites.app).
 
-### Running under `/insightforge` on the sprite domain (recommended)
+This is the cleanest and recommended way to run Insight Forge.
 
-This is the goal — making it available at `https://nib-sprite.../insightforge`.
+### On the new sprite (nib-insightforge)
 
-1. Start the app with the correct base path:
+Enter the sprite:
 
 ```bash
-cd /home/sprite/insight-forge
-git pull origin main
-
-BASE_PATH=/insightforge ./run.sh 8091
+sprite console -o bill-nib -s nib-insightforge
 ```
 
-2. The rewrites have already been applied on the sprite (with support for the `INSIGHT_FORGE_PORT` env var).
-
-3. When restarting the Next.js side of Stitchify, pass the port variable if not using the default:
-
-   ```bash
-   INSIGHT_FORGE_PORT=8091 npm run dev
-   ```
-
-After that, the app should be reachable at `/insightforge` on the main sprite domain.
-
-### Local testing from your Mac
+Inside the sprite console:
 
 ```bash
-./run.sh 8091
+cd /home/sprite
+git clone https://<YOUR_GITHUB_PAT>@github.com/bmcelhaney/insight-forge.git
+cd insight-forge
+git pull origin main
+
+# Run it (dedicated sprite - clean and simple)
+./run.sh 8080
+```
+
+From your Mac, expose it:
+
+```bash
+sprite proxy 8080
+```
+
+Then open: http://localhost:8080
+
+You can change the port with `./run.sh 3000` etc.
+
+### Local testing (from your Mac)
+
+```bash
+cd /Users/bill/insight-forge
+./run.sh 8080
 ```
 
 Then in another terminal:
 ```bash
-sprite proxy 8091
+sprite proxy 8080
 ```
 
-Open http://localhost:8091
+Open http://localhost:8080
+
+**Note**: On a dedicated sprite you generally do **not** need `BASE_PATH` unless you specifically want it mounted under a subpath.
 
 Recommended safe ports on the shared sprite: **8090–8110** range.
 
