@@ -40,7 +40,12 @@ func NewDefaultRegistry(samAPIKey string) *Registry {
 	gsa := NewGSAAdvantageExtractor()
 	r.extractors[gsa.SourceCode()] = gsa
 
-	// Future: MCRL, SAM.gov, historical award feeds, technical manuals, etc.
+	// Dedicated AbilityOne program data (mandatory source status, real NPA/CAGE, CID, MPL pricing notes, demand character).
+	// Critical upgrade for the general path on the large volume of AbilityOne-relevant NSNs.
+	ao := NewAbilityOneExtractor()
+	r.extractors[ao.SourceCode()] = ao
+
+	// Future: MCRL, SAM.gov, historical award feeds, technical manuals, bulk PUB LOG integration, etc.
 	return r
 }
 
