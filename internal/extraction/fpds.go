@@ -11,6 +11,7 @@ import (
 	"math/rand"
 	"net/http"
 	"net/url"
+	"sort"
 	"time"
 
 	"github.com/bmcelhaney/insight-forge/internal/models"
@@ -210,9 +211,19 @@ func (f *FPDSExtractor) fetchRealFromUSASpending(ctx context.Context, entityID s
 			"keywords":         []string{entityID},
 			"award_type_codes": []string{"A", "B", "C", "D"}, // contracts
 		},
-		"fields": []string{"awarding_agency_name", "total_obligation", "last_modified_date", "recipient_name", "psc_description", "naics_description"},
-		"limit":  50,
-		"page":   1,
+		"fields": []string{
+			"awarding_agency_name",
+			"total_obligation",
+			"last_modified_date",
+			"date_signed",
+			"recipient_name",
+			"recipient_unique_id",
+			"psc_description",
+			"naics_description",
+			"award_id",
+		},
+		"limit": 50,
+		"page":  1,
 	}
 
 	jsonBody, _ := json.Marshal(payload)
@@ -245,23 +256,45 @@ func (f *FPDSExtractor) fetchRealFromUSASpending(ctx context.Context, entityID s
 	totalAwards := len(results)
 	totalValue := int64(0)
 	agencies := map[string]bool{}
+	recipients := map[string]float64{} // real recipient names from awards as supplier proxy
 	lastDate := ""
+	var sampleAwards []string
 
 	for _, r := range results {
 		if res, ok := r.(map[string]any); ok {
+			obl := 0.0
 			if val, ok := res["total_obligation"].(float64); ok {
+				obl = val
 				totalValue += int64(val)
 			}
 			if agency, ok := res["awarding_agency_name"].(string); ok && agency != "" {
 				agencies[agency] = true
 			}
-			if d, ok := res["last_modified_date"].(string); ok {
+			if d, ok := res["last_modified_date"].(string); ok && d != "" {
+				lastDate = d
+			} else if d, ok := res["date_signed"].(string); ok && d != "" {
 				lastDate = d
 			}
-			// Capture more fields for richer reports (for future use)
-			if _, ok := res["psc_description"].(string); ok {
+
+			rec := ""
+			if rn, ok := res["recipient_name"].(string); ok && rn != "" {
+				rec = rn
 			}
-			if _, ok := res["naics_description"].(string); ok {
+			if rec != "" {
+				recipients[rec] += obl
+			}
+
+			// Build 2-3 concrete award examples for the narrative
+			if len(sampleAwards) < 3 && rec != "" && obl > 0 {
+				ag := ""
+				if a, ok := res["awarding_agency_name"].(string); ok {
+					ag = a
+				}
+				yr := ""
+				if len(lastDate) >= 4 {
+					yr = lastDate[:4]
+				}
+				sampleAwards = append(sampleAwards, fmt.Sprintf("%s to %s (~$%.0f) %s", ag, rec, obl, yr))
 			}
 		}
 	}
@@ -277,17 +310,34 @@ func (f *FPDSExtractor) fetchRealFromUSASpending(ctx context.Context, entityID s
 		topAgencies = []string{"Various Federal Agencies"}
 	}
 
+	// Top real recipients from the actual award results (sorted by value desc)
+	type recPair struct {
+		name  string
+		value float64
+	}
+	var recList []recPair
+	for name, v := range recipients {
+		recList = append(recList, recPair{name, v})
+	}
+	sort.Slice(recList, func(i, j int) bool { return recList[i].value > recList[j].value })
+	topRecipients := []string{}
+	for i := 0; i < len(recList) && i < 5; i++ {
+		topRecipients = append(topRecipients, recList[i].name)
+	}
+
 	snap := models.DataSnapshot{
 		EntityID:   entityID,
 		SourceCode: "FPDS",
 		SnapshotAt: time.Now(),
 		RawResponse: map[string]any{
-			"total_awards":      totalAwards,
-			"total_value_usd":   totalValue,
-			"top_agencies":      topAgencies,
-			"last_award_date":   lastDate,
-			"demand_character":  "Real award data from USAspending.gov (keyword search)",
-			"primary_vehicle":   "Various (see USAspending results)",
+			"total_awards":       totalAwards,
+			"total_value_usd":    totalValue,
+			"top_agencies":       topAgencies,
+			"last_award_date":    lastDate,
+			"top_recipients":     topRecipients,
+			"sample_awards":      sampleAwards,
+			"demand_character":   "Real award data from USAspending.gov (keyword search)",
+			"primary_vehicle":    "Various (see USAspending results)",
 			"award_recency_days": 0,
 			"data_source":        "live_usaspending",
 			"note":               "LIVE data from USAspending.gov public API",

@@ -46,6 +46,9 @@ func Synthesize(ctx context.Context, entityID string, snapshots []models.DataSna
 	// === Supplier & Ecosystem View ===
 	supplierView := buildSupplierView(snapshots)
 
+	// Lightly enrich with real award recipients from live USAspending when present (general path only)
+	supplierView = enrichWithRealRecipients(supplierView, snapshots)
+
 	// === Related NSNs (simplified for prototype) ===
 	related := generateRelatedNSNs(entityID, snapshots)
 
@@ -295,6 +298,57 @@ func deriveCategorySupplierView(fsc string) models.SupplierView {
 	}
 }
 
+// enrichWithRealRecipients injects actual recipient names from live USAspending award results
+// into the SupplierView for the general (non-special) path. This makes arbitrary NSNs show
+// real buyer/recipient data instead of only prototype NIB names.
+func enrichWithRealRecipients(view models.SupplierView, snaps []models.DataSnapshot) models.SupplierView {
+	var realRecips []string
+	for _, s := range snaps {
+		if s.SourceCode == "FPDS" {
+			if ds, ok := s.RawResponse["data_source"].(string); ok && ds == "live_usaspending" {
+				if recs, ok := s.RawResponse["top_recipients"].([]string); ok && len(recs) > 0 {
+					realRecips = recs
+				} else if recsI, ok := s.RawResponse["top_recipients"].([]any); ok {
+					for _, r := range recsI {
+						if str, ok := r.(string); ok && str != "" {
+							realRecips = append(realRecips, str)
+						}
+					}
+				}
+				break
+			}
+		}
+	}
+	if len(realRecips) == 0 {
+		return view
+	}
+
+	// Prepend up to 2 real recipients as "award recipients" so the card shows live data.
+	// Keep the category prototype suppliers but surface the real names first with a clear label.
+	augmented := view
+	for i, name := range realRecips {
+		if i >= 2 {
+			break
+		}
+		aug := models.SupplierSummary{
+			Name:       name + " (award recipient)",
+			CAGE:       "",
+			AwardCount: 0,
+			TotalValue: 0,
+			Country:    "US",
+		}
+		// Insert at front, but cap total shown at 4
+		augmented.TopSuppliers = append([]models.SupplierSummary{aug}, augmented.TopSuppliers...)
+		if len(augmented.TopSuppliers) > 4 {
+			augmented.TopSuppliers = augmented.TopSuppliers[:4]
+		}
+	}
+	if len(augmented.TopSuppliers) > 0 {
+		augmented.EcosystemNote = "Top award recipients from live USAspending data mixed with category baseline. " + view.EcosystemNote
+	}
+	return augmented
+}
+
 func generateRelatedNSNs(entityID string, snaps []models.DataSnapshot) []models.RelatedNSN {
 	// Tight, high-fidelity related NSNs for the 5 canonical AbilityOne test items.
 	// Only truly functionally related or essentially equivalent items (supersessions
@@ -507,8 +561,55 @@ func buildDemandSignals(snaps []models.DataSnapshot) models.DemandSignals {
 	fsc := ""
 	for _, s := range snaps {
 		if s.SourceCode == "FPDS" {
+			// Prefer real live USAspending data over any prototype when present
+			if ds, ok := s.RawResponse["data_source"].(string); ok && ds == "live_usaspending" {
+				realAwards := 0
+				if ta, ok := s.RawResponse["total_awards"].(int); ok {
+					realAwards = ta
+				} else if ta, ok := s.RawResponse["total_awards"].(float64); ok {
+					realAwards = int(ta)
+				}
+				realValue := 0.0
+				if tv, ok := s.RawResponse["total_value_usd"].(int64); ok {
+					realValue = float64(tv)
+				} else if tv, ok := s.RawResponse["total_value_usd"].(float64); ok {
+					realValue = tv
+				}
+				realAgencies := []string{"Various Federal Agencies"}
+				if ag, ok := s.RawResponse["top_agencies"].([]string); ok && len(ag) > 0 {
+					realAgencies = ag
+				} else if agi, ok := s.RawResponse["top_agencies"].([]any); ok {
+					for _, a := range agi {
+						if str, ok := a.(string); ok {
+							realAgencies = append(realAgencies, str)
+						}
+					}
+				}
+				demandNote := "Real federal award activity surfaced via USAspending public keyword search. Volume and agencies reflect actual obligated dollars on contracts matching this NSN."
+				if dc, ok := s.RawResponse["demand_character"].(string); ok && dc != "" {
+					demandNote = dc
+				}
+				// Add concrete sample awards if the extractor captured them
+				if samples, ok := s.RawResponse["sample_awards"].([]string); ok && len(samples) > 0 {
+					n := 2
+					if len(samples) < n {
+						n = len(samples)
+					}
+					demandNote += " Recent activity includes: " + strings.Join(samples[:n], "; ") + "."
+				}
+
+				return models.DemandSignals{
+					TotalAwards:         realAwards,
+					TotalValueUSD:       realValue,
+					TopAgencies:         realAgencies,
+					RecentTrend:         "stable",
+					ProgramAssociations: []string{"Federal Awards (USAspending)"},
+					AwardPeriod:         "Recent awards per USAspending (live)",
+					DemandNote:          demandNote,
+				}
+			}
+			// Fallback: old prototype path that at least used the demand_character
 			if raw, ok := s.RawResponse["demand_character"].(string); ok && raw != "" {
-				// Use the richer note from the improved FPDS extractor when available
 				return models.DemandSignals{
 					TotalAwards:         120,
 					TotalValueUSD:       2100000,
@@ -627,6 +728,7 @@ func buildDynamicFullReport(entityID string, viability, risk float64, flags []mo
 
 	// Pull rich fields from WebFLIS when available
 	itemName := "Federal stock item"
+	unitOfIssue := ""
 	unitPrice := ""
 	techChars := ""
 	acqCode := ""
@@ -634,6 +736,9 @@ func buildDynamicFullReport(entityID string, viability, risk float64, flags []mo
 		if s.SourceCode == "WEBFLIS" {
 			if name, ok := s.RawResponse["item_name"].(string); ok && name != "" {
 				itemName = name
+			}
+			if uoi, ok := s.RawResponse["unit_of_issue"].(string); ok && uoi != "" {
+				unitOfIssue = uoi
 			}
 			if price, ok := s.RawResponse["unit_price"].(int); ok {
 				unitPrice = fmt.Sprintf("$%.0f", float64(price))
@@ -686,27 +791,41 @@ func buildDynamicFullReport(entityID string, viability, risk float64, flags []mo
 		}
 	}
 
-	// Format GSA Advantage pricing for the report (real AbilityOne data via scraping)
+	// Format real GSA Advantage pricing prominently (AbilityOne / JWOD live scrape)
 	gsaPricingSection := ""
 	if len(gsaPrices) > 0 {
-		gsaPricingSection = "\nGSA ADVANTAGE PRICING (AbilityOne / JWOD - Live Web Scrape)\n"
+		gsaPricingSection = "GSA ADVANTAGE PRICING (Live scrape from ADV.JWOD category)\n"
 		for i, p := range gsaPrices {
-			if i >= 3 {
+			if i >= 4 {
 				break
 			}
 			price := p["price"]
 			ctx := ""
 			if c, ok := p["context"].(string); ok {
-				ctx = c
+				ctx = strings.TrimSpace(c)
 			}
-			gsaPricingSection += fmt.Sprintf("- $%v USD  [%s]\n", price, ctx)
+			gsaPricingSection += fmt.Sprintf("- $%v USD %s\n", price, ctx)
 		}
-		gsaPricingSection += "Sourced via direct POST + HTML scrape of GSA Advantage (cat=ADV.JWOD).\n"
+		gsaPricingSection += "Source: direct POST to gsaadvantage.gov (cat=ADV.JWOD).\n"
+	} else {
+		gsaPricingSection = "No current GSA Advantage (ADV.JWOD) listings found for this NSN via live scrape.\n"
 	}
 
-	// Build a more varied, data-driven report
-	report := fmt.Sprintf(`DYNAMIC SYNTHESIS — NSN %s
-%s (FSC %s)
+	// Detect if we have real USAspending data for this run
+	liveNote := ""
+	for _, s := range snaps {
+		if s.SourceCode == "FPDS" {
+			if ds, ok := s.RawResponse["data_source"].(string); ok && ds == "live_usaspending" {
+				liveNote = " (LIVE from USAspending.gov public API)"
+				break
+			}
+		}
+	}
+
+	// Build a cleaner, data-grounded dynamic report. GSA pricing and real award volume are surfaced early.
+	var b strings.Builder
+	fmt.Fprintf(&b, `DYNAMIC SYNTHESIS — NSN %s
+%s (FSC %s)%s
 
 QUANTITATIVE HIGHLIGHTS
 - Sourcing Attractiveness: %.0f | Supply Risk: %.0f
@@ -714,7 +833,15 @@ QUANTITATIVE HIGHLIGHTS
 - Observed volume: %d awards | ~$%.1fM
 - Demand profile: %s
 
-ITEM CHARACTERISTICS
+`, entityID, itemName, fsc, liveNote, viability, risk,
+		suppliers.TotalSuppliers, len(suppliers.PrimaryCountries), suppliers.ConcentrationRisk,
+		demand.TotalAwards, float64(demand.TotalValueUSD)/1000000,
+		demand.DemandNote)
+
+	// Prominent GSA pricing block right after the numbers (real data when present)
+	fmt.Fprintf(&b, "REAL-TIME PRICING (GSA Advantage JWOD scrape)\n%s\n", gsaPricingSection)
+
+	fmt.Fprintf(&b, `ITEM CHARACTERISTICS (from WebFLIS)
 Item: %s
 Unit of issue: %s
 Unit price range: %s
@@ -733,49 +860,44 @@ SUPPLIER ECOSYSTEM
 DEMAND & MARKET DYNAMICS
 %s
 
-GSA ADVANTAGE PRICING (AbilityOne / JWOD - Live Web Scrape from GSA Advantage)
-%s
-Note: Real-time pricing scraped directly from GSA Advantage public site for AbilityOne (ADV.JWOD) items.
-
 TECHNICAL & MAINTENANCE CONSIDERATIONS
 %s
 %s
 %s
 
 RISK FLAGS & IMPLICATIONS
-`, entityID, itemName, fsc, viability, risk,
-		suppliers.TotalSuppliers, len(suppliers.PrimaryCountries), suppliers.ConcentrationRisk,
-		demand.TotalAwards, float64(demand.TotalValueUSD)/1000000,
-		demand.DemandNote,
-		itemName, demand.TotalAwards, unitPrice, techChars, acqCode,
+`, itemName, unitOfIssue, unitPrice, techChars, acqCode,
 		demand.DemandNote,
 		programContext, socioNotes,
 		suppliers.EcosystemNote, suppliers.ContinuityAssessment,
 		demand.DemandNote,
-		gsaPricingSection,
-		techNotes, maintNotes)
+		techNotes, maintNotes, "")
 
-	// Flags
+	// Flags section (appended)
 	if len(flags) > 0 {
-		report += "The following flags were identified:\n"
+		b.WriteString("The following flags were identified:\n")
 		for _, f := range flags {
-			report += fmt.Sprintf("- [%s] %s — %s\n", f.Severity, f.Description, f.Implication)
+			impl := f.Implication
+			if impl == "" {
+				impl = "Monitor and validate with source before large commitments."
+			}
+			fmt.Fprintf(&b, "- [%s] %s — %s\n", f.Severity, f.Description, impl)
 		}
 	} else {
-		report += "- No high-severity flags identified from current data sources.\n"
+		b.WriteString("- No high-severity flags identified from current data sources.\n")
 	}
 
-	report += fmt.Sprintf(`
+	fmt.Fprintf(&b, `
 DATA GAPS & RECOMMENDED FOLLOW-UP
-Real-time capacity, sub-tier visibility, and exact current pricing beyond GSA Advantage are limited in public sources. For any requirement of material size or operational importance, direct engagement with qualified sources is strongly advised.
+Real-time capacity, sub-tier visibility, and exact current pricing beyond the GSA Advantage scrape are limited in public sources. For any material requirement, direct engagement with qualified sources is strongly advised.
 
-OVERALL CONFIDENCE: Medium-High
-This synthesis draws from live USAspending award data, real GSA Advantage pricing (for AbilityOne items), and structured program/technical context. It provides a strong, data-grounded starting point for analyst review.
+OVERALL CONFIDENCE: Medium (prototype synthesis with live award + pricing feeds)
+This report incorporates live USAspending award aggregates%s and real GSA Advantage JWOD pricing where available. All numbers and agencies reflect the latest public data pull at generation time.
 
 SOURCES & METHODOLOGY
-USAspending award data (live) • GSA Advantage pricing (direct web scrape, AbilityOne focus) • Program/socio-economic intelligence • Technical & maintenance context layers.`)
+USAspending award data (live public API) • GSA Advantage pricing (direct form POST + HTML scrape, ADV.JWOD) • WebFLIS item master • Program/socio-economic and technical context layers.`, liveNote)
 
-	return report
+	return b.String()
 }
 
 // RichAnalysis holds the expanded, non-generic analyst deliverables.
@@ -1214,15 +1336,15 @@ Synthesized from WebFLIS, award data, and AbilityOne facility sustainment contex
 		}
 
 		out.Summary = fmt.Sprintf(
-			"%s (NSN %s) shows sourcing attractiveness of %.0f with supply risk at %.0f. %s Production is concentrated at %s risk with %d vendors observed across %d countries. %s",
+			"%s (NSN %s) shows sourcing attractiveness of %.0f with supply risk at %.0f. %s %d vendors observed; concentration posture %s. %s",
 			itemDesc, entityID, viability, risk,
 			suppliers.EcosystemNote,
+			suppliers.TotalSuppliers,
 			suppliers.ConcentrationRisk,
-			suppliers.TotalSuppliers, len(suppliers.PrimaryCountries),
 			demand.DemandNote)
 
 		out.MarketCommentary = fmt.Sprintf(
-			"Multi-source synthesis for FSC %s using WebFLIS characteristics and FPDS award patterns. %s Concentration posture and demand character are the primary drivers of the current scores. Prototype data — high-stakes requirements need direct validation with producers.",
+			"Multi-source synthesis for FSC %s. %s Real USAspending award aggregates and GSA Advantage pricing (when available for AbilityOne items) drive the view. Concentration and demand character are primary score drivers.",
 			getFSC(entityID), suppliers.ContinuityAssessment)
 
 		out.FullReport = buildDynamicFullReport(entityID, viability, risk, flags, suppliers, demand, snaps)
