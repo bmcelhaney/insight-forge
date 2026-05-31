@@ -47,24 +47,19 @@
     </div>
 
     <div class="p-6">
-      <!-- Golden Demo NSNs Dropdown -->
-      <div class="mb-3">
-        <div class="flex items-center gap-2 mb-1.5">
-          <span class="text-[10px] font-semibold uppercase tracking-[1px] text-emerald-400">Golden Demo Set</span>
-          <span class="text-[10px] text-zinc-500">— pre-loaded high-fidelity analyst cases for Monday</span>
+      <!-- Subtle quick examples (no special labeling) -->
+      <div class="mb-2">
+        <div class="text-[10px] text-zinc-500 mb-1">Examples</div>
+        <div class="flex flex-wrap gap-x-3 gap-y-1 text-xs font-mono">
+          <button class="quick-nsn text-emerald-400 hover:text-emerald-300 hover:underline" data-nsn="7920014487052">7920-01-448-7052</button>
+          <button class="quick-nsn text-emerald-400 hover:text-emerald-300 hover:underline" data-nsn="7520009357136">7520-00-935-7136</button>
+          <button class="quick-nsn text-emerald-400 hover:text-emerald-300 hover:underline" data-nsn="8105015171352">8105-01-517-1352</button>
+          <button class="quick-nsn text-emerald-400 hover:text-emerald-300 hover:underline" data-nsn="7125011515435">7125-01-151-5435</button>
+          <button class="quick-nsn text-emerald-400 hover:text-emerald-300 hover:underline" data-nsn="5180006507821">5180-00-650-7821</button>
+          <button class="quick-nsn text-emerald-400 hover:text-emerald-300 hover:underline" data-nsn="7530015399831">7530-01-539-9831</button>
+          <button class="quick-nsn text-emerald-400 hover:text-emerald-300 hover:underline" data-nsn="4510015219866">4510-01-521-9866</button>
+          <button class="quick-nsn text-emerald-400 hover:text-emerald-300 hover:underline" data-nsn="7220015826246">7220-01-582-6246</button>
         </div>
-        <select id="golden-nsn-select"
-                class="w-full bg-zinc-900 border border-emerald-700 hover:border-emerald-500 focus:border-emerald-400 text-sm px-4 py-2.5 rounded-2xl text-zinc-200 font-medium">
-          <option value="">— Choose a golden NSN to demo —</option>
-          <option value="7920014487052">7920-01-448-7052 — Towel, Paper, Cleaning, Heavy Duty (AbilityOne)</option>
-          <option value="7520009357136">7520-00-935-7136 — Pen, Ball-Point, Black (AbilityOne)</option>
-          <option value="8105015171352">8105-01-517-1352 — Bag, Plastic, Reclosable (AbilityOne)</option>
-          <option value="7125011515435">7125-01-151-5435 — Shelf, Metal, Storage</option>
-          <option value="5180006507821">5180-00-650-7821 — Tool Kit, General Mechanic's</option>
-          <option value="7530015399831">7530-01-539-9831 — Writing Pad / Office Paper (AbilityOne-relevant)</option>
-          <option value="4510015219866">4510-01-521-9866 — Faucet, Lavatory, Commercial</option>
-          <option value="7220015826246">7220-01-582-6246 — Floor Tile / Entrance Mat, Vinyl (AbilityOne-relevant)</option>
-        </select>
       </div>
 
       <!-- Search Bar -->
@@ -74,7 +69,7 @@
             <div class="relative">
               <input id="nsn-input" type="text" value="7920014487052"
                      class="w-full bg-zinc-900 border border-zinc-700 focus:border-emerald-500 font-mono text-2xl px-5 py-3.5 rounded-2xl placeholder:text-zinc-500"
-                     placeholder="Enter 13-digit NSN or NIIN (or pick from Golden set above)">
+                     placeholder="Enter 13-digit NSN or NIIN">
             </div>
           </div>
           <button type="submit"
@@ -83,7 +78,7 @@
             <span>ANALYZE</span>
           </button>
         </form>
-        <div class="text-[10px] text-zinc-500 mt-1.5 px-1">Golden set = rich hand-crafted depth for demo • Other NSNs use live USAspending + GSA Advantage scrape where available</div>
+        <div class="text-[10px] text-zinc-500 mt-1.5 px-1">Multi-source extraction from WebFLIS, USAspending, and GSA Advantage</div>
       </div>
 
       <!-- Visible Error Banner -->
@@ -260,20 +255,17 @@
       await performAnalysis(nsn);
     });
 
-    // Golden Demo NSN dropdown — selects a pre-loaded high-fidelity case and auto-analyzes
-    const goldenSelect = document.getElementById('golden-nsn-select');
-    if (goldenSelect) {
-      goldenSelect.addEventListener('change', async () => {
-        const val = goldenSelect.value;
-        if (!val) return;
+    // Subtle quick example NSNs — clicking populates the input and runs analysis
+    document.querySelectorAll('.quick-nsn').forEach(btn => {
+      btn.addEventListener('click', async (e) => {
+        e.preventDefault();
+        const nsn = btn.getAttribute('data-nsn');
+        if (!nsn) return;
         const input = document.getElementById('nsn-input');
-        if (input) input.value = val;
-        // Auto-run the analysis for fast demo flow
-        await performAnalysis(val);
-        // Reset the dropdown so user can pick another easily
-        goldenSelect.value = '';
+        if (input) input.value = nsn;
+        await performAnalysis(nsn);
       });
-    }
+    });
 
     async function performAnalysis(nsn) {
       currentNSN = nsn;
