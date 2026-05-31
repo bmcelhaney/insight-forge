@@ -932,6 +932,31 @@ QUANTITATIVE HIGHLIGHTS
 		fmt.Fprintf(&b, "\n")
 	}
 
+	// When we have rich AbilityOne data, add a short strategic sourcing observation section
+	// (pulls demand character and risks for analyst-grade insights on the general path)
+	var aoDemand, aoRisks string
+	for _, s := range snaps {
+		if s.SourceCode == "ABILITYONE" {
+			if d, ok := s.RawResponse["demand_character"].(string); ok {
+				aoDemand = d
+			}
+			if r, ok := s.RawResponse["key_risks"].(string); ok {
+				aoRisks = r
+			}
+			break
+		}
+	}
+	if aoDemand != "" || aoRisks != "" {
+		fmt.Fprintf(&b, "SOURCING OBSERVATIONS & IMPLICATIONS\n")
+		if aoDemand != "" {
+			fmt.Fprintf(&b, "Demand profile: %s\n", aoDemand)
+		}
+		if aoRisks != "" {
+			fmt.Fprintf(&b, "Key considerations: %s\n", aoRisks)
+		}
+		fmt.Fprintf(&b, "Note: For high-volume or mission-critical requirements, engage the designated NPA early for capacity confirmation and volume pricing. Waivers for commercial equivalents require documented justification per AbilityOne policy.\n\n")
+	}
+
 	fmt.Fprintf(&b, `ITEM CHARACTERISTICS (from WebFLIS)
 Item: %s
 Unit of issue: %s
