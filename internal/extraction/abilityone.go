@@ -123,6 +123,22 @@ func getAbilityOneData(nsn string) *abilityOneRecord {
 			TechnicalCharacteristics: "2-ply white toilet tissue; 550 sheets per roll; 4 inch by 4 inch perforated sheets; 80 rolls per case; 100% recycled fiber with minimum 35% post-consumer content; septic safe; fits standard dispensers",
 		}
 
+	case "8415016107327", "8415-01-610-7327":
+		return &abilityOneRecord{
+			ProgramStatus:            "Mandatory Source (added 2022)",
+			ProducingNPA:             "South Texas Lighthouse for the Blind",
+			NPACAGE:                  "2W550",
+			CNA:                      "NIB",
+			CID:                      "",
+			MandatoryNote:            "AbilityOne mandatory source item (Procurement List). Federal agencies must purchase from authorized AbilityOne distributors or the designated nonprofit (South Texas Lighthouse for the Blind) unless a waiver is granted.",
+			MPLPricingNote:           "Typical pricing for 5-pair pack ~$105–$135 depending on channel and quantity. Available via GSA Advantage and AbilityOne authorized distributors.",
+			DemandCharacter:          "Steady demand for tactical, industrial, technical, and military PPE. Often procured in 5-pair packs for unit issue or bulk. Recurring replenishment for operational stocks and individual equipment.",
+			KeyRisks:                 "Single designated producer creates concentration risk for mandatory federal demand. Must use AbilityOne version for compliance (commercial Mechanix Wear equivalents require waiver). Good dexterity + impact protection but verify sizing and anti-static performance for specific use cases.",
+			ItemName:                 "GLOVES, WORK, ANTI-STATIC IMPACT CONTROL, BLACK, XXL",
+			UnitOfIssue:              "PR",
+			TechnicalCharacteristics: "Unisex anti-static impact control work gloves; black; synthetic leather palm with tacky grip; 2-way stretch padded back with conductive fibers for touchscreen compatibility and ESD protection; neoprene padded knuckles; reinforced fingertips and thumb-crotch; elastic cuff with hook-and-loop closure; machine washable; designed for dexterity and impact/abrasion resistance in industrial, tactical, or technical environments",
+		}
+
 	default:
 		return nil
 	}

@@ -212,6 +212,15 @@ func deriveWebFLISItem(fsc, entityID string, r *rand.Rand) (itemName, unitOfIssu
 		techChars = "Standard commercial grade paper product for federal restrooms and facilities"
 		basePrice = 24 + r.Intn(18)
 
+	case "8415": // Clothing, special purpose (work gloves, protective garments, etc. — many AbilityOne items)
+		itemName = "GLOVES, WORK, IMPACT PROTECTION"
+		if r.Intn(4) == 0 {
+			itemName = "GLOVES, ANTI-STATIC, TACTICAL"
+		}
+		unitOfIssue = "PR"
+		techChars = "Special purpose work or tactical gloves with impact protection, dexterity features, and often anti-static or touchscreen compatibility for technical/industrial/military use"
+		basePrice = 18 + r.Intn(25)
+
 	// === Hardware / construction fallback range ===
 	case "5305", "5310", "5320", "5340":
 		itemName = "SCREW, MACHINE, STEEL, 1/4-20 X 1 IN"
