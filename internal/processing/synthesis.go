@@ -1443,6 +1443,21 @@ Synthesized from WebFLIS, award data, and AbilityOne facility sustainment contex
 			suppliers.ConcentrationRisk,
 			demand.DemandNote)
 
+		// If we have strong AbilityOne data, append a short mandatory source note to the default summary
+		for _, s := range snaps {
+			if s.SourceCode == "ABILITYONE" {
+				if note, ok := s.RawResponse["mandatory_source_note"].(string); ok && note != "" {
+					// Keep summary concise
+					shortNote := note
+					if len(shortNote) > 180 {
+						shortNote = shortNote[:177] + "..."
+					}
+					out.Summary += " " + shortNote
+				}
+				break
+			}
+		}
+
 		out.MarketCommentary = fmt.Sprintf(
 			"Multi-source synthesis for FSC %s. %s Real USAspending award aggregates and GSA Advantage pricing (when available) drive the view. Concentration and demand character are primary score drivers.",
 			getFSC(entityID), suppliers.ContinuityAssessment)
