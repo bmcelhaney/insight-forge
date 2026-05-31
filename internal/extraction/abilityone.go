@@ -93,28 +93,34 @@ func getAbilityOneData(nsn string) *abilityOneRecord {
 
 	case "5120008785932", "5120-00-878-5932":
 		return &abilityOneRecord{
-			ProgramStatus:   "B-List (added 2009)",
-			ProducingNPA:    "The Lighthouse for the Blind, Inc. (Seattle Lighthouse)",
-			NPACAGE:         "1A863",
-			CNA:             "NIB",
-			CID:             "A-A-59337",
-			MandatoryNote:   "Mandatory source since 2009. Federal buyers must route through designated NPA or authorized distributors.",
-			MPLPricingNote:  "Notable premium in mandatory government channels vs. commercial surplus market (gov ~$106–$150 vs. surplus ~$30–$50). Verify authenticity on open market.",
-			DemandCharacter: "Steady baseline with documented surge potential (6,000-unit requisition in 2014 + ongoing smaller orders). Used in individual equipment kits and field operations.",
-			KeyRisks:        "Authenticity risk on commercial surplus (cheap imports frequently fail under heavy use). Single-NPA concentration for mandatory federal demand. Carrier/pouch often procured separately.",
+			ProgramStatus:            "B-List (added 2009)",
+			ProducingNPA:             "The Lighthouse for the Blind, Inc. (Seattle Lighthouse)",
+			NPACAGE:                  "1A863",
+			CNA:                      "NIB",
+			CID:                      "A-A-59337",
+			MandatoryNote:            "Mandatory source since 2009. Federal buyers must route through designated NPA or authorized distributors.",
+			MPLPricingNote:           "Notable premium in mandatory government channels vs. commercial surplus market (gov ~$106–$150 vs. surplus ~$30–$50). Verify authenticity on open market.",
+			DemandCharacter:          "Steady baseline with documented surge potential (6,000-unit requisition in 2014 + ongoing smaller orders). Used in individual equipment kits and field operations.",
+			KeyRisks:                 "Authenticity risk on commercial surplus (cheap imports frequently fail under heavy use). Single-NPA concentration for mandatory federal demand. Carrier/pouch often procured separately.",
+			ItemName:                 "INTRENCHING TOOL, HAND, FOLDING",
+			UnitOfIssue:              "EA",
+			TechnicalCharacteristics: "Lightweight folding tri-fold shovel-pick combination; steel blade with serrated cutting edge and axe/chopping edge; D-type grip; extends to approximately 23 inches when open; designed for individual soldier field use",
 		}
 
 	case "8540013800690", "8540-01-380-0690":
 		return &abilityOneRecord{
-			ProgramStatus:   "A-List (Commercial Distribution Program)",
-			ProducingNPA:    "Outlook Nebraska, Inc.",
-			NPACAGE:         "1R7Z2",
-			CNA:             "NIB",
-			CID:             "A-A-697 Type 2",
-			MandatoryNote:   "Mandatory source. Heavily used by Bureau of Prisons and military facilities. Must be purchased through authorized AbilityOne channels.",
-			MPLPricingNote:  "DLA Troop Support MPL benchmark ~$49.53 per case (80 rolls). Real delivered prices typically higher via distributors. Significant volume through BOP quarterly buys.",
-			DemandCharacter: "Highly predictable, high-volume institutional demand. Recurring quarterly purchases by Bureau of Prisons (often 500–800+ cases per solicitation). Steady baseline across federal facilities.",
-			KeyRisks:        "Single primary production facility concentration. Price variability across authorized distributors. Strong ESG profile (100% recycled, ≥35% PCR) but some user perception of texture/quality in institutional settings.",
+			ProgramStatus:            "A-List (Commercial Distribution Program)",
+			ProducingNPA:             "Outlook Nebraska, Inc.",
+			NPACAGE:                  "1R7Z2",
+			CNA:                      "NIB",
+			CID:                      "A-A-697 Type 2",
+			MandatoryNote:            "Mandatory source. Heavily used by Bureau of Prisons and military facilities. Must be purchased through authorized AbilityOne channels.",
+			MPLPricingNote:           "DLA Troop Support MPL benchmark ~$49.53 per case (80 rolls). Real delivered prices typically higher via distributors. Significant volume through BOP quarterly buys.",
+			DemandCharacter:          "Highly predictable, high-volume institutional demand. Recurring quarterly purchases by Bureau of Prisons (often 500–800+ cases per solicitation). Steady baseline across federal facilities.",
+			KeyRisks:                 "Single primary production facility concentration. Price variability across authorized distributors. Strong ESG profile (100% recycled, ≥35% PCR) but some user perception of texture/quality in institutional settings.",
+			ItemName:                 "PAPER, TOILET, 2-PLY, WHITE",
+			UnitOfIssue:              "BX",
+			TechnicalCharacteristics: "2-ply white toilet tissue; 550 sheets per roll; 4 inch by 4 inch perforated sheets; 80 rolls per case; 100% recycled fiber with minimum 35% post-consumer content; septic safe; fits standard dispensers",
 		}
 
 	default:
