@@ -947,14 +947,14 @@ QUANTITATIVE HIGHLIGHTS
 		}
 	}
 	if aoDemand != "" || aoRisks != "" {
-		fmt.Fprintf(&b, "SOURCING OBSERVATIONS & IMPLICATIONS\n")
+		fmt.Fprintf(&b, "SOURCING OBSERVATIONS & STRATEGIC IMPLICATIONS\n")
 		if aoDemand != "" {
-			fmt.Fprintf(&b, "Demand profile: %s\n", aoDemand)
+			fmt.Fprintf(&b, "%s\n\n", aoDemand)
 		}
 		if aoRisks != "" {
-			fmt.Fprintf(&b, "Key considerations: %s\n", aoRisks)
+			fmt.Fprintf(&b, "Key risks & considerations: %s\n\n", aoRisks)
 		}
-		fmt.Fprintf(&b, "Note: For high-volume or mission-critical requirements, engage the designated NPA early for capacity confirmation and volume pricing. Waivers for commercial equivalents require documented justification per AbilityOne policy.\n\n")
+		fmt.Fprintf(&b, "Strategic note: This is a mandatory AbilityOne source. For any material requirement, engage the designated NPA early to confirm capacity, lead times, and volume pricing. Commercial equivalents generally require a formal waiver with documented justification. Consider total cost of ownership (including user acceptance, replacement frequency, and compliance overhead) rather than unit price alone. Co-branding or hybrid models between commercial designs and NPA production are emerging as a way to improve performance while preserving the social mission.\n\n")
 	}
 
 	fmt.Fprintf(&b, `ITEM CHARACTERISTICS (from WebFLIS)
@@ -1468,14 +1468,17 @@ Synthesized from WebFLIS, award data, and AbilityOne facility sustainment contex
 			suppliers.ConcentrationRisk,
 			demand.DemandNote)
 
-		// If we have strong AbilityOne data, append a short mandatory source note to the default summary
+		// If we have strong AbilityOne data, append a strategic mandatory source note to the default summary
 		for _, s := range snaps {
 			if s.SourceCode == "ABILITYONE" {
+				if npa, ok := s.RawResponse["producing_npa"].(string); ok && npa != "" {
+					out.Summary += fmt.Sprintf(" Mandatory source produced by %s.", npa)
+				}
 				if note, ok := s.RawResponse["mandatory_source_note"].(string); ok && note != "" {
-					// Keep summary concise
+					// Keep summary concise but strategic
 					shortNote := note
-					if len(shortNote) > 180 {
-						shortNote = shortNote[:177] + "..."
+					if len(shortNote) > 160 {
+						shortNote = shortNote[:157] + "..."
 					}
 					out.Summary += " " + shortNote
 				}
@@ -1491,6 +1494,35 @@ Synthesized from WebFLIS, award data, and AbilityOne facility sustainment contex
 
 		out.PricingTrend = "Insufficient longitudinal data for confident trend; monitor via FPDS refresh"
 		out.ConcentrationIndex = 0.48 + (float64(len(suppliers.PrimaryCountries)) * 0.04)
+
+		// When we have real AbilityOne data, synthesize KeyInsights so the cards feel connected to the full report
+		for _, s := range snaps {
+			if s.SourceCode == "ABILITYONE" {
+				var insights []string
+
+				if npa, ok := s.RawResponse["producing_npa"].(string); ok && npa != "" {
+					insights = append(insights, fmt.Sprintf("Produced by %s under the AbilityOne program — mandatory source for covered federal requirements.", npa))
+				}
+
+				if status, ok := s.RawResponse["program_status"].(string); ok && status != "" {
+					insights = append(insights, fmt.Sprintf("Program status: %s. Plan for NPA capacity confirmation on large or time-sensitive orders.", status))
+				}
+
+				if risks, ok := s.RawResponse["key_risks"].(string); ok && risks != "" {
+					// Truncate for card readability
+					shortRisk := risks
+					if len(shortRisk) > 160 {
+						shortRisk = shortRisk[:157] + "..."
+					}
+					insights = append(insights, "Key risk: "+shortRisk)
+				}
+
+				if len(insights) > 0 {
+					out.KeyInsights = insights
+				}
+				break
+			}
+		}
 	}
 
 	// Always add a Sources line
