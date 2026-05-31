@@ -210,7 +210,7 @@ func (f *FPDSExtractor) fetchRealFromUSASpending(ctx context.Context, entityID s
 			"keywords":         []string{entityID},
 			"award_type_codes": []string{"A", "B", "C", "D"}, // contracts
 		},
-		"fields": []string{"awarding_agency_name", "total_obligation", "last_modified_date"},
+		"fields": []string{"awarding_agency_name", "total_obligation", "last_modified_date", "recipient_name", "psc_description", "naics_description"},
 		"limit":  50,
 		"page":   1,
 	}
@@ -257,6 +257,13 @@ func (f *FPDSExtractor) fetchRealFromUSASpending(ctx context.Context, entityID s
 			}
 			if d, ok := res["last_modified_date"].(string); ok {
 				lastDate = d
+			}
+			// Capture more fields for richer reports
+			if psc, ok := res["psc_description"].(string); ok {
+				// store for later use in report if needed
+			}
+			if naics, ok := res["naics_description"].(string); ok {
+				// store for later use
 			}
 		}
 	}
