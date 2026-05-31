@@ -66,9 +66,9 @@ func Synthesize(ctx context.Context, entityID string, snapshots []models.DataSna
 	result.RelatedNSNs = related
 	result.DemandSignals = demand
 
-	// Surface WebFLIS item identity for all NSNs (critical for non-special cases to have a description)
+	// Surface item identity. Prefer ABILITYONE data (higher quality for these items) over WEBFLIS prototype.
 	for _, s := range snapshots {
-		if s.SourceCode == "WEBFLIS" {
+		if s.SourceCode == "ABILITYONE" {
 			if name, ok := s.RawResponse["item_name"].(string); ok && name != "" {
 				result.ItemName = name
 			}
@@ -79,6 +79,23 @@ func Synthesize(ctx context.Context, entityID string, snapshots []models.DataSna
 				result.TechnicalCharacteristics = tech
 			}
 			break
+		}
+	}
+	if result.ItemName == "" {
+		// Fallback to WEBFLIS for non-AbilityOne items
+		for _, s := range snapshots {
+			if s.SourceCode == "WEBFLIS" {
+				if name, ok := s.RawResponse["item_name"].(string); ok && name != "" {
+					result.ItemName = name
+				}
+				if uoi, ok := s.RawResponse["unit_of_issue"].(string); ok && uoi != "" {
+					result.UnitOfIssue = uoi
+				}
+				if tech, ok := s.RawResponse["technical_characteristics"].(string); ok && tech != "" {
+					result.TechnicalCharacteristics = tech
+				}
+				break
+			}
 		}
 	}
 
@@ -745,30 +762,47 @@ func getFSC(entityID string) string {
 func buildDynamicFullReport(entityID string, viability, risk float64, flags []models.RiskFlag, suppliers models.SupplierView, demand models.DemandSignals, snaps []models.DataSnapshot) string {
 	fsc := getFSC(entityID)
 
-	// Pull rich fields from WebFLIS when available
+	// Pull rich fields. Prefer ABILITYONE data (more accurate for these items) over WebFLIS prototype.
 	itemName := "Federal stock item"
 	unitOfIssue := ""
 	unitPrice := ""
 	techChars := ""
 	acqCode := ""
 	for _, s := range snaps {
-		if s.SourceCode == "WEBFLIS" {
+		if s.SourceCode == "ABILITYONE" {
 			if name, ok := s.RawResponse["item_name"].(string); ok && name != "" {
 				itemName = name
 			}
 			if uoi, ok := s.RawResponse["unit_of_issue"].(string); ok && uoi != "" {
 				unitOfIssue = uoi
 			}
-			if price, ok := s.RawResponse["unit_price"].(int); ok {
-				unitPrice = fmt.Sprintf("$%.0f", float64(price))
-			}
 			if tech, ok := s.RawResponse["technical_characteristics"].(string); ok && tech != "" {
 				techChars = tech
 			}
-			if acq, ok := s.RawResponse["acquisition_advice_code"].(string); ok {
-				acqCode = acq
-			}
 			break
+		}
+	}
+	if itemName == "Federal stock item" {
+		// Fallback to WebFLIS
+		for _, s := range snaps {
+			if s.SourceCode == "WEBFLIS" {
+				if name, ok := s.RawResponse["item_name"].(string); ok && name != "" {
+					itemName = name
+				}
+				if uoi, ok := s.RawResponse["unit_of_issue"].(string); ok && uoi != "" {
+					unitOfIssue = uoi
+				}
+				if price, ok := s.RawResponse["unit_price"].(int); ok {
+					unitPrice = fmt.Sprintf("$%.0f", float64(price))
+				}
+				if tech, ok := s.RawResponse["technical_characteristics"].(string); ok && tech != "" {
+					techChars = tech
+				}
+				if acq, ok := s.RawResponse["acquisition_advice_code"].(string); ok {
+					acqCode = acq
+				}
+				break
+			}
 		}
 	}
 
@@ -1378,10 +1412,20 @@ Synthesized from WebFLIS, award data, and AbilityOne facility sustainment contex
 		// Lead with actual item identity when available + specific analytical takeaway.
 		itemDesc := "Federal stock item"
 		for _, s := range snaps {
-			if s.SourceCode == "WEBFLIS" {
+			if s.SourceCode == "ABILITYONE" {
 				if name, ok := s.RawResponse["item_name"].(string); ok && name != "" {
 					itemDesc = name
 					break
+				}
+			}
+		}
+		if itemDesc == "Federal stock item" {
+			for _, s := range snaps {
+				if s.SourceCode == "WEBFLIS" {
+					if name, ok := s.RawResponse["item_name"].(string); ok && name != "" {
+						itemDesc = name
+						break
+					}
 				}
 			}
 		}

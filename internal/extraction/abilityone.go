@@ -43,6 +43,9 @@ func (a *AbilityOneExtractor) Fetch(ctx context.Context, entityID string, params
 			"mpl_pricing_note":         data.MPLPricingNote,
 			"demand_character":         data.DemandCharacter,
 			"key_risks":                data.KeyRisks,
+			"item_name":                data.ItemName,
+			"unit_of_issue":            data.UnitOfIssue,
+			"technical_characteristics": data.TechnicalCharacteristics,
 			"data_recency":             "Synthesized from public AbilityOne PLIMS, DLA MPL lists, Federal Register, and authorized distributor data",
 		},
 		QualityScore: 0.92,
@@ -53,15 +56,18 @@ func (a *AbilityOneExtractor) Fetch(ctx context.Context, entityID string, params
 }
 
 type abilityOneRecord struct {
-	ProgramStatus   string
-	ProducingNPA    string
-	NPACAGE         string
-	CNA             string
-	CID             string
-	MandatoryNote   string
-	MPLPricingNote  string
-	DemandCharacter string
-	KeyRisks        string
+	ProgramStatus            string
+	ProducingNPA             string
+	NPACAGE                  string
+	CNA                      string
+	CID                      string
+	MandatoryNote            string
+	MPLPricingNote           string
+	DemandCharacter          string
+	KeyRisks                 string
+	ItemName                 string
+	UnitOfIssue              string
+	TechnicalCharacteristics string
 }
 
 // getAbilityOneData returns curated real data for known high-relevance AbilityOne NSNs.
@@ -71,15 +77,18 @@ func getAbilityOneData(nsn string) *abilityOneRecord {
 	switch nsn {
 	case "7210002053205", "7210-00-205-3205":
 		return &abilityOneRecord{
-			ProgramStatus:   "B-List (Commercial Distribution Program)",
-			ProducingNPA:    "National Industries for the Blind (NIB)",
-			NPACAGE:         "83421",
-			CNA:             "NIB",
-			CID:             "A-A-52077",
-			MandatoryNote:   "Mandatory source under AbilityOne program (41 U.S.C. §§ 8501-8506). Federal agencies must purchase from authorized AbilityOne channels unless a waiver is granted.",
-			MPLPricingNote:  "Significant price variance across authorized distributors and GSA schedules (observed range ~$21–$38+ per unit depending on channel and volume).",
-			DemandCharacter: "Recurring institutional demand for barracks, VA, and federal facilities. Documented bulk orders in the hundreds to low thousands of units. Steady baseline with occasional spikes.",
-			KeyRisks:        "Compliance risk if commercial substitutes are used without waiver. Price shopping across authorized distributors is recommended. Long-established item (assigned 1963) with stable specifications.",
+			ProgramStatus:            "B-List (Commercial Distribution Program)",
+			ProducingNPA:             "National Industries for the Blind (NIB)",
+			NPACAGE:                  "83421",
+			CNA:                      "NIB",
+			CID:                      "A-A-52077",
+			MandatoryNote:            "Mandatory source under AbilityOne program (41 U.S.C. §§ 8501-8506). Federal agencies must purchase from authorized AbilityOne channels unless a waiver is granted.",
+			MPLPricingNote:           "Significant price variance across authorized distributors and GSA schedules (observed range ~$21–$38+ per unit depending on channel and volume).",
+			DemandCharacter:          "Recurring institutional demand for barracks, VA, and federal facilities. Documented bulk orders in the hundreds to low thousands of units. Steady baseline with occasional spikes.",
+			KeyRisks:                 "Compliance risk if commercial substitutes are used without waiver. Price shopping across authorized distributors is recommended. Long-established item (assigned 1963) with stable specifications.",
+			ItemName:                 "PILLOW, BED, FEATHER (WATERFOWL)",
+			UnitOfIssue:              "EA",
+			TechnicalCharacteristics: "Waterfowl feathers; blue and white striped cotton twill ticking; nominal 21 x 28 inches; institutional grade for barracks and federal facilities",
 		}
 
 	case "5120008785932", "5120-00-878-5932":
