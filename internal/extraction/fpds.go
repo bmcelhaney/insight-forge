@@ -258,12 +258,10 @@ func (f *FPDSExtractor) fetchRealFromUSASpending(ctx context.Context, entityID s
 			if d, ok := res["last_modified_date"].(string); ok {
 				lastDate = d
 			}
-			// Capture more fields for richer reports
-			if psc, ok := res["psc_description"].(string); ok {
-				// store for later use in report if needed
+			// Capture more fields for richer reports (for future use)
+			if _, ok := res["psc_description"].(string); ok {
 			}
-			if naics, ok := res["naics_description"].(string); ok {
-				// store for later use
+			if _, ok := res["naics_description"].(string); ok {
 			}
 		}
 	}

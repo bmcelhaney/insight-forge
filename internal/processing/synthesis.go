@@ -648,25 +648,6 @@ func buildDynamicFullReport(entityID string, viability, risk float64, flags []mo
 		}
 	}
 
-	// Pull FPDS specifics + detect if we got real SAM data
-	primaryVehicle := ""
-	awardRecency := ""
-	fpdsIsLive := false
-	for _, s := range snaps {
-		if s.SourceCode == "FPDS" {
-			if v, ok := s.RawResponse["primary_vehicle"].(string); ok {
-				primaryVehicle = v
-			}
-			if days, ok := s.RawResponse["award_recency_days"].(int); ok {
-				awardRecency = fmt.Sprintf("%d days since last observed award", days)
-			}
-			if ds, ok := s.RawResponse["data_source"].(string); ok && ds == "live_sam_gov" {
-				fpdsIsLive = true
-			}
-			break
-		}
-	}
-
 	// Pull real GSA Advantage pricing (AbilityOne/JWOD focus)
 	var gsaPrices []map[string]any
 	for _, s := range snaps {
@@ -730,7 +711,7 @@ func buildDynamicFullReport(entityID string, viability, risk float64, flags []mo
 QUANTITATIVE HIGHLIGHTS
 - Sourcing Attractiveness: %.0f | Supply Risk: %.0f
 - Supplier base: %d vendors across %d countries | Concentration risk: %s
-- Observed volume: %d awards | ~$%.1fM | Primary vehicle: %s
+- Observed volume: %d awards | ~$%.1fM
 - Demand profile: %s
 
 ITEM CHARACTERISTICS
@@ -764,7 +745,7 @@ TECHNICAL & MAINTENANCE CONSIDERATIONS
 RISK FLAGS & IMPLICATIONS
 `, entityID, itemName, fsc, viability, risk,
 		suppliers.TotalSuppliers, len(suppliers.PrimaryCountries), suppliers.ConcentrationRisk,
-		demand.TotalAwards, float64(demand.TotalValueUSD)/1000000, primaryVehicle,
+		demand.TotalAwards, float64(demand.TotalValueUSD)/1000000,
 		demand.DemandNote,
 		itemName, demand.TotalAwards, unitPrice, techChars, acqCode,
 		demand.DemandNote,
