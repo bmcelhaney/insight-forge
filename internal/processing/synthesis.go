@@ -1082,13 +1082,12 @@ QUANTITATIVE HIGHLIGHTS
 
 	// When we have rich AbilityOne data, add a strategic sourcing observation section
 	// that aligns closely with the Key Insights card language for card/report cohesion.
-	var aoDemand, aoRisks, aoNPA, aoStatus, aoCID, aoPricing string
+	var aoDemand, aoRisks, aoNPA, aoCID, aoPricing string
 	for _, s := range snaps {
 		if s.SourceCode == "ABILITYONE" {
 			if d, ok := s.RawResponse["demand_character"].(string); ok { aoDemand = d }
 			if r, ok := s.RawResponse["key_risks"].(string); ok { aoRisks = r }
 			if n, ok := s.RawResponse["producing_npa"].(string); ok { aoNPA = n }
-			if st, ok := s.RawResponse["program_status"].(string); ok { aoStatus = st }
 			if c, ok := s.RawResponse["cid"].(string); ok { aoCID = c }
 			if p, ok := s.RawResponse["mpl_pricing_note"].(string); ok { aoPricing = p }
 			break
@@ -1111,6 +1110,9 @@ QUANTITATIVE HIGHLIGHTS
 		impl += "For any material requirement, engage the designated NPA early to confirm current capacity, lead times, and volume pricing. "
 		if aoCID != "" {
 			impl += fmt.Sprintf("Verify the current revision of %s before committing. ", aoCID)
+		}
+		if aoPricing != "" {
+			impl += fmt.Sprintf("MPL/pricing context: %s ", aoPricing)
 		}
 		impl += "Commercial equivalents generally require a formal waiver with documented justification (price, availability, or performance). "
 		impl += "Total cost of ownership should explicitly factor user acceptance, replacement frequency, compliance overhead, and mission alignment — not unit price alone. "
