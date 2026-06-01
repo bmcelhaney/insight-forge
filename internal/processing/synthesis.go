@@ -112,6 +112,9 @@ func Synthesize(ctx context.Context, entityID string, snapshots []models.DataSna
 	if rich.ConcentrationIndex > 0 {
 		result.ConcentrationIndex = rich.ConcentrationIndex
 	}
+	if len(rich.KeyInsights) > 0 {
+		result.KeyInsights = rich.KeyInsights
+	}
 
 	// Enrich supplier and demand data with time context and longer lists for the 5 canonical AbilityOne NSNs
 	enrichSupplierAndDemandForSpecialNSNs(entityID, &result)
@@ -954,7 +957,7 @@ QUANTITATIVE HIGHLIGHTS
 		if aoRisks != "" {
 			fmt.Fprintf(&b, "Key risks & considerations: %s\n\n", aoRisks)
 		}
-		fmt.Fprintf(&b, "Strategic note: This is a mandatory AbilityOne source. For any material requirement, engage the designated NPA early to confirm capacity, lead times, and volume pricing. Commercial equivalents generally require a formal waiver with documented justification. Consider total cost of ownership (including user acceptance, replacement frequency, and compliance overhead) rather than unit price alone. Co-branding or hybrid models between commercial designs and NPA production are emerging as a way to improve performance while preserving the social mission.\n\n")
+		fmt.Fprintf(&b, "Strategic implications: This is a mandatory AbilityOne source. For any material requirement, engage the designated NPA early to confirm capacity, lead times, and volume pricing. Commercial equivalents generally require a formal waiver with documented justification. Consider total cost of ownership (user acceptance, replacement frequency, and compliance overhead) rather than unit price alone. Emerging co-branding and hybrid models between commercial designs and NPA production offer a promising path to improve performance while preserving the social mission.\n\n")
 	}
 
 	fmt.Fprintf(&b, `ITEM CHARACTERISTICS (from WebFLIS)
@@ -1025,6 +1028,7 @@ type RichAnalysis struct {
 	Citations          []string
 	TopDisrupters      []models.SupplierSummary
 	ConcentrationIndex float64
+	KeyInsights        []string
 }
 
 // generateRichAnalysis produces AbilityOne-aware, deep-dive content for the 5 canonical test NSNs
