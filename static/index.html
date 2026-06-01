@@ -130,7 +130,7 @@
           <div class="flex items-center gap-2">
             <div id="recommendation-badge"
                  class="px-4 py-1.5 rounded-2xl text-sm font-medium border"></div>
-            <i class="fa-solid fa-info-circle text-xs text-zinc-500 hover:text-emerald-400 cursor-help" title="Analyst Recommendation (Proceed Indicator):
+            <span class="cursor-help text-[10px] text-zinc-500 hover:text-emerald-400" title="Analyst Recommendation (Proceed Indicator):
 
 This is the synthesized procurement posture based on Sourcing Attractiveness + Supply Risk + AbilityOne-specific factors.
 
@@ -138,7 +138,7 @@ This is the synthesized procurement posture based on Sourcing Attractiveness + S
 
 • PROCEED WITH CAUTION: Acceptable overall but notable caveats (moderate concentration, data gaps, or project-driven demand). Extra diligence required on suppliers, lead times, and any flags before large commitments.
 
-• ELEVATED REVIEW: Material risks present (high concentration, thin data, compliance exposure, or capacity constraints). Requires deeper validation, direct outreach, and documented justification before proceeding."></i>
+• ELEVATED REVIEW: Material risks present (high concentration, thin data, compliance exposure, or capacity constraints). Requires deeper validation, direct outreach, and documented justification before proceeding.">ⓘ</span>
           </div>
         </div>
 
@@ -147,9 +147,9 @@ This is the synthesized procurement posture based on Sourcing Attractiveness + S
           <!-- Sourcing Attractiveness -->
           <div class="analyst-card bg-zinc-900 border border-zinc-700 rounded-3xl p-5">
             <div class="flex items-center justify-between mb-2">
-              <div class="section-header text-emerald-400 flex items-center gap-1.5">
+              <div id="sourcing-header" class="section-header flex items-center gap-1.5">
                 Sourcing Attractiveness
-                <i class="fa-solid fa-info-circle text-xs text-zinc-500 hover:text-emerald-400 cursor-help" title="Sourcing Attractiveness (0–100): Measures how attractive and executable this NSN is for federal procurement.
+                <span id="sourcing-icon" class="cursor-help text-[10px] text-zinc-500 hover:text-emerald-400" title="Sourcing Attractiveness (0–100): Measures how attractive and executable this NSN is for federal procurement.
 
 Higher = better sourcing candidate.
 
@@ -159,20 +159,20 @@ Key drivers:
 • Demand stability & recency (volume trends, YoY change, peak periods)
 • Program fit (AbilityOne mandatory source status, waiver implications, socio-economic alignment)
 
-Analyst use: Scores >70 with clean flags generally support routine or blanket orders. Scores 55–70 warrant extra capacity checks with the producing NPA before large commitments."></i>
+Analyst use: Scores >70 with clean flags generally support routine or blanket orders. Scores 55–70 warrant extra capacity checks with the producing NPA before large commitments.">ⓘ</span>
               </div>
-              <div id="sourcing-val" class="metric text-3xl font-semibold text-emerald-400 tabular-nums"></div>
+              <div id="sourcing-val" class="metric text-3xl font-semibold tabular-nums"></div>
             </div>
-            <div class="score-bar mb-1.5"><div id="sourcing-bar" class="score-fill bg-emerald-500" style="width:0%"></div></div>
+            <div class="score-bar mb-1.5"><div id="sourcing-bar" class="score-fill" style="width:0%"></div></div>
             <div id="sourcing-sub" class="text-xs text-zinc-400">Data richness • Supplier diversity • Recency • Program fit</div>
           </div>
 
           <!-- Supply Risk -->
           <div class="analyst-card bg-zinc-900 border border-zinc-700 rounded-3xl p-5">
             <div class="flex items-center justify-between mb-2">
-              <div class="section-header text-rose-400 flex items-center gap-1.5">
+              <div id="risk-header" class="section-header flex items-center gap-1.5">
                 Supply Risk
-                <i class="fa-solid fa-info-circle text-xs text-zinc-500 hover:text-rose-400 cursor-help" title="Supply Risk (0–100): Quantifies exposure and fragility in the supply chain for this NSN.
+                <span id="risk-icon" class="cursor-help text-[10px] text-zinc-500 hover:text-rose-400" title="Supply Risk (0–100): Quantifies exposure and fragility in the supply chain for this NSN.
 
 Lower = better / more resilient.
 
@@ -183,11 +183,11 @@ Key drivers:
 • Producer capacity & surge limitations (particularly relevant for AbilityOne workshops)
 • Compliance & program risks (AbilityOne waiver requirements, micro-purchase leakage, specification constraints)
 
-Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for routine buys. Elevated scores (especially >55) signal the need for early NPA engagement, dual-sourcing, or capacity letters before committing volume."></i>
+Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for routine buys. Elevated scores (especially >55) signal the need for early NPA engagement, dual-sourcing, or capacity letters before committing volume.">ⓘ</span>
               </div>
-              <div id="risk-val" class="metric text-3xl font-semibold text-rose-400 tabular-nums"></div>
+              <div id="risk-val" class="metric text-3xl font-semibold tabular-nums"></div>
             </div>
-            <div class="score-bar mb-1.5"><div id="risk-bar" class="score-fill bg-rose-500" style="width:0%"></div></div>
+            <div class="score-bar mb-1.5"><div id="risk-bar" class="score-fill" style="width:0%"></div></div>
             <div id="risk-sub" class="text-xs text-zinc-400">Concentration • Geopolitical • Data quality • Producer capacity</div>
           </div>
         </div>
@@ -198,9 +198,9 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
             <div class="section-header text-zinc-400 mb-2">Executive Summary</div>
             <div id="summary" class="insight-text text-[15px] leading-relaxed"></div>
           </div>
-          <div class="lg:col-span-2 analyst-card bg-zinc-900 border border-emerald-800 rounded-3xl p-6">
-            <div class="section-header text-emerald-400 mb-2">Analyst Recommendation</div>
-            <div id="recommendation" class="text-sm leading-relaxed text-emerald-200"></div>
+          <div id="analyst-recommendation-card" class="lg:col-span-2 analyst-card bg-zinc-900 border border-zinc-700 rounded-3xl p-6">
+            <div class="section-header mb-2" id="analyst-recommendation-header">Analyst Recommendation</div>
+            <div id="recommendation" class="text-sm leading-relaxed"></div>
           </div>
         </div>
 
@@ -372,6 +372,52 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
       document.getElementById('sourcing-bar').style.width = sVal + '%';
       document.getElementById('risk-bar').style.width = rVal + '%';
 
+      // Dynamic colors for Supply Risk (lower is better, so invert the traffic light)
+      let riskTextClass = 'text-rose-400';
+      let riskBarClass = 'bg-rose-500';
+      let riskHoverClass = 'hover:text-rose-400';
+
+      if (rVal <= 35) {
+        riskTextClass = 'text-emerald-400';
+        riskBarClass = 'bg-emerald-500';
+        riskHoverClass = 'hover:text-emerald-400';
+      } else if (rVal <= 60) {
+        riskTextClass = 'text-amber-400';
+        riskBarClass = 'bg-amber-500';
+        riskHoverClass = 'hover:text-amber-400';
+      }
+
+      document.getElementById('risk-val').className = `metric text-3xl font-semibold ${riskTextClass} tabular-nums`;
+      document.getElementById('risk-bar').className = `score-fill ${riskBarClass}`;
+      document.getElementById('risk-header').className = `section-header flex items-center gap-1.5 ${riskTextClass}`;
+      const riskIcon = document.getElementById('risk-icon');
+      if (riskIcon) {
+        riskIcon.className = `cursor-help text-[10px] text-zinc-500 ${riskHoverClass}`;
+      }
+
+      // Dynamic colors for Sourcing Attractiveness (higher is better)
+      let sourcingTextClass = 'text-rose-400';
+      let sourcingBarClass = 'bg-rose-500';
+      let sourcingHoverClass = 'hover:text-rose-400';
+
+      if (sVal > 70) {
+        sourcingTextClass = 'text-emerald-400';
+        sourcingBarClass = 'bg-emerald-500';
+        sourcingHoverClass = 'hover:text-emerald-400';
+      } else if (sVal >= 55) {
+        sourcingTextClass = 'text-amber-400';
+        sourcingBarClass = 'bg-amber-500';
+        sourcingHoverClass = 'hover:text-amber-400';
+      }
+
+      document.getElementById('sourcing-val').className = `metric text-3xl font-semibold ${sourcingTextClass} tabular-nums`;
+      document.getElementById('sourcing-bar').className = `score-fill ${sourcingBarClass}`;
+      document.getElementById('sourcing-header').className = `section-header flex items-center gap-1.5 ${sourcingTextClass}`;
+      const sourcingIcon = document.getElementById('sourcing-icon');
+      if (sourcingIcon) {
+        sourcingIcon.className = `cursor-help text-[10px] text-zinc-500 ${sourcingHoverClass}`;
+      }
+
       document.getElementById('sourcing-sub').textContent = 'Data richness • Supplier diversity • Recency • Program fit';
       document.getElementById('risk-sub').textContent = 'Concentration • Geopolitical • Data quality • Producer capacity';
 
@@ -391,7 +437,33 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
       const badge = document.getElementById('recommendation-badge');
       badge.textContent = rec.level;
       badge.className = `px-4 py-1.5 rounded-2xl text-sm font-medium border ${rec.cls}`;
-      document.getElementById('recommendation').textContent = rec.text;
+
+      // Make the Analyst Recommendation card consistent with the score coloring scheme
+      const recCard = document.getElementById('analyst-recommendation-card');
+      const recHeader = document.getElementById('analyst-recommendation-header');
+      const recBody = document.getElementById('recommendation');
+
+      let cardBorder = 'border-emerald-800';
+      let headerColor = 'text-emerald-400';
+      let bodyColor = 'text-emerald-200';
+
+      const level = rec.level.toUpperCase();
+
+      if (level.includes('ELEVATED')) {
+        cardBorder = 'border-rose-800';
+        headerColor = 'text-rose-400';
+        bodyColor = 'text-rose-200';
+      } else if (level.includes('CAUTION')) {
+        cardBorder = 'border-amber-800';
+        headerColor = 'text-amber-400';
+        bodyColor = 'text-amber-200';
+      }
+
+      if (recCard) recCard.className = `lg:col-span-2 analyst-card bg-zinc-900 ${cardBorder} rounded-3xl p-6`;
+      if (recHeader) recHeader.className = `section-header mb-2 ${headerColor}`;
+      if (recBody) recBody.className = `text-sm leading-relaxed ${bodyColor}`;
+
+      recBody.textContent = rec.text;
 
       // Executive Summary
       document.getElementById('summary').textContent = result.summary || result.Summary || 'No summary generated.';
@@ -718,14 +790,15 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
         };
       }
 
-      if (s >= 72 && r <= 38) {
+      // Use the same good/bad thresholds as the dynamic score coloring for consistency
+      if (s > 70 && r <= 35) {
         return {
           level: 'PROCEED',
           cls: 'bg-emerald-900 border-emerald-700 text-emerald-300',
           text: 'Strong sourcing candidate. Limited concentration or compliance exposure. Prioritize for procurement. For AbilityOne items, maintain routine PSR monitoring and secondary producer rotation.'
         };
       }
-      if (s >= 55 && r <= 62) {
+      if (s >= 55 && r <= 60) {
         return {
           level: 'PROCEED WITH CAUTION',
           cls: 'bg-amber-900 border-amber-700 text-amber-300',
