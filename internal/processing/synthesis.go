@@ -717,6 +717,36 @@ func getPreferredAbilityOneRelated(fsc string) []models.RelatedNSN {
 				Confidence:  0.90,
 			},
 		}
+	case "7930": // Industrial cleaners / chemicals
+		return []models.RelatedNSN{
+			{
+				NSN:         "7930015552900",
+				Description: "High-volume industrial multi-purpose cleaner (A-List AbilityOne). Strong position for facility maintenance and depot operations. Complements the physical wiping products from the same NIB producer network.",
+				Relation:    "common_alternative",
+				Confidence:  0.88,
+			},
+			{
+				NSN:         "7920014487052",
+				Description: "Core heavy-duty paper cleaning towel from the overlapping NIB workshop network. Frequently procured together for complete janitorial and maintenance kits.",
+				Relation:    "common_alternative",
+				Confidence:  0.82,
+			},
+		}
+	case "7210": // Bedding and linens
+		return []models.RelatedNSN{
+			{
+				NSN:         "7210001396424",
+				Description: "Institutional cotton blanket (A-List AbilityOne). Pairs naturally with the feather pillow for complete barracks and quarters bedding sets across federal facilities.",
+				Relation:    "common_alternative",
+				Confidence:  0.87,
+			},
+			{
+				NSN:         "7210002053205",
+				Description: "Feather pillow (B-List AbilityOne) from the same NIB bedding ecosystem. Commonly bought together for institutional housing and VA requirements.",
+				Relation:    "common_alternative",
+				Confidence:  0.85,
+			},
+		}
 	default:
 		return nil
 	}

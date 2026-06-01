@@ -300,6 +300,39 @@ func getAbilityOneData(nsn string) *abilityOneRecord {
 			TechnicalCharacteristics: "Standard ruled white writing pad; 50 sheets; chipboard backing; suitable for administrative, classroom, and field use; AbilityOne produced across the NIB network",
 		}
 
+	// Two additional items to balance the Examples list with more facility/maintenance and chemical cleaning coverage
+	case "7930015552900", "7930-01-555-2900":
+		return &abilityOneRecord{
+			ProgramStatus:            "A-List (industrial cleaner / degreaser)",
+			ProducingNPA:             "Lighthouse for the Blind network (multiple workshops)",
+			NPACAGE:                  "Various (Fort Worth lead for many SKUs)",
+			CNA:                      "NIB",
+			CID:                      "Commercial Item Description for multi-purpose industrial cleaners",
+			MandatoryNote:            "High-volume industrial cleaner on the AbilityOne Procurement List. Strong position for facility maintenance, depot, and manufacturing support requirements.",
+			MPLPricingNote:           "Competitive case pricing through GSA and DLA; often more cost-effective than many commercial equivalents in volume.",
+			DemandCharacter:          "Very high recurring demand for facility and industrial cleaning across federal activities. Steady baseline with project-driven spikes during major maintenance or renovation cycles.",
+			KeyRisks:                 "Micro-purchase leakage to commercial chemical suppliers is the main compliance exposure. Some SKUs have concentration at specific workshops; rotation planning is recommended for large programs.",
+			ItemName:                 "CLEANER, INDUSTRIAL, MULTI-PURPOSE",
+			UnitOfIssue:              "BX",
+			TechnicalCharacteristics: "Multi-purpose industrial cleaner/degreaser; effective on oils, greases, and general soils; suitable for floors, equipment, and maintenance use in federal facilities and depots; AbilityOne produced",
+		}
+
+	case "7210001396424", "7210-00-139-6424":
+		return &abilityOneRecord{
+			ProgramStatus:            "A-List (bedding / blanket)",
+			ProducingNPA:             "National Industries for the Blind network",
+			NPACAGE:                  "Multiple (including 83421 and partners)",
+			CNA:                      "NIB",
+			CID:                      "Federal specification for institutional blankets",
+			MandatoryNote:            "Common institutional blanket on the AbilityOne list. Mandatory source for covered federal barracks, hospital, and facility bedding requirements.",
+			MPLPricingNote:           "Stable pricing through GSA and DLA; volume discounts available. Often procured alongside the feather pillow for complete bedding sets.",
+			DemandCharacter:          "Steady institutional demand for barracks, VA hospitals, and federal quarters. Frequently bought in sets with pillows and sheets during facility stand-up or refresh programs.",
+			KeyRisks:                 "Long-term digital/outsourcing pressure on textile programs. Maintaining warm capacity across the NIB network for standard sizes is important for rapid response.",
+			ItemName:                 "BLANKET, BED, INSTITUTIONAL, COTTON",
+			UnitOfIssue:              "EA",
+			TechnicalCharacteristics: "Institutional grade cotton or cotton-blend blanket; durable for repeated institutional laundering; standard size for federal beds and cots; designed for barracks, hospitals, and quarters; AbilityOne produced",
+		}
+
 	default:
 		return nil
 	}
