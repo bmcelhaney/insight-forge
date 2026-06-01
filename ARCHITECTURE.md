@@ -1,120 +1,56 @@
 # Insight Forge — Architecture
 
-**Date**: 2026-05-29  
-**Baseline**: Go Reactive Web App Framework v2.2 (from Stitchify.poc/FRAMEWORK.md)  
-**Hosting (Prototype Phase)**: nib-sprite (Linux on Fly.io)  
-**Future**: Containerized deployment on Azure
+**Current Date**: June 2026  
+**Hosting**: Dedicated sprite (`nib-insightforge`)
 
-## Guiding Principle
+## Overview
 
-We follow the strict architecture, directory structure, coding standards, and patterns defined in `Stitchify.poc/FRAMEWORK.md` unless explicitly noted here.
+Insight Forge uses a simple, maintainable Go + static frontend architecture optimized for rapid iteration and high-quality analyst output on AbilityOne NSNs.
 
-All deviations must be recorded in this file with rationale.
+- **Backend**: Pure Go (`chi` router)
+- **Frontend**: Single self-contained `static/index.html` (Tailwind via CDN + vanilla JS + Chart.js)
+- **No** reactive frameworks (Datastar/Gomponents), no DuckDB, and no Next.js in the current production version.
 
-## Domain Adaptation (NSN Intelligence)
+## Core Data Flow
 
-| Framework Concept | Insight Forge Mapping |
-|-------------------|-----------------------|
-| Entity            | NSN (13-digit), also supports partial NIIN / FSC / CAGE queries |
-| Data Sources      | WebFLIS / PUB LOG, FPDS, MCRL, SAM.gov, sanctions lists (OFAC, etc.), supplier registries, historical award data |
-| Snapshots         | Immutable `data_snapshots` rows with `raw_response` JSON + quality metadata |
-| Processed Results | `processed_results` containing viability_score (0-100), risk_score (0-100), flags, supplier concentration, related NSN graph data, demand signals |
-| Export Payload    | Structured JSON for the fair-market pricing tool + full evidence bundle (Excel/PDF) |
+1. Client sends NSN (via POST `/api/analyze` or GET `/api/export/json/{nsn}`)
+2. `Extractor` registry runs multiple sources in parallel:
+   - USAspending (live award aggregates)
+   - GSA Advantage (direct JWOD form POST + HTML scrape)
+   - WebFLIS
+   - Curated high-fidelity AbilityOne map (strongest signal for many items)
+   - OFAC sanctions
+3. `Synthesis` engine (`internal/processing/synthesis.go`) combines snapshots into a rich `InsightResult`:
+   - Dynamic Sourcing Attractiveness & Supply Risk scores with traffic-light coloring
+   - Key Insights
+   - Analyst Recommendation (with special handling for AbilityOne items)
+   - Full narrative report
+   - Supplier ecosystem, demand signals, flags, related NSNs
 
-## Directory Structure
+## Why This Architecture
 
-Follows the framework exactly (see `Stitchify.poc/FRAMEWORK.md` §3.1).
+- Maximum focus on **data quality and analyst usefulness** rather than frontend framework complexity.
+- Extremely fast local iteration (edit HTML or Go, refresh).
+- Easy to reason about and debug.
+- Reliable deployment story via `./scripts/reset.sh` with commit embedding and functional gates.
 
-Key packages for this domain:
-- `internal/extraction/` — one file per source (webflis.go, fpds.go, sanctions.go, ...)
-- `internal/processing/synthesis.go` — core viability + risk engine
-- `internal/models/nsn.go`, `snapshot.go`, `insight.go`
+## Key Components
 
-## DuckDB Schema Notes
+- `internal/extraction/` — Pluggable data sources implementing the `Extractor` interface
+- `internal/processing/synthesis.go` — The heart of the system (score calculation, rich report generation, AbilityOne priority logic)
+- `internal/models/` — Core data structures (`InsightResult`, `SupplierView`, `DemandSignals`, etc.)
+- `static/index.html` — The entire UI (deliberately kept as one file)
 
-We start with the framework's starter template (`migrations/001_init.sql`) and extend it for NSN-specific fields (technical characteristics, packaging, unit of issue, etc.).
+## AbilityOne Handling
 
-All schema changes go through numbered migrations.
+A curated map in `internal/extraction/abilityone.go` provides high-fidelity data (producing NPA, CAGE, CID, demand character, risks, etc.) for high-volume AbilityOne items. This data takes priority in the synthesis layer for identity fields, Key Insights, and the Analyst Recommendation when present.
 
-## UI Approach (MVP)
+## Deployment
 
-- Reactive workspace using Datastar + Gomponents (no full page reloads)
-- Left: NSN search + recent analyses
-- Center: Source table + go-echarts visualizations (volume trends, supplier distribution, risk timeline)
-- Right: Insight card (viability, risk heatmap, top flags, "Send to Pricing Tool")
+See `DEPLOYMENT.md`. The only supported method is `./scripts/reset.sh`, which enforces version verification and functional testing before starting the binary.
 
-## Extractor Contract
+## Future Considerations
 
-All extractors implement:
-
-```go
-type Extractor interface {
-    Fetch(ctx context.Context, entityID string, params map[string]string) ([]models.DataSnapshot, error)
-    SourceCode() string
-}
-```
-
-## Current Status (late May 2026)
-
-**Strongly isolated from other apps on the sprite.**
-
-- Directory: `/home/sprite/insight-forge` (separate from `stitchify.poc` and PriorityForge)
-- Database: `./data/insight-forge.duckdb` (completely independent DuckDB file)
-- Port: Use `./run.sh` (defaults to safe port 8091)
-- No shared processes, static files, or dependencies with Stitchify or PriorityForge
-
-## Implementation Progress
-
-- Full domain models + synthesis engine (viability + risk scoring)
-- Parallel extractors (WebFLIS, FPDS, Sanctions) with realistic prototype data
-- **Live partial progress** — UI updates live after each source completes
-- Reactive Datastar + Gomponents workspace with go-echarts charts
-- History / recent analyses + one-click re-run
-- Exports:
-  - Structured JSON for pricing tool
-  - Full multi-sheet Excel evidence bundle
-- Easy runner script: `./run.sh`
-- Follows Stitchify Go Framework structure and patterns exactly
-
-## Running on Shared nib-sprite (under /insightforge)
-
-The current production-like way to expose this app is under a subpath on the main `nib-sprite` domain by using rewrites inside Stitchify’s Next.js (which acts as the gateway on port 3000).
-
-### Steps
-
-1. Start Insight Forge with the base path:
-
-```bash
-BASE_PATH=/insightforge IF_PORT=8091 ./run.sh
-```
-
-2. Add rewrites in Stitchify:
-
-Edit `/home/sprite/stitchify.poc/next.config.ts`:
-
-```ts
-async rewrites() {
-  return [
-    {
-      source: "/insightforge/:path*",
-      destination: `http://localhost:8091/:path*`,
-    },
-  ];
-}
-```
-
-3. Restart Stitchify’s Next.js process.
-
-This is the same pattern used for reaching PriorityForge and internal services today.
-
-Future plan: Move to its own Fly app (or Azure container) as originally discussed.
-
-## Deviations from Framework (if any)
-
-None yet.
-
-## References
-
-- Stitchify Go Framework: `Stitchify.poc/FRAMEWORK.md`
-- Original Insight Forge requirements: original spec (functional flows, scoring, export)
-- Deployment target (prototype): nib-sprite
+- Possible move to containerized deployment (Azure or Fly.io dedicated app)
+- Richer Excel export (currently basic)
+- Additional live data sources as they become available

@@ -65,4 +65,4 @@ If the verification step fails, it kills the new process and exits with an error
 
 This document was created after multiple rounds of "the UI and data don't match what we just pushed." The version verification gate + commit embedding in the UI were added specifically to make that class of failure impossible (or at least immediately obvious).
 
-Last updated: 2026-05
+Last updated: 2026-06
