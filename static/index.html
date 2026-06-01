@@ -320,7 +320,18 @@
       document.getElementById('risk-sub').textContent = 'Concentration • Geopolitical • Data quality • Producer capacity';
 
       // Recommendation (clearer language)
-      const rec = deriveRecommendation(result, sVal, rVal);
+      // Prefer rich recommendation from backend when available (for AbilityOne general-path items)
+      let rec;
+      if (result.analyst_recommendation || result.AnalystRecommendation) {
+        const customRec = result.analyst_recommendation || result.AnalystRecommendation;
+        rec = {
+          level: 'PROCEED (AbilityOne)',
+          cls: 'bg-emerald-900 border-emerald-700 text-emerald-300',
+          text: customRec
+        };
+      } else {
+        rec = deriveRecommendation(result, sVal, rVal);
+      }
       const badge = document.getElementById('recommendation-badge');
       badge.textContent = rec.level;
       badge.className = `px-4 py-1.5 rounded-2xl text-sm font-medium border ${rec.cls}`;
@@ -639,6 +650,18 @@
     function deriveRecommendation(result, sourcing, supply) {
       const s = sourcing;
       const r = supply;
+
+      // If the backend provided rich KeyInsights for an AbilityOne item, use a more specific recommendation
+      const hasRichAbilityOne = (result.key_insights || []).some(i => i.toLowerCase().includes('mandatory') || i.toLowerCase().includes('abilityone') || i.toLowerCase().includes('npa'));
+
+      if (hasRichAbilityOne) {
+        return {
+          level: 'PROCEED (AbilityOne)',
+          cls: 'bg-emerald-900 border-emerald-700 text-emerald-300',
+          text: 'Mandatory AbilityOne source. Engage the designated NPA early for capacity, pricing, and lead times. Shop authorized distributors for best value. Factor TCO (user acceptance + replacement frequency + compliance) rather than unit price alone. Waivers for commercial equivalents require documented justification.'
+        };
+      }
+
       if (s >= 72 && r <= 38) {
         return {
           level: 'PROCEED',

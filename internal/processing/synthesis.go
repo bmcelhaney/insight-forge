@@ -115,6 +115,11 @@ func Synthesize(ctx context.Context, entityID string, snapshots []models.DataSna
 	if len(rich.KeyInsights) > 0 {
 		result.KeyInsights = rich.KeyInsights
 	}
+	if rich.AnalystRecommendation != "" {
+		// Store in a way the frontend can use; for now we can put it in MarketCommentary or use a custom field.
+		// To keep it simple and non-breaking, we'll enhance the recommendation logic in JS, but also append to Summary for visibility.
+		result.Summary += " " + rich.AnalystRecommendation
+	}
 
 	// Enrich supplier and demand data with time context and longer lists for the 5 canonical AbilityOne NSNs
 	enrichSupplierAndDemandForSpecialNSNs(entityID, &result)
@@ -1021,14 +1026,15 @@ USAspending award data (live public API) • GSA Advantage pricing (direct form 
 
 // RichAnalysis holds the expanded, non-generic analyst deliverables.
 type RichAnalysis struct {
-	Summary            string
-	MarketCommentary   string
-	FullReport         string
-	PricingTrend       string
-	Citations          []string
-	TopDisrupters      []models.SupplierSummary
-	ConcentrationIndex float64
-	KeyInsights        []string
+	Summary                string
+	MarketCommentary       string
+	FullReport             string
+	PricingTrend           string
+	Citations              []string
+	TopDisrupters          []models.SupplierSummary
+	ConcentrationIndex     float64
+	KeyInsights            []string
+	AnalystRecommendation  string  // Custom recommendation text for the card when rich data is available
 }
 
 // generateRichAnalysis produces AbilityOne-aware, deep-dive content for the 5 canonical test NSNs
@@ -1499,31 +1505,55 @@ Synthesized from WebFLIS, award data, and AbilityOne facility sustainment contex
 		out.PricingTrend = "Insufficient longitudinal data for confident trend; monitor via FPDS refresh"
 		out.ConcentrationIndex = 0.48 + (float64(len(suppliers.PrimaryCountries)) * 0.04)
 
-		// When we have real AbilityOne data, synthesize KeyInsights so the cards feel connected to the full report
+		// When we have real AbilityOne data, synthesize rich KeyInsights + recommendation so cards feel connected to the full report
 		for _, s := range snaps {
 			if s.SourceCode == "ABILITYONE" {
 				var insights []string
+				var npaName, progStatus, risks, demandNote, mandatoryNote string
 
-				if npa, ok := s.RawResponse["producing_npa"].(string); ok && npa != "" {
-					insights = append(insights, fmt.Sprintf("Produced by %s under the AbilityOne program — mandatory source for covered federal requirements.", npa))
+				if v, ok := s.RawResponse["producing_npa"].(string); ok && v != "" { npaName = v }
+				if v, ok := s.RawResponse["program_status"].(string); ok && v != "" { progStatus = v }
+				if v, ok := s.RawResponse["key_risks"].(string); ok && v != "" { risks = v }
+				if v, ok := s.RawResponse["demand_character"].(string); ok && v != "" { demandNote = v }
+				if v, ok := s.RawResponse["mandatory_source_note"].(string); ok && v != "" { mandatoryNote = v }
+
+				if npaName != "" {
+					insights = append(insights, fmt.Sprintf("Mandatory AbilityOne source produced by %s — federal buyers must prioritize this NPA unless a formal waiver is obtained.", npaName))
 				}
-
-				if status, ok := s.RawResponse["program_status"].(string); ok && status != "" {
-					insights = append(insights, fmt.Sprintf("Program status: %s. Plan for NPA capacity confirmation on large or time-sensitive orders.", status))
+				if progStatus != "" {
+					insights = append(insights, fmt.Sprintf("Procurement List status: %s. Engage the designated NPA (and CNA) early for capacity letters, current pricing, and lead-time confirmation on any requirement above routine volumes.", progStatus))
 				}
-
-				if risks, ok := s.RawResponse["key_risks"].(string); ok && risks != "" {
-					// Truncate for card readability
+				if demandNote != "" {
+					// Keep it punchy for the card
+					shortDemand := demandNote
+					if len(shortDemand) > 140 { shortDemand = shortDemand[:137] + "..." }
+					insights = append(insights, "Demand profile: " + shortDemand)
+				}
+				if risks != "" {
 					shortRisk := risks
-					if len(shortRisk) > 160 {
-						shortRisk = shortRisk[:157] + "..."
-					}
-					insights = append(insights, "Key risk: "+shortRisk)
+					if len(shortRisk) > 140 { shortRisk = shortRisk[:137] + "..." }
+					insights = append(insights, "Primary risk: " + shortRisk)
 				}
+				if mandatoryNote != "" {
+					shortMand := mandatoryNote
+					if len(shortMand) > 160 { shortMand = shortMand[:157] + "..." }
+					insights = append(insights, shortMand)
+				}
+
+				// Add one strategic TCO / compliance bullet
+				insights = append(insights, "Total cost of ownership should factor user acceptance, replacement frequency, and compliance overhead — not just unit price. Co-branding models between commercial designs and NPA production are an emerging best practice for balancing performance and mission requirements.")
 
 				if len(insights) > 0 {
 					out.KeyInsights = insights
 				}
+
+				// Provide a strong, specific recommendation for the Analyst Recommendation card
+				recText := "PROCEED WITH ABILITYONE PROTOCOLS"
+				if npaName != "" {
+					recText = fmt.Sprintf("PROCEED — Mandatory source via %s. Confirm capacity with the NPA before large or time-sensitive orders. Shop authorized distributors for best value within the program.", npaName)
+				}
+				out.AnalystRecommendation = recText
+
 				break
 			}
 		}
