@@ -125,13 +125,41 @@ func Synthesize(ctx context.Context, entityID string, snapshots []models.DataSna
 	enrichSupplierAndDemandForSpecialNSNs(entityID, &result)
 
 	// === NEW: Extract and analyze commercial SKUs / UPCs ===
-	commercialRefs := extractCommercialReferences(snaps)
+	commercialRefs := extractCommercialReferences(snapshots)
 	result.CommercialReferences = commercialRefs
 
 	if len(commercialRefs) > 0 {
-		result.ExtendedAnalysis = buildExtendedCommercialAnalysis(entityID, commercialRefs, snaps, viability, risk)
+		result.ExtendedAnalysis = buildExtendedCommercialAnalysis(entityID, commercialRefs, snapshots, viability, risk)
 		// Also feed key signals into the main report and insights for cohesion
 		appendCommercialInsights(&result, commercialRefs)
+	}
+
+	// Append commercial section to the full report so it shows up in the UI and exports
+	if len(result.CommercialReferences) > 0 {
+		commercialSection := "\n\nCOMMERCIAL EQUIVALENTS & CROSS-REFERENCES\n"
+		for _, r := range result.CommercialReferences {
+			line := "- "
+			if r.Manufacturer != "" {
+				line += r.Manufacturer + " "
+			}
+			if r.SKU != "" {
+				line += "SKU: " + r.SKU + " "
+			}
+			if r.UPC != "" {
+				line += "UPC: " + r.UPC + " "
+			}
+			if r.Price != "" {
+				line += "Price: " + r.Price + " "
+			}
+			if r.Context != "" {
+				line += "(" + r.Context + ")"
+			}
+			commercialSection += strings.TrimSpace(line) + "\n"
+		}
+		if result.ExtendedAnalysis != "" {
+			commercialSection += "\n" + result.ExtendedAnalysis
+		}
+		result.FullAnalystReport += commercialSection
 	}
 
 	// Fallback legacy summary if rich path produced nothing
@@ -1321,34 +1349,8 @@ QUANTITATIVE HIGHLIGHTS
 		fmt.Fprintf(&b, "%s\n\n", impl)
 	}
 
-	// NEW: Commercial SKUs / UPCs and extended analysis section (relates commercial signals back to the NSN)
-	if len(result.CommercialReferences) > 0 {
-		fmt.Fprintf(&b, "COMMERCIAL EQUIVALENTS & CROSS-REFERENCES\n")
-		for _, r := range result.CommercialReferences {
-			line := "- "
-			if r.Manufacturer != "" {
-				line += r.Manufacturer + " "
-			}
-			if r.SKU != "" {
-				line += "SKU: " + r.SKU + " "
-			}
-			if r.UPC != "" {
-				line += "UPC: " + r.UPC + " "
-			}
-			if r.Price != "" {
-				line += "Price: " + r.Price + " "
-			}
-			if r.Context != "" {
-				line += "(" + r.Context + ")"
-			}
-			fmt.Fprintf(&b, "%s\n", strings.TrimSpace(line))
-		}
-		fmt.Fprintf(&b, "\n")
-	}
-
-	if result.ExtendedAnalysis != "" {
-		fmt.Fprintf(&b, "%s\n\n", result.ExtendedAnalysis)
-	}
+	// Commercial cross-refs section is appended later in Synthesize for consistency
+	// (after result is fully populated) so it appears in both rich and dynamic paths.
 
 	fmt.Fprintf(&b, `ITEM CHARACTERISTICS (from WebFLIS)
 Item: %s
