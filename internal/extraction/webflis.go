@@ -55,10 +55,14 @@ func (w *WebFLISExtractor) Fetch(ctx context.Context, entityID string, params ma
 			"last_updated":              now.Add(-time.Duration(r.Intn(90)) * 24 * time.Hour).Format("2006-01-02"),
 			"acquisition_advice_code":   []string{"D", "J", "Z"}[r.Intn(3)],
 			"controlled_inventory":      r.Intn(10) > 7,
-			"note":                      "Prototype WebFLIS data — expanded fields for deeper dynamic synthesis",
+			"commercial_references": []map[string]any{
+				// Prototype commercial cross-refs so the synthesis layer can demonstrate SKU/UPC analysis
+				{"sku": fmt.Sprintf("%s-%s", fsc, entityID[4:9]), "upc": fmt.Sprintf("0%011d", r.Int63n(99999999999)), "source": "WEBFLIS_REF", "context": "Commercial equivalent / reference number"},
+			},
+			"note": "Prototype WebFLIS data — expanded fields for deeper dynamic synthesis including commercial cross-references (SKU/UPC)",
 		},
 		QualityScore: 0.88 + r.Float64()*0.09,
-		CreatedBy:    "webflis-extractor-v1.2",
+		CreatedBy:    "webflis-extractor-v1.3",
 	}
 
 	return []models.DataSnapshot{snap}, nil

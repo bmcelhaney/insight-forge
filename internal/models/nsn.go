@@ -62,6 +62,13 @@ type InsightResult struct {
 	GeneratedBy           string         `json:"generated_by"`
 	UserApproved          bool           `json:"user_approved"`
 	ApprovedValue         *float64       `json:"approved_value,omitempty"`
+
+	// New: Commercial cross-references (SKUs, UPCs) associated with the NSN
+	CommercialReferences []CommercialReference `json:"commercial_references,omitempty"`
+
+	// Extended analysis that incorporates signals from the related commercial SKUs/UPCs
+	// and relates them back to the primary NSN (pricing deltas, substitution risk/opportunity, etc.)
+	ExtendedAnalysis string `json:"extended_analysis,omitempty"`
 }
 
 // RiskFlag represents a geopolitical, regulatory, concentration, or other concern.
@@ -102,6 +109,19 @@ type RelatedNSN struct {
 	Description string  `json:"description"`
 	Relation    string  `json:"relation"` // "supersedes", "direct_equivalent"
 	Confidence  float64 `json:"confidence"`
+}
+
+// CommercialReference captures manufacturer SKUs, UPCs, and other commercial identifiers
+// associated with the federal NSN. These enable cross-channel analysis (federal vs commercial pricing,
+// substitution opportunities, and supply risk signals from the commercial side).
+type CommercialReference struct {
+	SKU         string `json:"sku"`                   // Manufacturer / commercial part number
+	UPC         string `json:"upc,omitempty"`         // Universal Product Code (12 digits) or GTIN-12
+	GTIN        string `json:"gtin,omitempty"`        // Longer GTIN if available
+	Manufacturer string `json:"manufacturer,omitempty"`
+	Source      string `json:"source"`                // e.g. "GSA_ADVANTAGE", "WEBFLIS", "ABILITYONE"
+	Price       string `json:"price,omitempty"`       // Observed commercial/federal channel price
+	Context     string `json:"context,omitempty"`     // Short note from source (e.g. "JWOD listing", "substitute")
 }
 
 // DemandSignals from FPDS and historical awards.

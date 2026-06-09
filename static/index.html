@@ -244,6 +244,7 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
         <div class="analyst-card bg-zinc-900 border border-zinc-700 rounded-3xl p-6">
           <div class="section-header text-zinc-400 mb-3">Full Analyst Report</div>
           <div id="full-report" class="bg-zinc-950 border border-zinc-800 rounded-2xl p-4 text-xs leading-relaxed whitespace-pre-wrap font-mono max-h-[380px] overflow-auto"></div>
+          <div id="commercial-refs" class="mt-2 p-3 bg-zinc-900 border border-zinc-700 rounded-2xl text-xs"></div>
         </div>
 
         <!-- Actions -->
@@ -503,6 +504,35 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
       // Full Analyst Report (rich content)
       const reportEl = document.getElementById('full-report');
       reportEl.textContent = result.full_analyst_report || result.FullAnalystReport || result.market_commentary || 'Detailed report not available for this NSN.';
+
+      // Clear previous commercial refs
+      const commEl = document.getElementById('commercial-refs');
+      if (commEl) commEl.innerHTML = '';
+
+      // Commercial SKUs / UPCs (new cross-reference analysis)
+      const commEl = document.getElementById('commercial-refs');
+      if (commEl) {
+        commEl.innerHTML = '';
+        const comms = result.commercial_references || [];
+        if (comms.length > 0) {
+          const h = document.createElement('div');
+          h.style.cssText = 'font-size:10px; color:#64748b; margin:8px 0 4px; text-transform:uppercase; letter-spacing:0.5px;';
+          h.textContent = 'Commercial SKUs / UPCs (cross-referenced)';
+          commEl.appendChild(h);
+
+          comms.slice(0, 6).forEach(c => {
+            const d = document.createElement('div');
+            d.className = 'text-xs text-zinc-300 mb-0.5';
+            let txt = '';
+            if (c.manufacturer) txt += c.manufacturer + ' ';
+            if (c.sku) txt += 'SKU ' + c.sku + ' ';
+            if (c.upc) txt += '(UPC ' + c.upc + ') ';
+            if (c.price) txt += '— ' + c.price;
+            d.textContent = txt || JSON.stringify(c);
+            commEl.appendChild(d);
+          });
+        }
+      }
 
       // Flags
       const fEl = document.getElementById('flags');

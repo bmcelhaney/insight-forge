@@ -124,12 +124,180 @@ func Synthesize(ctx context.Context, entityID string, snapshots []models.DataSna
 	// Enrich supplier and demand data with time context and longer lists for the 5 canonical AbilityOne NSNs
 	enrichSupplierAndDemandForSpecialNSNs(entityID, &result)
 
+	// === NEW: Extract and analyze commercial SKUs / UPCs ===
+	commercialRefs := extractCommercialReferences(snaps)
+	result.CommercialReferences = commercialRefs
+
+	if len(commercialRefs) > 0 {
+		result.ExtendedAnalysis = buildExtendedCommercialAnalysis(entityID, commercialRefs, snaps, viability, risk)
+		// Also feed key signals into the main report and insights for cohesion
+		appendCommercialInsights(&result, commercialRefs)
+	}
+
 	// Fallback legacy summary if rich path produced nothing
 	if result.Summary == "" {
 		result.Summary = generateExecutiveSummary(entityID, result.ViabilityScore, result.RiskScore, flags, supplierView)
 	}
 
 	return result, nil
+}
+
+// extractCommercialReferences pulls manufacturer SKUs, UPCs, and GTINs from all snapshots
+// (primarily GSA Advantage and WebFLIS cross-reference data). This is the foundation for
+// extended SKU/UPC analysis.
+func extractCommercialReferences(snaps []models.DataSnapshot) []models.CommercialReference {
+	var refs []models.CommercialReference
+
+	for _, s := range snaps {
+		// GSA Advantage often returns commercial product identifiers
+		if s.SourceCode == "GSA_ADVANTAGE" {
+			if rawRefs, ok := s.RawResponse["commercial_references"].([]map[string]any); ok {
+				for _, r := range rawRefs {
+					ref := models.CommercialReference{
+						Source: s.SourceCode,
+					}
+					if sku, ok := r["mfr_part"].(string); ok && sku != "" {
+						ref.SKU = sku
+					} else if sku, ok := r["sku"].(string); ok {
+						ref.SKU = sku
+					}
+					if upc, ok := r["upc"].(string); ok {
+						ref.UPC = upc
+					}
+					if mfr, ok := r["manufacturer"].(string); ok {
+						ref.Manufacturer = mfr
+					}
+					if price, ok := r["price"].(string); ok {
+						ref.Price = price
+					}
+					if ctx, ok := r["context"].(string); ok {
+						ref.Context = ctx
+					}
+					if ref.SKU != "" || ref.UPC != "" {
+						refs = append(refs, ref)
+					}
+				}
+			}
+		}
+
+		// WebFLIS prototype now carries commercial reference numbers
+		if s.SourceCode == "WEBFLIS" {
+			if rawRefs, ok := s.RawResponse["commercial_references"].([]map[string]any); ok {
+				for _, r := range rawRefs {
+					ref := models.CommercialReference{
+						Source: s.SourceCode,
+					}
+					if sku, ok := r["sku"].(string); ok {
+						ref.SKU = sku
+					}
+					if upc, ok := r["upc"].(string); ok {
+						ref.UPC = upc
+					}
+					if ctx, ok := r["context"].(string); ok {
+						ref.Context = ctx
+					}
+					if ref.SKU != "" || ref.UPC != "" {
+						refs = append(refs, ref)
+					}
+				}
+			}
+		}
+
+		// AbilityOne curated data can also surface the underlying commercial design
+		if s.SourceCode == "ABILITYONE" {
+			if sku, ok := s.RawResponse["commercial_sku"].(string); ok && sku != "" {
+				refs = append(refs, models.CommercialReference{
+					SKU:        sku,
+					Source:     s.SourceCode,
+					Context:    "Underlying commercial design for AbilityOne item",
+				})
+			}
+		}
+	}
+
+	return refs
+}
+
+// buildExtendedCommercialAnalysis produces the "extended analysis" text that relates
+// the discovered SKUs/UPCs back to the original NSN (pricing comparison, substitution
+// risk/opportunity, supply chain implications, etc.).
+func buildExtendedCommercialAnalysis(entityID string, refs []models.CommercialReference, snaps []models.DataSnapshot, viability, risk float64) string {
+	if len(refs) == 0 {
+		return ""
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "COMMERCIAL EQUIVALENTS & CROSS-REFERENCE ANALYSIS (NSN %s)\n\n", entityID)
+
+	fmt.Fprintf(&b, "This NSN has been cross-referenced to the following commercial SKUs / UPCs:\n")
+	for _, r := range refs {
+		line := "- "
+		if r.Manufacturer != "" {
+			line += r.Manufacturer + " "
+		}
+		if r.SKU != "" {
+			line += "SKU " + r.SKU + " "
+		}
+		if r.UPC != "" {
+			line += "(UPC " + r.UPC + ") "
+		}
+		if r.Price != "" {
+			line += "— observed price " + r.Price
+		}
+		if r.Context != "" {
+			line += " [" + r.Context + "]"
+		}
+		fmt.Fprintf(&b, "%s\n", strings.TrimSpace(line))
+	}
+	fmt.Fprintf(&b, "\n")
+
+	// Relate back to the NSN
+	fmt.Fprintf(&b, "Relating commercial signals to the federal NSN:\n")
+	fmt.Fprintf(&b, "- Federal Sourcing Attractiveness %.0f / Supply Risk %.0f for the NSN.\n", viability, risk)
+
+	// Simple heuristics for extended insight
+	hasCommercialPrice := false
+	for _, r := range refs {
+		if r.Price != "" {
+			hasCommercialPrice = true
+			break
+		}
+	}
+	if hasCommercialPrice {
+		fmt.Fprintf(&b, "- Commercial channel pricing is visible for at least one equivalent. Compare federal unit price (via GSA/DLA) against commercial list price to quantify total cost of ownership or waiver justification potential.\n")
+	}
+
+	// Substitution / risk angle
+	fmt.Fprintf(&b, "- If the commercial SKU is widely available outside AbilityOne channels, micro-purchase leakage risk increases. Conversely, the existence of a well-established commercial design can reduce technical risk for the federal buyer.\n")
+	fmt.Fprintf(&b, "- Recommendation: When the NSN is mandatory-source, treat the commercial equivalents as intelligence for negotiation, surge capacity assessment, and long-term TCO modeling rather than direct substitutes (unless a waiver is pursued).\n\n")
+
+	fmt.Fprintf(&b, "This extended view is synthesized from the same multi-source snapshots used for the primary NSN analysis and is intended to give pricing teams and category managers a more complete picture of the item across federal and commercial channels.\n")
+
+	return b.String()
+}
+
+// appendCommercialInsights injects 1-2 high-value insights derived from the commercial
+// references into the main KeyInsights list so they appear in the top cards.
+func appendCommercialInsights(result *models.InsightResult, refs []models.CommercialReference) {
+	if len(refs) == 0 || len(result.KeyInsights) == 0 {
+		return
+	}
+
+	insight := fmt.Sprintf("Commercial cross-reference: %d associated SKU(s)/UPC(s) identified (primarily from GSA Advantage and WebFLIS). These commercial equivalents provide additional pricing and availability signals that should be factored into total cost of ownership and any waiver considerations for the NSN.", len(refs))
+
+	// Insert near the top but after the strongest mandatory-source insight if present
+	insertAt := 1
+	if len(result.KeyInsights) > 1 {
+		insertAt = 1
+	}
+	// Avoid duplicates
+	for _, existing := range result.KeyInsights {
+		if strings.Contains(existing, "Commercial cross-reference") {
+			return
+		}
+	}
+
+	result.KeyInsights = append(result.KeyInsights[:insertAt], append([]string{insight}, result.KeyInsights[insertAt:]...)...)
 }
 
 func calculateViability(snaps []models.DataSnapshot) float64 {
@@ -1151,6 +1319,35 @@ QUANTITATIVE HIGHLIGHTS
 		}
 		impl += "Emerging co-branding and hybrid models between commercial designs and NPA production are proving effective at improving performance while preserving the AbilityOne socio-economic mission."
 		fmt.Fprintf(&b, "%s\n\n", impl)
+	}
+
+	// NEW: Commercial SKUs / UPCs and extended analysis section (relates commercial signals back to the NSN)
+	if len(result.CommercialReferences) > 0 {
+		fmt.Fprintf(&b, "COMMERCIAL EQUIVALENTS & CROSS-REFERENCES\n")
+		for _, r := range result.CommercialReferences {
+			line := "- "
+			if r.Manufacturer != "" {
+				line += r.Manufacturer + " "
+			}
+			if r.SKU != "" {
+				line += "SKU: " + r.SKU + " "
+			}
+			if r.UPC != "" {
+				line += "UPC: " + r.UPC + " "
+			}
+			if r.Price != "" {
+				line += "Price: " + r.Price + " "
+			}
+			if r.Context != "" {
+				line += "(" + r.Context + ")"
+			}
+			fmt.Fprintf(&b, "%s\n", strings.TrimSpace(line))
+		}
+		fmt.Fprintf(&b, "\n")
+	}
+
+	if result.ExtendedAnalysis != "" {
+		fmt.Fprintf(&b, "%s\n\n", result.ExtendedAnalysis)
 	}
 
 	fmt.Fprintf(&b, `ITEM CHARACTERISTICS (from WebFLIS)
