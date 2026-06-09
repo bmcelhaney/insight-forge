@@ -245,6 +245,7 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
           <div class="section-header text-zinc-400 mb-3">Full Analyst Report</div>
           <div id="full-report" class="bg-zinc-950 border border-zinc-800 rounded-2xl p-4 text-xs leading-relaxed whitespace-pre-wrap font-mono max-h-[380px] overflow-auto"></div>
           <div id="commercial-refs" class="mt-2 p-3 bg-zinc-900 border border-zinc-700 rounded-2xl text-xs"></div>
+          <div id="top-commercial-suppliers" class="mt-2 p-3 bg-zinc-900 border border-zinc-700 rounded-2xl text-xs"></div>
         </div>
 
         <!-- Actions -->
@@ -526,6 +527,38 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
             if (c.price) txt += '— ' + c.price;
             d.textContent = txt || JSON.stringify(c);
             commEl.appendChild(d);
+          });
+        }
+      }
+
+      // Top Commercial Suppliers
+      const topSuppEl = document.getElementById('top-commercial-suppliers');
+      if (topSuppEl) topSuppEl.innerHTML = '';
+
+      // Top Commercial Suppliers (new)
+      const topCommEl = document.getElementById('top-commercial-suppliers');
+      if (topCommEl) {
+        topCommEl.innerHTML = '';
+        const tops = result.top_commercial_suppliers || [];
+        if (tops.length > 0) {
+          const h = document.createElement('div');
+          h.style.cssText = 'font-size:10px; color:#64748b; margin:8px 0 4px; text-transform:uppercase; letter-spacing:0.5px;';
+          h.textContent = 'Top Commercial Suppliers (from SKUs/UPCs)';
+          topCommEl.appendChild(h);
+
+          tops.slice(0, 5).forEach(s => {
+            const d = document.createElement('div');
+            d.className = 'text-xs text-zinc-300 mb-0.5';
+            let txt = s.name || 'Unknown';
+            txt += ` (refs: ${s.count || 0}`;
+            if (s.skus && s.skus.length > 0) {
+              txt += `, SKUs: ${s.skus.slice(0,2).join(', ')}`;
+              if (s.skus.length > 2) txt += '...';
+            }
+            if (s.example_price) txt += `, ex: ${s.example_price}`;
+            txt += ')';
+            d.textContent = txt;
+            topCommEl.appendChild(d);
           });
         }
       }

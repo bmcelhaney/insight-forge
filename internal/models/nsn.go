@@ -69,6 +69,9 @@ type InsightResult struct {
 	// Extended analysis that incorporates signals from the related commercial SKUs/UPCs
 	// and relates them back to the primary NSN (pricing deltas, substitution risk/opportunity, etc.)
 	ExtendedAnalysis string `json:"extended_analysis,omitempty"`
+
+	// Top commercial suppliers derived from SKU and UPC cross-references found for this NSN.
+	TopCommercialSuppliers []CommercialSupplier `json:"top_commercial_suppliers,omitempty"`
 }
 
 // RiskFlag represents a geopolitical, regulatory, concentration, or other concern.
@@ -122,6 +125,16 @@ type CommercialReference struct {
 	Source      string `json:"source"`                // e.g. "GSA_ADVANTAGE", "WEBFLIS", "ABILITYONE"
 	Price       string `json:"price,omitempty"`       // Observed commercial/federal channel price
 	Context     string `json:"context,omitempty"`     // Short note from source (e.g. "JWOD listing", "substitute")
+}
+
+// CommercialSupplier represents an aggregated commercial supplier derived from SKU/UPC data.
+type CommercialSupplier struct {
+	Name        string   `json:"name"`                  // Manufacturer or commercial supplier name
+	SKUs        []string `json:"skus,omitempty"`        // Associated SKUs
+	UPCs        []string `json:"upcs,omitempty"`        // Associated UPCs
+	Count       int      `json:"count"`                 // How many times this supplier appeared in cross-refs
+	ExamplePrice string  `json:"example_price,omitempty"`
+	Source      string   `json:"source,omitempty"`      // Primary source of this data
 }
 
 // DemandSignals from FPDS and historical awards.

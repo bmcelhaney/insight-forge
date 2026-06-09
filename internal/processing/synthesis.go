@@ -132,6 +132,9 @@ func Synthesize(ctx context.Context, entityID string, snapshots []models.DataSna
 		result.ExtendedAnalysis = buildExtendedCommercialAnalysis(entityID, commercialRefs, snapshots, viability, risk)
 		// Also feed key signals into the main report and insights for cohesion
 		appendCommercialInsights(&result, commercialRefs)
+
+		// NEW: Top commercial suppliers based on the SKU/UPC cross-references
+		result.TopCommercialSuppliers = buildTopCommercialSuppliers(commercialRefs)
 	}
 
 	// Append commercial section to the full report so it shows up in the UI and exports
@@ -160,6 +163,28 @@ func Synthesize(ctx context.Context, entityID string, snapshots []models.DataSna
 			commercialSection += "\n" + result.ExtendedAnalysis
 		}
 		result.FullAnalystReport += commercialSection
+	}
+
+	// NEW: Top commercial suppliers section in the full report
+	if len(result.TopCommercialSuppliers) > 0 {
+		supSection := "\n\nTOP COMMERCIAL SUPPLIERS (aggregated from SKU/UPC data)\n"
+		for i, sup := range result.TopCommercialSuppliers {
+			if i >= 5 {
+				break
+			}
+			supSection += fmt.Sprintf("- %s (references: %d", sup.Name, sup.Count)
+			if len(sup.SKUs) > 0 {
+				supSection += fmt.Sprintf(", SKUs: %s", strings.Join(sup.SKUs[:min(3, len(sup.SKUs))], ", "))
+				if len(sup.SKUs) > 3 {
+					supSection += ", ..."
+				}
+			}
+			if sup.ExamplePrice != "" {
+				supSection += fmt.Sprintf(", ex. price: %s", sup.ExamplePrice)
+			}
+			supSection += ")\n"
+		}
+		result.FullAnalystReport += supSection
 	}
 
 	// Fallback legacy summary if rich path produced nothing
@@ -326,6 +351,93 @@ func appendCommercialInsights(result *models.InsightResult, refs []models.Commer
 	}
 
 	result.KeyInsights = append(result.KeyInsights[:insertAt], append([]string{insight}, result.KeyInsights[insertAt:]...)...)
+}
+
+// buildTopCommercialSuppliers aggregates the commercial references into a ranked list
+// of top commercial suppliers (by manufacturer), including associated SKUs/UPCs.
+// This is the new "top commercial suppliers based on sku and upc information".
+func buildTopCommercialSuppliers(refs []models.CommercialReference) []models.CommercialSupplier {
+	if len(refs) == 0 {
+		return nil
+	}
+
+	// Group by manufacturer (or "Unknown" if missing)
+	groups := make(map[string]*models.CommercialSupplier)
+
+	for _, r := range refs {
+		name := strings.TrimSpace(r.Manufacturer)
+		if name == "" {
+			name = "Unknown / Unspecified Manufacturer"
+		}
+
+		if _, exists := groups[name]; !exists {
+			groups[name] = &models.CommercialSupplier{
+				Name:   name,
+				SKUs:   []string{},
+				UPCs:   []string{},
+				Source: r.Source,
+			}
+		}
+
+		sup := groups[name]
+		sup.Count++
+
+		if r.SKU != "" {
+			// avoid duplicates
+			found := false
+			for _, s := range sup.SKUs {
+				if s == r.SKU {
+					found = true
+					break
+				}
+			}
+			if !found {
+				sup.SKUs = append(sup.SKUs, r.SKU)
+			}
+		}
+
+		if r.UPC != "" {
+			found := false
+			for _, u := range sup.UPCs {
+				if u == r.UPC {
+					found = true
+					break
+				}
+			}
+			if !found {
+				sup.UPCs = append(sup.UPCs, r.UPC)
+			}
+		}
+
+		if r.Price != "" && sup.ExamplePrice == "" {
+			sup.ExamplePrice = r.Price
+		}
+	}
+
+	// Convert map to slice and sort by count descending
+	var suppliers []models.CommercialSupplier
+	for _, sup := range groups {
+		suppliers = append(suppliers, *sup)
+	}
+
+	sort.Slice(suppliers, func(i, j int) bool {
+		return suppliers[i].Count > suppliers[j].Count
+	})
+
+	// Limit to top 5 for readability
+	if len(suppliers) > 5 {
+		suppliers = suppliers[:5]
+	}
+
+	return suppliers
+}
+
+// min is a small helper (Go <1.21 compatibility)
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func calculateViability(snaps []models.DataSnapshot) float64 {
