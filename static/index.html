@@ -586,7 +586,8 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
         insights.forEach(i => {
           const d = document.createElement('div');
           d.className = 'flex gap-2';
-          d.innerHTML = `<i class="fa-solid fa-check text-emerald-400 mt-1"></i><div>${i}</div>`;
+          const checkClass = getInsightCheckClass(i);
+          d.innerHTML = `<i class="fa-solid fa-check ${checkClass} mt-1"></i><div>${i}</div>`;
           ig.appendChild(d);
         });
       }
@@ -1226,6 +1227,49 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
         cls: 'bg-rose-900 border-rose-700 text-rose-300',
         text: 'Elevated risk or thin data. Conduct deeper validation and price reasonableness analysis before commitment. Review all flags. For AbilityOne items, confirm mandatory-source status and explore secondary workshops immediately.'
       };
+    }
+
+    function getInsightCheckClass(insight) {
+      const sentiment = classifyInsightSentiment(insight);
+      if (sentiment === 'positive') return 'text-emerald-400';
+      if (sentiment === 'negative') return 'text-rose-400';
+      return 'text-amber-400';
+    }
+
+    function classifyInsightSentiment(insight) {
+      const text = (insight || '').toLowerCase();
+      if (!text) return 'neutral';
+
+      const positiveSignals = [
+        'strong', 'favorable', 'low risk', 'resilien', 'diversified', 'stable',
+        'increasing', 'growth', 'clean', 'expanding', 'broad', 'good coverage',
+        'opportunity', 'supports', 'mandatory source', 'proceed'
+      ];
+      const warningSignals = [
+        'monitor', 'moderate', 'mixed', 'watch', 'caution', 'validate', 'review',
+        'seasonal', 'lumpy', 'provisional', 'depends', 'check', 'observe'
+      ];
+      const negativeSignals = [
+        'critical', 'high risk', 'elevated', 'declin', 'downward', 'concentrat',
+        'single-point', 'uncertain', 'uncertainty', 'no live', 'missing',
+        'insufficient', 'limited', 'thin data', 'gap', 'exposure', 'volatile',
+        'backorder', 'risk driver', 'material flag', 'prototype mode'
+      ];
+
+      let positive = 0;
+      let warning = 0;
+      let negative = 0;
+
+      positiveSignals.forEach(sig => { if (text.includes(sig)) positive++; });
+      warningSignals.forEach(sig => { if (text.includes(sig)) warning++; });
+      negativeSignals.forEach(sig => { if (text.includes(sig)) negative++; });
+
+      if (negative >= 2 || (negative > 0 && positive === 0)) return 'negative';
+      if (positive > negative + 1) return 'positive';
+      if (warning > 0 || (positive > 0 && negative > 0)) return 'warning';
+      if (positive > 0) return 'positive';
+      if (negative > 0) return 'negative';
+      return 'warning';
     }
 
     function generateDefaultInsights(result, sourcing, supply) {
