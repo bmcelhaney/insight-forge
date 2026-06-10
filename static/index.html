@@ -324,32 +324,41 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
       el.classList.remove('flex');
     }
 
-    const form = document.getElementById('analyze-form');
-    if (form) {
-      form.addEventListener('submit', async (e) => {
-        e.preventDefault();
-        const nsn = document.getElementById('nsn-input').value.trim().replace(/\D/g, '');
-        if (!nsn || nsn.length < 9) {
-          showError('Enter a valid 9- or 13-digit NSN / NIIN');
-          return;
-        }
-        await performAnalysis(nsn);
-      });
-    } else {
-      console.error('analyze-form not found in DOM');
-    }
+    // Boot
+    window.onload = () => {
+      loadVersionInfo();
+      const input = document.getElementById('nsn-input');
+      input.focus();
+      input.select();
 
-    // Subtle quick example NSNs — clicking populates the input and runs analysis
-    document.querySelectorAll('.quick-nsn').forEach(btn => {
-      btn.addEventListener('click', async (e) => {
-        e.preventDefault();
-        const nsn = btn.getAttribute('data-nsn');
-        if (!nsn) return;
-        const input = document.getElementById('nsn-input');
-        if (input) input.value = nsn;
-        await performAnalysis(nsn);
+      // Attach listeners after DOM is ready (defensive)
+      const form = document.getElementById('analyze-form');
+      if (form) {
+        form.addEventListener('submit', async (e) => {
+          e.preventDefault();
+          const nsn = document.getElementById('nsn-input').value.trim().replace(/\D/g, '');
+          if (!nsn || nsn.length < 9) {
+            showError('Enter a valid 9- or 13-digit NSN / NIIN');
+            return;
+          }
+          await performAnalysis(nsn);
+        });
+      } else {
+        console.error('analyze-form not found in DOM');
+      }
+
+      // Subtle quick example NSNs — clicking populates the input and runs analysis
+      document.querySelectorAll('.quick-nsn').forEach(btn => {
+        btn.addEventListener('click', async (e) => {
+          e.preventDefault();
+          const nsn = btn.getAttribute('data-nsn');
+          if (!nsn) return;
+          const input = document.getElementById('nsn-input');
+          if (input) input.value = nsn;
+          await performAnalysis(nsn);
+        });
       });
-    });
+    };
 
     async function performAnalysis(nsn) {
       currentNSN = nsn;
@@ -945,13 +954,6 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
       window.location = `/api/export-excel/${currentNSN}`;
     }
 
-    // Boot
-    window.onload = () => {
-      loadVersionInfo();
-      const input = document.getElementById('nsn-input');
-      input.focus();
-      input.select();
-    };
   </script>
 </body>
 </html>
