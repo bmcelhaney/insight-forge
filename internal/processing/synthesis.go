@@ -46,9 +46,6 @@ func Synthesize(ctx context.Context, entityID string, snapshots []models.DataSna
 	// === Supplier & Ecosystem View ===
 	supplierView := buildSupplierView(snapshots)
 
-	// Lightly enrich with real award recipients from live USAspending when present (general path only)
-	supplierView = enrichWithRealRecipients(supplierView, snapshots)
-
 	// === Related NSNs (simplified for prototype) ===
 	related := generateRelatedNSNs(entityID, snapshots)
 
@@ -143,8 +140,8 @@ func Synthesize(ctx context.Context, entityID string, snapshots []models.DataSna
 		result.Summary += " " + rich.AnalystRecommendation
 	}
 
-	// Enrich supplier and demand data with time context and longer lists for the 5 canonical AbilityOne NSNs
-	enrichSupplierAndDemandForSpecialNSNs(entityID, &result)
+	// NOTE: supplier and demand cards intentionally stay snapshot-driven (live FPDS/USAspending + transparent fallbacks).
+	// We do not inject special-case staged card metrics for specific NSNs.
 
 	// === NEW: Extract and analyze commercial SKUs / UPCs ===
 	commercialRefs := extractCommercialReferences(snapshots)
@@ -943,159 +940,268 @@ func calculateRisk(snaps []models.DataSnapshot) (float64, []models.RiskFlag) {
 }
 
 func buildSupplierView(snaps []models.DataSnapshot) models.SupplierView {
-	// Derive a category hint from any WebFLIS snapshot if present
-	fsc := ""
+	if fpds, ok := findLiveFPDSSnapshot(snaps); ok {
+		if view, ok := buildSupplierViewFromLiveFPDS(fpds); ok {
+			return view
+		}
+	}
+
 	for _, s := range snaps {
-		if s.SourceCode == "WEBFLIS" {
-			if f, ok := s.RawResponse["fsc"].(string); ok {
-				fsc = f
-				break
-			}
+		if s.SourceCode != "ABILITYONE" {
+			continue
 		}
-	}
-	if fsc == "" && len(snaps) > 0 {
-		// Fallback: try to infer from entityID on the first snapshot
-		if id := snaps[0].EntityID; len(id) >= 4 {
-			fsc = id[:4]
+		npa := strings.TrimSpace(firstStringFromAny(s.RawResponse["producing_npa"]))
+		if npa == "" {
+			continue
+		}
+		status := strings.TrimSpace(firstStringFromAny(s.RawResponse["program_status"]))
+		statusPrefix := "AbilityOne context available"
+		if status != "" {
+			statusPrefix = "AbilityOne " + status + " context available"
+		}
+		return models.SupplierView{
+			TotalSuppliers:    1,
+			TopSuppliers: []models.SupplierSummary{
+				{
+					Name:       npa,
+					CAGE:       strings.TrimSpace(firstStringFromAny(s.RawResponse["npa_cage"])),
+					AwardCount: 0,
+					TotalValue: 0,
+					Country:    "US",
+				},
+			},
+			ConcentrationRisk: "unknown",
+			PrimaryCountries:  nil,
+			AwardPeriod:       "AbilityOne designated producer context (no live USAspending recipient awards returned)",
+			EcosystemNote:     fmt.Sprintf("%s for producer \"%s\". This fallback reflects designated AbilityOne producer data only and does not include award-count or obligation ranking.", statusPrefix, npa),
+			ContinuityAssessment: "Use the designated NPA/CNA program context for compliance planning, and obtain current producer capacity letters for material volume decisions.",
 		}
 	}
 
-	return deriveCategorySupplierView(fsc)
-}
-
-// deriveCategorySupplierView returns plausible, category-appropriate supplier data
-// instead of the same 6 fake aerospace companies for every NSN.
-func deriveCategorySupplierView(fsc string) models.SupplierView {
-	switch fsc {
-	case "7920", "7520", "8105": // AbilityOne-style consumables / office / packaging
-		return models.SupplierView{
-			TotalSuppliers:    7,
-			ConcentrationRisk: "low",
-			PrimaryCountries:  []string{"United States"},
-			AwardPeriod:       "Jan 2023 – Dec 2025 (36 months)",
-			TopSuppliers: []models.SupplierSummary{
-				{Name: "Lighthouse for the Blind (Fort Worth)", CAGE: "0B0B5", AwardCount: 31, TotalValue: 920000, Country: "US", SharePercent: 28.0, MostRecentAward: "2025-11"},
-				{Name: "Winston-Salem Industries for the Blind", CAGE: "1W0W1", AwardCount: 24, TotalValue: 680000, Country: "US", SharePercent: 19.0, MostRecentAward: "2025-12"},
-				{Name: "Lighthouse of Houston", CAGE: "2H0H2", AwardCount: 17, TotalValue: 410000, Country: "US", SharePercent: 12.0, MostRecentAward: "2025-10"},
-				{Name: "San Antonio Lighthouse", CAGE: "3S0S3", AwardCount: 13, TotalValue: 295000, Country: "US", SharePercent: 8.5, MostRecentAward: "2025-09"},
-			},
-			TopSuppliersTotalValue: 2305000,
-			EcosystemNote:          "Production distributed across the NIB/SourceAmerica network. Low single-workshop concentration is intentional for resilience.",
-			ContinuityAssessment:   "Strong geographic spread. Easy to rotate volume across multiple qualified workshops. Primary risk is gradual program volume shift rather than supply disruption.",
-		}
-	case "7125": // Metal shelving / storage (more concentrated, project)
-		return models.SupplierView{
-			TotalSuppliers:    5,
-			ConcentrationRisk: "elevated",
-			PrimaryCountries:  []string{"United States"},
-			AwardPeriod:       "Jan 2023 – Dec 2025 (36 months)",
-			TopSuppliers: []models.SupplierSummary{
-				{Name: "San Antonio Lighthouse", CAGE: "3S0S3", AwardCount: 9, TotalValue: 1250000, Country: "US", SharePercent: 31.0, MostRecentAward: "2025-06"},
-				{Name: "Lighthouse for the Blind (Fort Worth)", CAGE: "0B0B5", AwardCount: 6, TotalValue: 780000, Country: "US", SharePercent: 19.0, MostRecentAward: "2025-03"},
-				{Name: "Winston-Salem Industries for the Blind", CAGE: "1W0W1", AwardCount: 4, TotalValue: 510000, Country: "US", SharePercent: 12.5, MostRecentAward: "2024-11"},
-			},
-			TopSuppliersTotalValue: 2540000,
-			EcosystemNote:          "Narrower qualified producer base due to metal fabrication and welding requirements. Higher barriers than simple consumables.",
-			ContinuityAssessment:   "Elevated concentration. San Antonio dominant. Recommend dual-source commitments for any large facility project.",
-		}
-	case "5180": // Tool kits
-		return models.SupplierView{
-			TotalSuppliers:    4,
-			ConcentrationRisk: "elevated",
-			PrimaryCountries:  []string{"United States"},
-			AwardPeriod:       "Jan 2023 – Dec 2025 (36 months)",
-			TopSuppliers: []models.SupplierSummary{
-				{Name: "Lighthouse for the Blind (Fort Worth)", CAGE: "0B0B5", AwardCount: 7, TotalValue: 1420000, Country: "US", SharePercent: 34.0, MostRecentAward: "2025-05"},
-				{Name: "Winston-Salem Industries for the Blind", CAGE: "1W0W1", AwardCount: 5, TotalValue: 890000, Country: "US", SharePercent: 21.0, MostRecentAward: "2024-12"},
-				{Name: "Lighthouse of Houston", CAGE: "2H0H2", AwardCount: 3, TotalValue: 410000, Country: "US", SharePercent: 10.0, MostRecentAward: "2024-08"},
-			},
-			TopSuppliersTotalValue: 2720000,
-			EcosystemNote:          "Kitting workshops with significant commercial sub-component content. Higher complexity than pure manufactured AbilityOne items.",
-			ContinuityAssessment:   "Highest complexity risk profile. Heavy reliance on commercial supply chains before kitting. Full BOM transparency recommended.",
-		}
-	case "7220", "7210", "7230": // Floor coverings, furnishings, draperies (facilities)
-		return models.SupplierView{
-			TotalSuppliers:    6,
-			ConcentrationRisk: "medium",
-			PrimaryCountries:  []string{"United States"},
-			AwardPeriod:       "Jan 2023 – Dec 2025 (36 months)",
-			TopSuppliers: []models.SupplierSummary{
-				{Name: "Lighthouse for the Blind (Fort Worth)", CAGE: "0B0B5", AwardCount: 12, TotalValue: 680000, Country: "US", SharePercent: 22.0, MostRecentAward: "2025-08"},
-				{Name: "Winston-Salem Industries for the Blind", CAGE: "1W0W1", AwardCount: 9, TotalValue: 410000, Country: "US", SharePercent: 15.0, MostRecentAward: "2025-07"},
-				{Name: "San Antonio Lighthouse", CAGE: "3S0S3", AwardCount: 7, TotalValue: 295000, Country: "US", SharePercent: 11.0, MostRecentAward: "2025-06"},
-			},
-			TopSuppliersTotalValue: 1385000,
-			EcosystemNote:          "Facilities and furnishings production spread across NIB network. Moderate concentration typical for this category.",
-			ContinuityAssessment:   "Good resilience for standard facility sustainment. Larger projects may require early coordination with producers for volume.",
-		}
-	default:
-		// Generic but still varied federal hardware
-		return models.SupplierView{
-			TotalSuppliers:    9,
-			ConcentrationRisk: "medium",
-			PrimaryCountries:  []string{"United States", "Canada"},
-			AwardPeriod:       "Jan 2023 – Dec 2025 (36 months)",
-			TopSuppliers: []models.SupplierSummary{
-				{Name: "Midwest Manufacturing Inc.", CAGE: "4M7W2", AwardCount: 28, TotalValue: 3850000, Country: "US", SharePercent: 24.0, MostRecentAward: "2025-10"},
-				{Name: "AeroTech Precision", CAGE: "2A9T4", AwardCount: 19, TotalValue: 2710000, Country: "US", SharePercent: 17.0, MostRecentAward: "2025-11"},
-				{Name: "Northern Components Ltd", CAGE: "8N3C1", AwardCount: 14, TotalValue: 1920000, Country: "CA", SharePercent: 12.0, MostRecentAward: "2025-09"},
-			},
-			TopSuppliersTotalValue: 8480000,
-			EcosystemNote:          "Mixed domestic and allied supplier base typical of sustainment hardware. Moderate concentration in top tier.",
-			ContinuityAssessment:   "Acceptable resilience for most requirements. Monitor top two suppliers for capacity on surge orders.",
-		}
+	return models.SupplierView{
+		TotalSuppliers:    0,
+		ConcentrationRisk: "unknown",
+		PrimaryCountries:  nil,
+		AwardPeriod:       "No live federal award-recipient data available for this NSN",
+		EcosystemNote:     "Top Suppliers is populated only from live USAspending recipient data. No qualifying live recipient records were returned.",
+		ContinuityAssessment: "Re-run with alternate NSN formatting and corroborate with manual award-history pulls when supplier concentration evidence is required.",
 	}
 }
 
-// enrichWithRealRecipients injects actual recipient names from live USAspending award results
-// into the SupplierView for the general (non-special) path. This makes arbitrary NSNs show
-// real buyer/recipient data instead of only prototype NIB names.
-func enrichWithRealRecipients(view models.SupplierView, snaps []models.DataSnapshot) models.SupplierView {
-	var realRecips []string
+func findLiveFPDSSnapshot(snaps []models.DataSnapshot) (models.DataSnapshot, bool) {
 	for _, s := range snaps {
-		if s.SourceCode == "FPDS" {
-			if ds, ok := s.RawResponse["data_source"].(string); ok && ds == "live_usaspending" {
-				if recs, ok := s.RawResponse["top_recipients"].([]string); ok && len(recs) > 0 {
-					realRecips = recs
-				} else if recsI, ok := s.RawResponse["top_recipients"].([]any); ok {
-					for _, r := range recsI {
-						if str, ok := r.(string); ok && str != "" {
-							realRecips = append(realRecips, str)
-						}
-					}
-				}
-				break
-			}
+		if s.SourceCode != "FPDS" {
+			continue
+		}
+		if strings.TrimSpace(firstStringFromAny(s.RawResponse["data_source"])) == "live_usaspending" {
+			return s, true
 		}
 	}
-	if len(realRecips) == 0 {
-		return view
+	return models.DataSnapshot{}, false
+}
+
+func extractLiveUSASpendingRows(fpds models.DataSnapshot) []map[string]any {
+	raw, ok := fpds.RawResponse["raw_response"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	results, ok := raw["results"].([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]map[string]any, 0, len(results))
+	for _, item := range results {
+		if row, ok := item.(map[string]any); ok {
+			out = append(out, row)
+		}
+	}
+	return out
+}
+
+func buildSupplierViewFromLiveFPDS(fpds models.DataSnapshot) (models.SupplierView, bool) {
+	type supplierAggregate struct {
+		AwardCount int
+		TotalValue float64
+		MostRecent time.Time
+		HasRecent  bool
+	}
+	type supplierRank struct {
+		Name string
+		Agg  supplierAggregate
 	}
 
-	// Prepend up to 2 real recipients as "award recipients" so the card shows live data.
-	// Keep the category prototype suppliers but surface the real names first with a clear label.
-	augmented := view
-	for i, name := range realRecips {
-		if i >= 2 {
+	rows := extractLiveUSASpendingRows(fpds)
+	if len(rows) == 0 {
+		return models.SupplierView{}, false
+	}
+
+	aggregates := make(map[string]supplierAggregate)
+	totalAwards := 0
+	totalValue := 0.0
+	minDate := time.Time{}
+	maxDate := time.Time{}
+	hasDate := false
+
+	for _, row := range rows {
+		recipient := strings.TrimSpace(firstStringFromAny(row["recipient_name"]))
+		if recipient == "" {
+			continue
+		}
+		agg := aggregates[recipient]
+		agg.AwardCount++
+		totalAwards++
+
+		value := toFloatFromAny(row["total_obligation"])
+		if value > 0 {
+			agg.TotalValue += value
+			totalValue += value
+		}
+
+		if dt, ok := parseAwardDate(firstStringFromAny(row["last_modified_date"])); ok {
+			if !agg.HasRecent || dt.After(agg.MostRecent) {
+				agg.MostRecent = dt
+				agg.HasRecent = true
+			}
+			if !hasDate || dt.Before(minDate) {
+				minDate = dt
+			}
+			if !hasDate || dt.After(maxDate) {
+				maxDate = dt
+			}
+			hasDate = true
+		} else if dt, ok := parseAwardDate(firstStringFromAny(row["date_signed"])); ok {
+			if !agg.HasRecent || dt.After(agg.MostRecent) {
+				agg.MostRecent = dt
+				agg.HasRecent = true
+			}
+			if !hasDate || dt.Before(minDate) {
+				minDate = dt
+			}
+			if !hasDate || dt.After(maxDate) {
+				maxDate = dt
+			}
+			hasDate = true
+		}
+
+		aggregates[recipient] = agg
+	}
+
+	if len(aggregates) == 0 {
+		return models.SupplierView{}, false
+	}
+
+	ranked := make([]supplierRank, 0, len(aggregates))
+	for name, agg := range aggregates {
+		ranked = append(ranked, supplierRank{Name: name, Agg: agg})
+	}
+	sort.Slice(ranked, func(i, j int) bool {
+		if ranked[i].Agg.TotalValue == ranked[j].Agg.TotalValue {
+			if ranked[i].Agg.AwardCount == ranked[j].Agg.AwardCount {
+				return ranked[i].Name < ranked[j].Name
+			}
+			return ranked[i].Agg.AwardCount > ranked[j].Agg.AwardCount
+		}
+		return ranked[i].Agg.TotalValue > ranked[j].Agg.TotalValue
+	})
+
+	topSuppliers := make([]models.SupplierSummary, 0, min(6, len(ranked)))
+	topSuppliersValue := 0.0
+	topShare := 0.0
+	for i, entry := range ranked {
+		if i >= 6 {
 			break
 		}
-		aug := models.SupplierSummary{
-			Name:       name + " (award recipient)",
-			CAGE:       "",
-			AwardCount: 0,
-			TotalValue: 0,
-			Country:    "US",
+		share := 0.0
+		if totalValue > 0 {
+			share = (entry.Agg.TotalValue / totalValue) * 100
+		} else if totalAwards > 0 {
+			share = float64(entry.Agg.AwardCount) / float64(totalAwards) * 100
 		}
-		// Insert at front, but cap total shown at 4
-		augmented.TopSuppliers = append([]models.SupplierSummary{aug}, augmented.TopSuppliers...)
-		if len(augmented.TopSuppliers) > 4 {
-			augmented.TopSuppliers = augmented.TopSuppliers[:4]
+		if i == 0 {
+			topShare = share
+		}
+		recent := ""
+		if entry.Agg.HasRecent {
+			recent = entry.Agg.MostRecent.Format("2006-01")
+		}
+		topSuppliers = append(topSuppliers, models.SupplierSummary{
+			Name:            entry.Name,
+			CAGE:            "",
+			AwardCount:      entry.Agg.AwardCount,
+			TotalValue:      entry.Agg.TotalValue,
+			Country:         "",
+			SharePercent:    share,
+			MostRecentAward: recent,
+		})
+		topSuppliersValue += entry.Agg.TotalValue
+	}
+
+	concentration := classifyLiveSupplierConcentration(len(ranked), topShare)
+	awardPeriod := "Live USAspending recipient sample"
+	if hasDate {
+		awardPeriod = fmt.Sprintf("%s – %s (live USAspending recipient sample)", minDate.Format("Jan 2006"), maxDate.Format("Jan 2006"))
+	}
+
+	return models.SupplierView{
+		TotalSuppliers:        len(ranked),
+		TopSuppliers:          topSuppliers,
+		ConcentrationRisk:     concentration,
+		PrimaryCountries:      nil,
+		AwardPeriod:           awardPeriod,
+		TopSuppliersTotalValue: topSuppliersValue,
+		EcosystemNote: fmt.Sprintf(
+			"Top Suppliers computed from %d live USAspending award record(s) returned for this NSN query; values represent observed obligations in this response sample.",
+			totalAwards,
+		),
+		ContinuityAssessment: "Because USAspending keyword search returns a live sample rather than a complete historical time series, corroborate major sourcing decisions with direct award-history pulls and current producer capacity checks.",
+	}, true
+}
+
+func classifyLiveSupplierConcentration(supplierCount int, topShare float64) string {
+	switch {
+	case supplierCount <= 1 || topShare >= 65:
+		return "elevated"
+	case supplierCount <= 3 || topShare >= 40:
+		return "medium"
+	default:
+		return "low"
+	}
+}
+
+func parseAwardDate(raw string) (time.Time, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return time.Time{}, false
+	}
+	layouts := []string{
+		time.RFC3339,
+		"2006-01-02",
+		"2006-01-02T15:04:05",
+		"2006-01-02T15:04:05.000",
+	}
+	for _, layout := range layouts {
+		if parsed, err := time.Parse(layout, raw); err == nil {
+			return parsed, true
 		}
 	}
-	if len(augmented.TopSuppliers) > 0 {
-		augmented.EcosystemNote = "Top award recipients from live USAspending data mixed with category baseline. " + view.EcosystemNote
+	return time.Time{}, false
+}
+
+func toFloatFromAny(v any) float64 {
+	switch val := v.(type) {
+	case float64:
+		return val
+	case float32:
+		return float64(val)
+	case int:
+		return float64(val)
+	case int32:
+		return float64(val)
+	case int64:
+		return float64(val)
+	default:
+		return 0
 	}
-	return augmented
 }
 
 func generateRelatedNSNs(entityID string, snaps []models.DataSnapshot) []models.RelatedNSN {
@@ -1477,144 +1583,189 @@ func getPreferredAbilityOneRelated(fsc string) []models.RelatedNSN {
 }
 
 func buildDemandSignals(snaps []models.DataSnapshot) models.DemandSignals {
-	fsc := ""
+	if fpds, ok := findLiveFPDSSnapshot(snaps); ok {
+		return buildDemandSignalsFromLiveFPDS(fpds, snaps)
+	}
+
 	for _, s := range snaps {
-		// Highest priority: real AbilityOne program data (mandatory source, real NPA, demand character)
-		if s.SourceCode == "ABILITYONE" {
-			if dc, ok := s.RawResponse["demand_character"].(string); ok && dc != "" {
-				prog := "AbilityOne Mandatory Source"
-				if ps, ok := s.RawResponse["program_status"].(string); ok && ps != "" {
-					prog = "AbilityOne " + ps
-				}
-				return models.DemandSignals{
-					TotalAwards:         0, // Will be enriched by USAspending if present
-					TotalValueUSD:       0,
-					TopAgencies:         []string{"GSA", "DLA Troop Support", "VA", "Bureau of Prisons"},
-					RecentTrend:         "stable",
-					ProgramAssociations: []string{prog},
-					AwardPeriod:         "Ongoing via AbilityOne channels and GSA schedules",
-					DemandNote:          dc,
-				}
-			}
+		if s.SourceCode != "ABILITYONE" {
+			continue
 		}
-
-		if s.SourceCode == "FPDS" {
-			// Prefer real live USAspending data over any prototype when present
-			if ds, ok := s.RawResponse["data_source"].(string); ok && ds == "live_usaspending" {
-				realAwards := 0
-				if ta, ok := s.RawResponse["total_awards"].(int); ok {
-					realAwards = ta
-				} else if ta, ok := s.RawResponse["total_awards"].(float64); ok {
-					realAwards = int(ta)
-				}
-				realValue := 0.0
-				if tv, ok := s.RawResponse["total_value_usd"].(int64); ok {
-					realValue = float64(tv)
-				} else if tv, ok := s.RawResponse["total_value_usd"].(float64); ok {
-					realValue = tv
-				}
-				realAgencies := []string{"Various Federal Agencies"}
-				if ag, ok := s.RawResponse["top_agencies"].([]string); ok && len(ag) > 0 {
-					realAgencies = ag
-				} else if agi, ok := s.RawResponse["top_agencies"].([]any); ok {
-					for _, a := range agi {
-						if str, ok := a.(string); ok {
-							realAgencies = append(realAgencies, str)
-						}
-					}
-				}
-				demandNote := "Real federal award activity surfaced via USAspending public keyword search. Volume and agencies reflect actual obligated dollars on contracts matching this NSN."
-				if dc, ok := s.RawResponse["demand_character"].(string); ok && dc != "" {
-					demandNote = dc
-				}
-				// Add concrete sample awards if the extractor captured them
-				if samples, ok := s.RawResponse["sample_awards"].([]string); ok && len(samples) > 0 {
-					n := 2
-					if len(samples) < n {
-						n = len(samples)
-					}
-					demandNote += " Recent activity includes: " + strings.Join(samples[:n], "; ") + "."
-				}
-
-				return models.DemandSignals{
-					TotalAwards:         realAwards,
-					TotalValueUSD:       realValue,
-					TopAgencies:         realAgencies,
-					RecentTrend:         "stable",
-					ProgramAssociations: []string{"Federal Awards (USAspending)"},
-					AwardPeriod:         "Recent awards per USAspending (live)",
-					DemandNote:          demandNote,
-				}
-			}
-			// Fallback: old prototype path that at least used the demand_character
-			if raw, ok := s.RawResponse["demand_character"].(string); ok && raw != "" {
-				return models.DemandSignals{
-					TotalAwards:         120,
-					TotalValueUSD:       2100000,
-					TopAgencies:         []string{"DLA Troop Support", "GSA", "VA"},
-					RecentTrend:         "stable",
-					ProgramAssociations: []string{"Federal Consumables / Packaging"},
-					AwardPeriod:         "Jan 2023 – Dec 2025 (36 months)",
-					DemandNote:          raw,
-				}
-			}
+		program := "AbilityOne Program"
+		if status := strings.TrimSpace(firstStringFromAny(s.RawResponse["program_status"])); status != "" {
+			program = "AbilityOne " + status
 		}
-		if s.SourceCode == "WEBFLIS" {
-			if f, ok := s.RawResponse["fsc"].(string); ok {
-				fsc = f
-			}
+		note := strings.TrimSpace(firstStringFromAny(s.RawResponse["demand_character"]))
+		if note == "" {
+			note = strings.TrimSpace(firstStringFromAny(s.RawResponse["mandatory_source_note"]))
+		}
+		if note == "" {
+			note = "AbilityOne program context is available, but no live USAspending award metrics were returned for this NSN query."
+		} else {
+			note = appendUniqueSentence(
+				note,
+				"Live USAspending award metrics were not returned for this NSN query, so quantitative demand fields are intentionally left unpopulated.",
+			)
+		}
+		return models.DemandSignals{
+			TotalAwards:         0,
+			TotalValueUSD:       0,
+			TopAgencies:         nil,
+			RecentTrend:         "unknown",
+			ProgramAssociations: []string{program},
+			AwardPeriod:         "No live USAspending award metrics returned for this NSN",
+			DemandNote:          note,
 		}
 	}
 
-	// Category-aware demand profiles — expanded for more common federal FSCs
-	switch fsc {
-	case "7920", "7520", "8105", "8540":
-		return models.DemandSignals{
-			TotalAwards:         165,
-			TotalValueUSD:       1850000,
-			TopAgencies:         []string{"DLA Troop Support", "GSA", "VA"},
-			RecentTrend:         "stable",
-			ProgramAssociations: []string{"AbilityOne Mandatory Source", "General Federal Consumables"},
-			AwardPeriod:         "Jan 2023 – Dec 2025 (36 months)",
-			YoYChange:           "+2% to -6% (category dependent)",
-			PeakPeriods:         "Q4 year-end surge + back-to-school for office items",
-			DemandNote:          "High-volume, relatively predictable consumable demand with clear seasonal peaks. Strong AbilityOne program protection.",
+	return models.DemandSignals{
+		TotalAwards:         0,
+		TotalValueUSD:       0,
+		TopAgencies:         nil,
+		RecentTrend:         "unknown",
+		ProgramAssociations: nil,
+		AwardPeriod:         "No live federal award metrics available for this NSN",
+		DemandNote:          "Demand & Market Signals is populated only from live USAspending award data. No qualifying live award records were returned.",
+	}
+}
+
+func buildDemandSignalsFromLiveFPDS(fpds models.DataSnapshot, snaps []models.DataSnapshot) models.DemandSignals {
+	agencies := toStringSlice(fpds.RawResponse["top_agencies"])
+	if len(agencies) == 0 {
+		agencies = nil
+	}
+
+	demandNote := strings.TrimSpace(firstStringFromAny(fpds.RawResponse["demand_character"]))
+	if demandNote == "" {
+		demandNote = "Live federal award activity surfaced via USAspending public API keyword search."
+	}
+	if samples := toStringSlice(fpds.RawResponse["sample_awards"]); len(samples) > 0 {
+		n := min(2, len(samples))
+		demandNote = appendUniqueSentence(demandNote, "Recent activity includes "+strings.Join(samples[:n], "; ")+".")
+	}
+
+	programs := []string{"Federal Awards (USAspending live)"}
+	for _, s := range snaps {
+		if s.SourceCode != "ABILITYONE" {
+			continue
 		}
-	case "7125", "7220", "7210":
-		return models.DemandSignals{
-			TotalAwards:         29,
-			TotalValueUSD:       2650000,
-			TopAgencies:         []string{"VA", "Air Force", "GSA", "Army Corps of Engineers"},
-			RecentTrend:         "cyclical",
-			ProgramAssociations: []string{"Facility Modernization", "Construction & Sustainment"},
-			AwardPeriod:         "Jan 2023 – Dec 2025 (36 months)",
-			YoYChange:           "Highly variable (-35% to +95%)",
-			PeakPeriods:         "Tied to large capital projects and facility sustainment cycles",
-			DemandNote:          "Project or sustainment-driven demand for floor coverings, furnishings, and storage. Volume tied to facility work and base operations.",
+		if status := strings.TrimSpace(firstStringFromAny(s.RawResponse["program_status"])); status != "" {
+			programs = appendUniqueString(programs, "AbilityOne "+status)
+		} else {
+			programs = appendUniqueString(programs, "AbilityOne Program")
 		}
-	case "5180":
-		return models.DemandSignals{
-			TotalAwards:         21,
-			TotalValueUSD:       1950000,
-			TopAgencies:         []string{"DLA", "Navy", "Air Force"},
-			RecentTrend:         "lumpy",
-			ProgramAssociations: []string{"Maintenance & Tooling", "Readiness"},
-			AwardPeriod:         "Jan 2023 – Dec 2025 (36 months)",
-			YoYChange:           "Very lumpy (single large orders drive majority of volume)",
-			PeakPeriods:         "Irregular spikes tied to major maintenance or deployment cycles",
-			DemandNote:          "Binary, order-driven demand. A few large tool kit procurements can represent most of a year's volume.",
+		if abilityDemand := strings.TrimSpace(firstStringFromAny(s.RawResponse["demand_character"])); abilityDemand != "" {
+			demandNote = appendUniqueSentence(demandNote, "AbilityOne context: "+abilityDemand)
 		}
-	default:
-		return models.DemandSignals{
-			TotalAwards:         67,
-			TotalValueUSD:       3850000,
-			TopAgencies:         []string{"DLA", "NAVY", "AIR FORCE", "ARMY"},
-			RecentTrend:         "stable",
-			ProgramAssociations: []string{"Federal Sustainment", "Hardware & Components"},
-			AwardPeriod:         "Jan 2023 – Dec 2025 (36 months)",
-			DemandNote:          "Mixed sustainment and project-driven demand typical of federal hardware and components. Volume can be lumpy depending on platform maintenance cycles and new construction.",
+		break
+	}
+
+	rows := extractLiveUSASpendingRows(fpds)
+	awardPeriod, trend, yoyChange, peakPeriods := summarizeDemandTimeline(rows)
+
+	return models.DemandSignals{
+		TotalAwards:         intFromAny(fpds.RawResponse["total_awards"]),
+		TotalValueUSD:       toFloatFromAny(fpds.RawResponse["total_value_usd"]),
+		TopAgencies:         agencies,
+		RecentTrend:         trend,
+		ProgramAssociations: programs,
+		AwardPeriod:         awardPeriod,
+		YoYChange:           yoyChange,
+		PeakPeriods:         peakPeriods,
+		DemandNote:          demandNote,
+	}
+}
+
+func summarizeDemandTimeline(rows []map[string]any) (awardPeriod, trend, yoyChange, peakPeriods string) {
+	awardPeriod = "Live USAspending award sample"
+	trend = "observed"
+	if len(rows) == 0 {
+		return awardPeriod, trend, "", ""
+	}
+
+	minDate := time.Time{}
+	maxDate := time.Time{}
+	hasDate := false
+	annualValue := make(map[int]float64)
+	annualCount := make(map[int]int)
+
+	for _, row := range rows {
+		dt, ok := parseAwardDate(firstStringFromAny(row["last_modified_date"]))
+		if !ok {
+			dt, ok = parseAwardDate(firstStringFromAny(row["date_signed"]))
+		}
+		if !ok {
+			continue
+		}
+
+		if !hasDate || dt.Before(minDate) {
+			minDate = dt
+		}
+		if !hasDate || dt.After(maxDate) {
+			maxDate = dt
+		}
+		hasDate = true
+
+		yr := dt.Year()
+		annualCount[yr]++
+		annualValue[yr] += toFloatFromAny(row["total_obligation"])
+	}
+
+	if hasDate {
+		awardPeriod = fmt.Sprintf("%s – %s (live USAspending sample)", minDate.Format("Jan 2006"), maxDate.Format("Jan 2006"))
+	}
+
+	if len(annualCount) < 2 {
+		return awardPeriod, trend, "", ""
+	}
+
+	years := make([]int, 0, len(annualCount))
+	for year := range annualCount {
+		years = append(years, year)
+	}
+	sort.Ints(years)
+	lastYear := years[len(years)-1]
+	prevYear := years[len(years)-2]
+
+	prevValue := annualValue[prevYear]
+	lastValue := annualValue[lastYear]
+	if prevValue > 0 {
+		delta := ((lastValue - prevValue) / prevValue) * 100
+		yoyChange = fmt.Sprintf("%+.1f%% (%d vs %d obligations)", delta, lastYear, prevYear)
+		switch {
+		case delta > 5:
+			trend = "increasing"
+		case delta < -5:
+			trend = "declining"
+		default:
+			trend = "stable"
+		}
+	} else if annualCount[prevYear] > 0 {
+		delta := ((float64(annualCount[lastYear]) - float64(annualCount[prevYear])) / float64(annualCount[prevYear])) * 100
+		yoyChange = fmt.Sprintf("%+.1f%% (%d vs %d award count)", delta, lastYear, prevYear)
+		switch {
+		case delta > 5:
+			trend = "increasing"
+		case delta < -5:
+			trend = "declining"
+		default:
+			trend = "stable"
 		}
 	}
+
+	peakYear := 0
+	peakCount := 0
+	for year, count := range annualCount {
+		if count > peakCount || (count == peakCount && year > peakYear) {
+			peakYear = year
+			peakCount = count
+		}
+	}
+	if peakYear > 0 {
+		peakPeriods = fmt.Sprintf("Highest observed annual activity: %d (%d awards)", peakYear, peakCount)
+	}
+
+	return awardPeriod, trend, yoyChange, peakPeriods
 }
 
 func generateExecutiveSummary(entityID string, viability, risk float64, flags []models.RiskFlag, suppliers models.SupplierView) string {
