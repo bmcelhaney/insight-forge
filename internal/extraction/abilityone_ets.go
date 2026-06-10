@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -95,6 +96,16 @@ func (e *AbilityOneETSExtractor) Fetch(ctx context.Context, entityID string, par
 	manufacturerCounts := make(map[string]int)
 	abilityDescCounts := make(map[string]int)
 	commercialDescCounts := make(map[string]int)
+	uniqueManufacturers := make(map[string]bool)
+	uniqueSKUs := make(map[string]bool)
+	uniqueUPCs := make(map[string]bool)
+	var earliestDate time.Time
+	var latestDate time.Time
+	hasEarliest := false
+	hasLatest := false
+	recentAdditions12m := 0
+	recentAdditions24m := 0
+	now := time.Now()
 	references := make([]map[string]any, 0, len(matches))
 
 	for _, row := range matches {
@@ -106,12 +117,35 @@ func (e *AbilityOneETSExtractor) Fetch(ctx context.Context, entityID string, par
 
 		if row.Manufacturer != "" {
 			manufacturerCounts[row.Manufacturer]++
+			uniqueManufacturers[row.Manufacturer] = true
 		}
 		if row.AbilityOneDescription != "" {
 			abilityDescCounts[row.AbilityOneDescription]++
 		}
 		if row.CommercialDescription != "" {
 			commercialDescCounts[row.CommercialDescription]++
+		}
+		if row.SKU != "" {
+			uniqueSKUs[row.SKU] = true
+		}
+		if row.CommercialUPC != "" {
+			uniqueUPCs[row.CommercialUPC] = true
+		}
+		if parsed, ok := parseETSDate(row.DateAdded); ok {
+			if !hasEarliest || parsed.Before(earliestDate) {
+				earliestDate = parsed
+				hasEarliest = true
+			}
+			if !hasLatest || parsed.After(latestDate) {
+				latestDate = parsed
+				hasLatest = true
+			}
+			if !parsed.Before(now.AddDate(-1, 0, 0)) {
+				recentAdditions12m++
+			}
+			if !parsed.Before(now.AddDate(-2, 0, 0)) {
+				recentAdditions24m++
+			}
 		}
 
 		ref := map[string]any{
@@ -152,6 +186,15 @@ func (e *AbilityOneETSExtractor) Fetch(ctx context.Context, entityID string, par
 	if len(references) > 75 {
 		references = references[:75]
 	}
+	earliestDateText := ""
+	latestDateText := ""
+	if hasEarliest {
+		earliestDateText = earliestDate.Format("2006-01-02")
+	}
+	if hasLatest {
+		latestDateText = latestDate.Format("2006-01-02")
+	}
+	mappingTrend := inferETSTrend(recentAdditions12m, recentAdditions24m)
 
 	snap := models.DataSnapshot{
 		EntityID:   entityID,
@@ -164,13 +207,22 @@ func (e *AbilityOneETSExtractor) Fetch(ctx context.Context, entityID string, par
 			"matched_rows_count":      len(seenRows),
 			"match_strategy":          strategy,
 			"manufacturers":           topValuesByCount(manufacturerCounts, 12),
+			"manufacturer_reference_counts": manufacturerCounts,
+			"unique_manufacturer_count":     len(uniqueManufacturers),
+			"unique_sku_count":              len(uniqueSKUs),
+			"unique_upc_count":              len(uniqueUPCs),
+			"earliest_date_added":           earliestDateText,
+			"latest_date_added":             latestDateText,
+			"recent_additions_12m":          recentAdditions12m,
+			"recent_additions_24m":          recentAdditions24m,
+			"mapping_trend":                 mappingTrend,
 			"abilityone_descriptions": topValuesByCount(abilityDescCounts, 12),
 			"commercial_descriptions": topValuesByCount(commercialDescCounts, 12),
 			"commercial_references":   references,
 			"note":                    "AbilityOne ETS cross-reference data matched by NSN/NIIN and merged into commercial reference evidence.",
 		},
 		QualityScore: 0.98,
-		CreatedBy:    "abilityone-ets-extractor-v0.1",
+		CreatedBy:    "abilityone-ets-extractor-v0.2",
 	}
 
 	return []models.DataSnapshot{snap}, nil
@@ -364,4 +416,42 @@ func digitsOnly(s string) string {
 		}
 	}
 	return b.String()
+}
+
+func parseETSDate(raw string) (time.Time, bool) {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return time.Time{}, false
+	}
+	layouts := []string{
+		"1/2/2006",
+		"01/02/2006",
+		"1/2/06",
+		"2006-01-02",
+		"01-02-2006",
+		"Jan 2 2006",
+		"January 2 2006",
+	}
+	for _, layout := range layouts {
+		if parsed, err := time.Parse(layout, s); err == nil {
+			return parsed, true
+		}
+	}
+	if n, err := strconv.ParseFloat(s, 64); err == nil {
+		if parsed, err := excelize.ExcelDateToTime(n, false); err == nil {
+			return parsed, true
+		}
+	}
+	return time.Time{}, false
+}
+
+func inferETSTrend(recent12m, recent24m int) string {
+	switch {
+	case recent12m >= 15:
+		return "expanding"
+	case recent12m > 0 || recent24m > 0:
+		return "stable"
+	default:
+		return "mature"
+	}
 }

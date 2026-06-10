@@ -209,27 +209,9 @@ func Synthesize(ctx context.Context, entityID string, snapshots []models.DataSna
 		result.FullAnalystReport += supSection
 	}
 
-	// If ETS cross-reference data matched the NSN, surface that signal clearly.
-	etsRows, etsManufacturers := extractETSSummary(snapshots)
-	if etsRows > 0 {
-		result.Citations = appendUniqueString(
-			result.Citations,
-			"AbilityOne ETS cross-reference spreadsheet (docs/20260701 AbilityOne ETS File.xlsx)",
-		)
-
-		mfrPhrase := ""
-		if len(etsManufacturers) > 0 {
-			mfrPhrase = fmt.Sprintf(" across %d manufacturer(s)", len(etsManufacturers))
-		}
-		etsInsight := fmt.Sprintf(
-			"AbilityOne ETS cross-reference matched %d row(s)%s, adding SKU/UPC/manufacturer evidence for this NSN.",
-			etsRows,
-			mfrPhrase,
-		)
-		if !containsText(result.KeyInsights, "AbilityOne ETS cross-reference") {
-			result.KeyInsights = append([]string{etsInsight}, result.KeyInsights...)
-		}
-	}
+	// Synchronize supplier ecosystem, demand signals, citations, and narrative reporting
+	// using ETS cross-reference evidence.
+	applyETSAnalysisSync(&result, snapshots)
 
 	// Fallback legacy summary if rich path produced nothing
 	if result.Summary == "" {
@@ -367,20 +349,168 @@ func toStringSlice(v any) []string {
 	return nil
 }
 
-func extractETSSummary(snaps []models.DataSnapshot) (int, []string) {
+type etsSignal struct {
+	MatchedRows          int
+	Manufacturers        []string
+	ManufacturerCounts   map[string]int
+	UniqueManufacturerCt int
+	UniqueSKUCt          int
+	UniqueUPCCt          int
+	EarliestDateAdded    string
+	LatestDateAdded      string
+	RecentAdditions12m   int
+	RecentAdditions24m   int
+	MappingTrend         string
+}
+
+func extractETSSignal(snaps []models.DataSnapshot) etsSignal {
+	signal := etsSignal{
+		ManufacturerCounts: make(map[string]int),
+	}
 	for _, s := range snaps {
 		if s.SourceCode != "ABILITYONE_ETS" {
 			continue
 		}
-		rows := 0
-		if v, ok := s.RawResponse["matched_rows_count"].(int); ok {
-			rows = v
-		} else if v, ok := s.RawResponse["matched_rows_count"].(float64); ok {
-			rows = int(v)
+		signal.MatchedRows = intFromAny(s.RawResponse["matched_rows_count"])
+		signal.Manufacturers = toStringSlice(s.RawResponse["manufacturers"])
+		signal.ManufacturerCounts = toStringIntMap(s.RawResponse["manufacturer_reference_counts"])
+		signal.UniqueManufacturerCt = intFromAny(s.RawResponse["unique_manufacturer_count"])
+		signal.UniqueSKUCt = intFromAny(s.RawResponse["unique_sku_count"])
+		signal.UniqueUPCCt = intFromAny(s.RawResponse["unique_upc_count"])
+		signal.EarliestDateAdded = strings.TrimSpace(firstStringFromAny(s.RawResponse["earliest_date_added"]))
+		signal.LatestDateAdded = strings.TrimSpace(firstStringFromAny(s.RawResponse["latest_date_added"]))
+		signal.RecentAdditions12m = intFromAny(s.RawResponse["recent_additions_12m"])
+		signal.RecentAdditions24m = intFromAny(s.RawResponse["recent_additions_24m"])
+		signal.MappingTrend = strings.TrimSpace(firstStringFromAny(s.RawResponse["mapping_trend"]))
+		if signal.UniqueManufacturerCt == 0 {
+			signal.UniqueManufacturerCt = len(signal.Manufacturers)
 		}
-		return rows, toStringSlice(s.RawResponse["manufacturers"])
+		return signal
 	}
-	return 0, nil
+	return signal
+}
+
+func applyETSAnalysisSync(result *models.InsightResult, snaps []models.DataSnapshot) {
+	signal := extractETSSignal(snaps)
+	if signal.MatchedRows == 0 {
+		return
+	}
+
+	result.Citations = appendUniqueString(
+		result.Citations,
+		"AbilityOne ETS cross-reference spreadsheet (docs/20260701 AbilityOne ETS File.xlsx)",
+	)
+
+	// Supplier ecosystem synchronization
+	topMfrs := formatTopManufacturerRefs(signal.ManufacturerCounts, 3)
+	if len(topMfrs) == 0 && len(signal.Manufacturers) > 0 {
+		topMfrs = signal.Manufacturers[:min(3, len(signal.Manufacturers))]
+	}
+	topMfrPhrase := ""
+	if len(topMfrs) > 0 {
+		topMfrPhrase = " Top mapped manufacturers: " + strings.Join(topMfrs, ", ") + "."
+	}
+
+	etsConcentration := classifyETSConcentration(signal)
+	result.SupplierData.ConcentrationRisk = mergeConcentrationRisk(result.SupplierData.ConcentrationRisk, etsConcentration)
+
+	supplierSyncNote := fmt.Sprintf(
+		"ETS cross-reference layer adds %d matched rows across %d manufacturer(s), %d SKU(s), and %d UPC(s).%s",
+		signal.MatchedRows,
+		maxInt(signal.UniqueManufacturerCt, len(signal.Manufacturers)),
+		signal.UniqueSKUCt,
+		signal.UniqueUPCCt,
+		topMfrPhrase,
+	)
+	result.SupplierData.EcosystemNote = appendUniqueSentence(result.SupplierData.EcosystemNote, supplierSyncNote)
+
+	continuityAdd := fmt.Sprintf(
+		"Commercial cross-reference concentration from ETS appears %s; align supplier continuity planning to both federal award concentration and mapped commercial manufacturer breadth.",
+		etsConcentration,
+	)
+	result.SupplierData.ContinuityAssessment = appendUniqueSentence(result.SupplierData.ContinuityAssessment, continuityAdd)
+
+	// Demand and market signal synchronization
+	result.DemandSignals.ProgramAssociations = appendUniqueString(result.DemandSignals.ProgramAssociations, "AbilityOne ETS Cross-Reference")
+
+	dateWindow := ""
+	if signal.EarliestDateAdded != "" || signal.LatestDateAdded != "" {
+		dateWindow = fmt.Sprintf(" Date window: %s to %s.", nonEmptyOr(signal.EarliestDateAdded, "unknown"), nonEmptyOr(signal.LatestDateAdded, "unknown"))
+	}
+	recentActivity := ""
+	if signal.RecentAdditions12m > 0 || signal.RecentAdditions24m > 0 {
+		recentActivity = fmt.Sprintf(" Recent mapping activity: %d additions in 12 months, %d in 24 months.", signal.RecentAdditions12m, signal.RecentAdditions24m)
+	}
+	trendLabel := signal.MappingTrend
+	if trendLabel == "" {
+		trendLabel = inferETSMappingTrend(signal)
+	}
+	if result.DemandSignals.YoYChange == "" && signal.RecentAdditions12m > 0 {
+		result.DemandSignals.YoYChange = fmt.Sprintf("ETS mapping activity: %d additions in last 12 months", signal.RecentAdditions12m)
+	}
+	if result.DemandSignals.PeakPeriods == "" && signal.RecentAdditions24m > 0 {
+		result.DemandSignals.PeakPeriods = "ETS cross-reference maintenance updates observed in recent years"
+	}
+	if trendLabel != "" && !strings.Contains(strings.ToLower(result.DemandSignals.RecentTrend), strings.ToLower(trendLabel)) {
+		if strings.TrimSpace(result.DemandSignals.RecentTrend) == "" {
+			result.DemandSignals.RecentTrend = trendLabel
+		} else {
+			result.DemandSignals.RecentTrend = result.DemandSignals.RecentTrend + " / ETS mapping: " + trendLabel
+		}
+	}
+
+	demandSyncNote := fmt.Sprintf(
+		"ETS mapping coverage contributes %d cross-reference rows across %d manufacturers and %d unique SKUs for this NSN.%s%s",
+		signal.MatchedRows,
+		maxInt(signal.UniqueManufacturerCt, len(signal.Manufacturers)),
+		signal.UniqueSKUCt,
+		dateWindow,
+		recentActivity,
+	)
+	result.DemandSignals.DemandNote = appendUniqueSentence(result.DemandSignals.DemandNote, demandSyncNote)
+
+	// Key insights + narrative synchronization
+	insight1 := fmt.Sprintf(
+		"AbilityOne ETS cross-reference matched %d row(s) across %d manufacturer(s), adding structured SKU/UPC coverage directly into ecosystem and demand analysis.",
+		signal.MatchedRows,
+		maxInt(signal.UniqueManufacturerCt, len(signal.Manufacturers)),
+	)
+	if !containsText(result.KeyInsights, "AbilityOne ETS cross-reference") {
+		result.KeyInsights = append([]string{insight1}, result.KeyInsights...)
+	}
+	if !containsText(result.KeyInsights, "ETS commercial coverage") {
+		insight2 := fmt.Sprintf(
+			"ETS commercial coverage indicates %s concentration in mapped manufacturers; this should be monitored alongside federal award concentration for continuity planning.",
+			etsConcentration,
+		)
+		insertAt := min(1, len(result.KeyInsights))
+		result.KeyInsights = append(result.KeyInsights[:insertAt], append([]string{insight2}, result.KeyInsights[insertAt:]...)...)
+	}
+
+	result.MarketCommentary = appendUniqueSentence(
+		result.MarketCommentary,
+		fmt.Sprintf("ETS synchronization: %d mapped rows with %d manufacturers and %d SKUs now feed supplier and demand narratives directly.", signal.MatchedRows, maxInt(signal.UniqueManufacturerCt, len(signal.Manufacturers)), signal.UniqueSKUCt),
+	)
+
+	etsReportSection := fmt.Sprintf(
+		"\n\nETS CROSS-REFERENCE INTELLIGENCE (SYNCHRONIZED)\n- Matched ETS rows: %d\n- Manufacturer coverage: %d\n- Unique SKUs: %d | Unique UPCs: %d\n- Mapping trend: %s\n- Date window: %s to %s\n- Recent mapping additions: %d (12m), %d (24m)\n- Manufacturer concentration signal: %s\n",
+		signal.MatchedRows,
+		maxInt(signal.UniqueManufacturerCt, len(signal.Manufacturers)),
+		signal.UniqueSKUCt,
+		signal.UniqueUPCCt,
+		nonEmptyOr(trendLabel, "stable"),
+		nonEmptyOr(signal.EarliestDateAdded, "unknown"),
+		nonEmptyOr(signal.LatestDateAdded, "unknown"),
+		signal.RecentAdditions12m,
+		signal.RecentAdditions24m,
+		etsConcentration,
+	)
+	if len(topMfrs) > 0 {
+		etsReportSection += "- Top mapped manufacturers: " + strings.Join(topMfrs, ", ") + "\n"
+	}
+	if !strings.Contains(result.FullAnalystReport, "ETS CROSS-REFERENCE INTELLIGENCE (SYNCHRONIZED)") {
+		result.FullAnalystReport += etsReportSection
+	}
 }
 
 func appendUniqueString(items []string, item string) []string {
@@ -399,6 +529,162 @@ func containsText(items []string, needle string) bool {
 		}
 	}
 	return false
+}
+
+func intFromAny(v any) int {
+	switch t := v.(type) {
+	case int:
+		return t
+	case int32:
+		return int(t)
+	case int64:
+		return int(t)
+	case float64:
+		return int(t)
+	case float32:
+		return int(t)
+	default:
+		return 0
+	}
+}
+
+func firstStringFromAny(v any) string {
+	if v == nil {
+		return ""
+	}
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return ""
+}
+
+func toStringIntMap(v any) map[string]int {
+	out := make(map[string]int)
+	switch m := v.(type) {
+	case map[string]int:
+		for k, val := range m {
+			out[k] = val
+		}
+	case map[string]any:
+		for k, raw := range m {
+			out[k] = intFromAny(raw)
+		}
+	}
+	return out
+}
+
+func formatTopManufacturerRefs(counts map[string]int, limit int) []string {
+	type kv struct {
+		Name  string
+		Count int
+	}
+	var items []kv
+	for name, count := range counts {
+		if strings.TrimSpace(name) == "" || count <= 0 {
+			continue
+		}
+		items = append(items, kv{Name: name, Count: count})
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].Count == items[j].Count {
+			return items[i].Name < items[j].Name
+		}
+		return items[i].Count > items[j].Count
+	})
+	if len(items) > limit {
+		items = items[:limit]
+	}
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		out = append(out, fmt.Sprintf("%s (%d refs)", item.Name, item.Count))
+	}
+	return out
+}
+
+func classifyETSConcentration(signal etsSignal) string {
+	manuf := maxInt(signal.UniqueManufacturerCt, len(signal.Manufacturers))
+	if manuf <= 0 || signal.MatchedRows <= 0 {
+		return "low"
+	}
+	maxRefs := 0
+	for _, count := range signal.ManufacturerCounts {
+		if count > maxRefs {
+			maxRefs = count
+		}
+	}
+	share := 0.0
+	if signal.MatchedRows > 0 {
+		share = float64(maxRefs) / float64(signal.MatchedRows)
+	}
+	switch {
+	case manuf <= 1 || share >= 0.70:
+		return "elevated"
+	case manuf <= 3 || share >= 0.50:
+		return "medium"
+	default:
+		return "low"
+	}
+}
+
+func concentrationRank(level string) int {
+	switch strings.ToLower(strings.TrimSpace(level)) {
+	case "high", "elevated":
+		return 3
+	case "medium":
+		return 2
+	case "low":
+		return 1
+	default:
+		return 0
+	}
+}
+
+func mergeConcentrationRisk(current, candidate string) string {
+	if concentrationRank(candidate) > concentrationRank(current) {
+		return candidate
+	}
+	if strings.TrimSpace(current) == "" {
+		return candidate
+	}
+	return current
+}
+
+func appendUniqueSentence(existing, sentence string) string {
+	sentence = strings.TrimSpace(sentence)
+	if sentence == "" {
+		return existing
+	}
+	if strings.Contains(existing, sentence) {
+		return existing
+	}
+	if strings.TrimSpace(existing) == "" {
+		return sentence
+	}
+	return strings.TrimSpace(existing) + " " + sentence
+}
+
+func nonEmptyOr(value, fallback string) string {
+	if strings.TrimSpace(value) != "" {
+		return strings.TrimSpace(value)
+	}
+	return fallback
+}
+
+func inferETSMappingTrend(signal etsSignal) string {
+	if signal.RecentAdditions12m >= 15 {
+		return "expanding"
+	}
+	if signal.RecentAdditions12m > 0 || signal.RecentAdditions24m > 0 {
+		return "stable"
+	}
+	return "mature"
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 // buildExtendedCommercialAnalysis produces the "extended analysis" text that relates
