@@ -507,49 +507,30 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
 
       // Recommendation (clearer language)
       // Prefer rich recommendation from backend when available (for AbilityOne general-path items)
-      let rec;
-      if (result.analyst_recommendation || result.AnalystRecommendation) {
-        const customRec = result.analyst_recommendation || result.AnalystRecommendation;
-        rec = {
-          level: 'PROCEED (AbilityOne)',
-          cls: 'bg-emerald-900 border-emerald-700 text-emerald-300',
-          text: customRec
-        };
-      } else {
-        rec = deriveRecommendation(result, sVal, rVal);
-      }
-      const combinedRecommendationScore = Math.round((sVal + (100 - rVal)) / 2);
-      let recBadgeClass = 'bg-rose-900 border-rose-700 text-rose-300';
-      let cardBorder = 'border-rose-800';
-      let headerColor = 'text-rose-400';
-      let bodyColor = 'text-rose-200';
-      if (combinedRecommendationScore >= 70) {
-        recBadgeClass = 'bg-emerald-900 border-emerald-700 text-emerald-300';
-        cardBorder = 'border-emerald-800';
-        headerColor = 'text-emerald-400';
-        bodyColor = 'text-emerald-200';
-      } else if (combinedRecommendationScore >= 50) {
-        recBadgeClass = 'bg-amber-900 border-amber-700 text-amber-300';
-        cardBorder = 'border-amber-800';
-        headerColor = 'text-amber-400';
-        bodyColor = 'text-amber-200';
-      }
+      const fallbackRec = deriveRecommendation(result, sVal, rVal);
+      const backendRecText = (result.analyst_recommendation || result.AnalystRecommendation || '').trim();
+      const backendRecStateRaw = result.analyst_recommendation_state || result.AnalystRecommendationState || backendRecText;
+      const resolvedRecState =
+        normalizeRecommendationState(backendRecStateRaw) ||
+        normalizeRecommendationState(fallbackRec.level) ||
+        'PROCEED WITH CAUTION';
+      const recVisual = getRecommendationVisuals(resolvedRecState);
+      const recText = backendRecText || fallbackRec.text;
       const badge = document.getElementById('recommendation-badge');
       if (badge) {
-        badge.textContent = rec.level;
-        badge.className = `px-4 py-1.5 rounded-2xl text-sm font-medium border ${recBadgeClass}`;
+        badge.textContent = recVisual.label;
+        badge.className = `px-4 py-1.5 rounded-2xl text-sm font-medium border ${recVisual.badgeClass}`;
       }
 
       // Make the Analyst Recommendation card consistent with the score coloring scheme
       const recCard = document.getElementById('analyst-recommendation-card');
       const recHeader = document.getElementById('analyst-recommendation-header');
       const recBody = document.getElementById('recommendation');
+      if (recCard) recCard.className = `lg:col-span-2 analyst-card bg-zinc-900 ${recVisual.cardBorder} rounded-3xl p-6`;
+      if (recHeader) recHeader.className = `section-header mb-2 ${recVisual.headerColor}`;
+      if (recBody) recBody.className = `text-sm leading-relaxed ${recVisual.bodyColor}`;
 
-      if (recCard) recCard.className = `lg:col-span-2 analyst-card bg-zinc-900 ${cardBorder} rounded-3xl p-6`;
-      if (recHeader) recHeader.className = `section-header mb-2 ${headerColor}`;
-      if (recBody) recBody.className = `text-sm leading-relaxed ${bodyColor}`;
-
-      if (recBody) recBody.textContent = rec.text;
+      if (recBody) recBody.textContent = recText;
 
       // Executive Summary
       const summaryEl = document.getElementById('summary');
@@ -1226,6 +1207,43 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
         level: 'ELEVATED REVIEW',
         cls: 'bg-rose-900 border-rose-700 text-rose-300',
         text: 'Elevated risk or thin data. Conduct deeper validation and price reasonableness analysis before commitment. Review all flags. For AbilityOne items, confirm mandatory-source status and explore secondary workshops immediately.'
+      };
+    }
+
+    function normalizeRecommendationState(rawState) {
+      const state = (rawState || '').toString().trim().toUpperCase();
+      if (!state) return '';
+      if (state.includes('ELEVATED_REVIEW') || state.startsWith('ELEVATED REVIEW')) return 'ELEVATED REVIEW';
+      if (state.includes('PROCEED_WITH_CAUTION') || state.startsWith('PROCEED WITH CAUTION')) return 'PROCEED WITH CAUTION';
+      if (state === 'PROCEED' || state.startsWith('PROCEED ')) return 'PROCEED';
+      return '';
+    }
+
+    function getRecommendationVisuals(state) {
+      if (state === 'ELEVATED REVIEW') {
+        return {
+          label: 'ELEVATED REVIEW',
+          badgeClass: 'bg-rose-900 border-rose-700 text-rose-300',
+          cardBorder: 'border-rose-800',
+          headerColor: 'text-rose-400',
+          bodyColor: 'text-rose-200',
+        };
+      }
+      if (state === 'PROCEED WITH CAUTION') {
+        return {
+          label: 'PROCEED WITH CAUTION',
+          badgeClass: 'bg-amber-900 border-amber-700 text-amber-300',
+          cardBorder: 'border-amber-800',
+          headerColor: 'text-amber-400',
+          bodyColor: 'text-amber-200',
+        };
+      }
+      return {
+        label: 'PROCEED',
+        badgeClass: 'bg-emerald-900 border-emerald-700 text-emerald-300',
+        cardBorder: 'border-emerald-800',
+        headerColor: 'text-emerald-400',
+        bodyColor: 'text-emerald-200',
       };
     }
 
