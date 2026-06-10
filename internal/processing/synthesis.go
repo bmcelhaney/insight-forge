@@ -1169,8 +1169,20 @@ func isDemoNSN(entityID string) bool {
 	if len(nsn) == 0 {
 		return false
 	}
-	_, ok := demoNSNSet[nsn]
-	return ok
+	if len(nsn) > 13 {
+		nsn = nsn[len(nsn)-13:]
+	}
+	if _, ok := demoNSNSet[nsn]; ok {
+		return true
+	}
+	if len(nsn) == 9 {
+		for demo := range demoNSNSet {
+			if strings.HasSuffix(demo, nsn) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 var demoNSNSet = map[string]struct{}{
