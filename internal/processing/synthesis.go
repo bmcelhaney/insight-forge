@@ -197,10 +197,7 @@ func Synthesize(ctx context.Context, entityID string, snapshots []models.DataSna
 			}
 			supSection += fmt.Sprintf("- %s (references: %d", sup.Name, sup.Count)
 			if len(sup.SKUs) > 0 {
-				supSection += fmt.Sprintf(", SKUs: %s", strings.Join(sup.SKUs[:min(3, len(sup.SKUs))], ", "))
-				if len(sup.SKUs) > 3 {
-					supSection += ", ..."
-				}
+				supSection += fmt.Sprintf(", SKUs: %s", strings.Join(dedupeTrimmedStrings(sup.SKUs), ", "))
 			}
 			if sup.ExamplePrice != "" {
 				supSection += fmt.Sprintf(", ex. price: %s", sup.ExamplePrice)
@@ -3686,7 +3683,7 @@ func appendDeepAnalystExpansion(entityID string, result *models.InsightResult, s
 				if i >= 4 {
 					break
 				}
-				skuPreview := summarizeStringList(sup.SKUs, 3)
+				skuPreview := strings.Join(dedupeTrimmedStrings(sup.SKUs), ", ")
 				line := fmt.Sprintf("  - %s (references: %d", sup.Name, sup.Count)
 				if skuPreview != "" {
 					line += fmt.Sprintf(", SKUs: %s", skuPreview)
