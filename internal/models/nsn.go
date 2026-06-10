@@ -43,6 +43,7 @@ type InsightResult struct {
 	SourcingAttractiveness float64       `json:"sourcing_attractiveness"` // 0-100 preferred new name
 	SupplyRisk            float64        `json:"supply_risk"`     // 0-100 preferred new name
 	Summary               string         `json:"summary"`
+	AnalystRecommendation string         `json:"analyst_recommendation,omitempty"`
 	MarketCommentary      string         `json:"market_commentary,omitempty"`
 	FullAnalystReport     string         `json:"full_analyst_report,omitempty"`
 	PricingTrend          string         `json:"pricing_trend,omitempty"`

@@ -139,9 +139,7 @@ func Synthesize(ctx context.Context, entityID string, snapshots []models.DataSna
 		result.KeyInsights = rich.KeyInsights
 	}
 	if rich.AnalystRecommendation != "" {
-		// Store in a way the frontend can use; for now we can put it in MarketCommentary or use a custom field.
-		// To keep it simple and non-breaking, we'll enhance the recommendation logic in JS, but also append to Summary for visibility.
-		result.Summary += " " + rich.AnalystRecommendation
+		result.AnalystRecommendation = rich.AnalystRecommendation
 	}
 	// Preserve curated demo enrichment for the Examples row while keeping non-demo NSNs on live/transparent paths.
 	if isDemoNSN(entityID) {
@@ -216,6 +214,7 @@ func Synthesize(ctx context.Context, entityID string, snapshots []models.DataSna
 	// using ETS cross-reference evidence.
 	applyETSAnalysisSync(&result, snapshots)
 	appendDeepAnalystExpansion(analysisEntityID, &result, snapshots)
+	enrichCardFacingFields(analysisEntityID, &result, snapshots)
 
 	// Fallback legacy summary if rich path produced nothing
 	if result.Summary == "" {
@@ -3144,6 +3143,375 @@ func applyWebSearchIntelInsights(entityID string, out *RichAnalysis, snaps []mod
 	if !strings.Contains(out.FullReport, "WEB SEARCH INTELLIGENCE (LIVE EXTERNAL MINING)") {
 		out.FullReport += buildWebSearchIntelSection(signal)
 	}
+}
+
+func enrichCardFacingFields(entityID string, result *models.InsightResult, snaps []models.DataSnapshot) {
+	abilityOne := extractAbilityOneContext(snaps)
+	ets := extractETSSignal(snaps)
+	web := extractWebSearchIntelSignal(snaps)
+	evidence := collectScoringEvidence(snaps)
+
+	result.Summary = buildExecutiveCardSummary(entityID, result, abilityOne, ets, web, evidence)
+	result.AnalystRecommendation = buildCardAnalystRecommendation(result.AnalystRecommendation, result, abilityOne, evidence, web)
+	result.KeyInsights = enrichKeyInsightsForCards(result.KeyInsights, result, abilityOne, ets, web, evidence)
+	enrichSupplierNarrativesForCards(result, abilityOne, ets, evidence)
+	enrichDemandNarrativesForCards(result, abilityOne, ets, web, evidence)
+	result.Flags = enrichFlagImplicationsForCards(result.Flags, result, abilityOne, evidence)
+}
+
+func buildExecutiveCardSummary(entityID string, result *models.InsightResult, abilityOne abilityOneContext, ets etsSignal, web webSearchIntelSignal, evidence scoringEvidenceProfile) string {
+	lead := firstSentence(result.Summary)
+	if lead == "" {
+		item := strings.TrimSpace(result.ItemName)
+		if item == "" {
+			item = "Federal stock item"
+		}
+		lead = fmt.Sprintf("%s (NSN %s) currently scores %.0f sourcing attractiveness and %.0f supply risk.", item, entityID, result.SourcingAttractiveness, result.SupplyRisk)
+	}
+
+	parts := []string{lead}
+	if result.DemandSignals.TotalAwards > 0 || result.DemandSignals.TotalValueUSD > 0 {
+		window := strings.TrimSpace(result.DemandSignals.AwardPeriod)
+		windowText := ""
+		if window != "" {
+			windowText = " (" + window + ")"
+		}
+		parts = append(parts, fmt.Sprintf("Observed demand baseline: %d awards and %s in obligations%s.", result.DemandSignals.TotalAwards, formatUSDCompact(result.DemandSignals.TotalValueUSD), windowText))
+	} else {
+		parts = append(parts, "No live USAspending award totals were returned in this run, so demand confidence is currently driven by non-award evidence layers.")
+	}
+
+	if result.SupplierData.TotalSuppliers > 0 {
+		supplierSentence := fmt.Sprintf("Supplier ecosystem shows %d observed supplier(s) with %s concentration risk.", result.SupplierData.TotalSuppliers, nonEmptyOr(result.SupplierData.ConcentrationRisk, "unknown"))
+		if topShare := topSupplierShare(result.SupplierData); topShare > 0 {
+			supplierSentence = strings.TrimSuffix(supplierSentence, ".") + fmt.Sprintf(" Top supplier share in sample: %.1f%%.", topShare)
+		}
+		parts = append(parts, supplierSentence)
+	}
+
+	if abilityOne.ProducingNPA != "" {
+		status := nonEmptyOr(abilityOne.ProgramStatus, "Program context available")
+		parts = append(parts, fmt.Sprintf("Program context: %s via %s.", status, abilityOne.ProducingNPA))
+	}
+
+	if ets.MatchedRows > 0 {
+		parts = append(parts, fmt.Sprintf("ETS cross-reference depth: %d mapped row(s), %d manufacturer(s), %d SKU(s).", ets.MatchedRows, maxInt(ets.UniqueManufacturerCt, len(ets.Manufacturers)), ets.UniqueSKUCt))
+	}
+
+	if evidence.HasWebSearchIntel && web.ResultCount > 0 {
+		domainCount := len(web.DistinctDomains)
+		if domainCount == 0 {
+			domainCount = web.ResultCount
+		}
+		parts = append(parts, fmt.Sprintf("External intelligence added %d references across %d domains for market triangulation.", web.ResultCount, domainCount))
+	}
+
+	if topFlag, ok := topPriorityFlag(result.Flags); ok {
+		parts = append(parts, fmt.Sprintf("Highest risk driver now: %s (%s).", strings.ToLower(nonEmptyOr(topFlag.Type, "risk")), strings.ToUpper(nonEmptyOr(topFlag.Severity, "medium"))))
+	}
+
+	return truncateSentence(strings.Join(dedupeTrimmedStrings(parts), " "), 900)
+}
+
+func buildCardAnalystRecommendation(existing string, result *models.InsightResult, abilityOne abilityOneContext, evidence scoringEvidenceProfile, web webSearchIntelSignal) string {
+	recommendation := strings.TrimSpace(existing)
+	if recommendation == "" {
+		switch {
+		case abilityOne.ProducingNPA != "":
+			recommendation = fmt.Sprintf("PROCEED — mandatory-source execution via %s with early capacity and lead-time confirmation.", abilityOne.ProducingNPA)
+		case result.SourcingAttractiveness >= 70 && result.SupplyRisk <= 35:
+			recommendation = "PROCEED — evidence profile is favorable for sourcing execution."
+		case result.SourcingAttractiveness >= 55 && result.SupplyRisk <= 60:
+			recommendation = "PROCEED WITH CAUTION — profile is workable, but pre-award validation is required."
+		default:
+			recommendation = "ELEVATED REVIEW — resolve critical uncertainty and risk drivers before commitment."
+		}
+	}
+
+	if result.DemandSignals.TotalAwards > 0 || result.DemandSignals.TotalValueUSD > 0 {
+		recommendation = appendUniqueSentence(recommendation, fmt.Sprintf("Use the observed baseline of %d awards and %s to anchor order-sizing assumptions.", result.DemandSignals.TotalAwards, formatUSDCompact(result.DemandSignals.TotalValueUSD)))
+	} else if !evidence.HasLiveFPDS {
+		recommendation = appendUniqueSentence(recommendation, "Capture live USAspending award evidence before committing large or time-sensitive volume.")
+	}
+
+	switch strings.ToLower(strings.TrimSpace(result.SupplierData.ConcentrationRisk)) {
+	case "high", "elevated":
+		recommendation = appendUniqueSentence(recommendation, "Concentration is elevated; secure written capacity commitments from primary and secondary producers before release.")
+	case "medium":
+		recommendation = appendUniqueSentence(recommendation, "Concentration is moderate; maintain dual-source validation and refresh producer capacity checks ahead of surge periods.")
+	}
+
+	if web.ResultCount > 0 {
+		recommendation = appendUniqueSentence(recommendation, fmt.Sprintf("Leverage %d external references from this run to validate lead-time and pricing assumptions.", web.ResultCount))
+	}
+
+	if topFlag, ok := topPriorityFlag(result.Flags); ok && strings.TrimSpace(topFlag.Implication) != "" {
+		recommendation = appendUniqueSentence(recommendation, "Priority mitigation: "+truncateSentence(topFlag.Implication, 220))
+	}
+
+	return truncateSentence(recommendation, 950)
+}
+
+func enrichKeyInsightsForCards(existing []string, result *models.InsightResult, abilityOne abilityOneContext, ets etsSignal, web webSearchIntelSignal, evidence scoringEvidenceProfile) []string {
+	var highlights []string
+
+	if result.DemandSignals.TotalAwards > 0 || result.DemandSignals.TotalValueUSD > 0 {
+		highlights = append(highlights, fmt.Sprintf("Observed live federal demand includes %d award(s) totaling %s in obligations for this run.", result.DemandSignals.TotalAwards, formatUSDCompact(result.DemandSignals.TotalValueUSD)))
+	} else {
+		highlights = append(highlights, "No live USAspending award totals were returned in this run, so demand trends should be treated as lower confidence until refreshed.")
+	}
+
+	if len(result.DemandSignals.TopAgencies) > 0 {
+		highlights = append(highlights, fmt.Sprintf("Most active agencies in the observed award stream: %s.", summarizeStringList(result.DemandSignals.TopAgencies, 3)))
+	}
+
+	if result.SupplierData.TotalSuppliers > 0 {
+		share := topSupplierShare(result.SupplierData)
+		if share > 0 {
+			highlights = append(highlights, fmt.Sprintf("Supplier concentration signal: %s risk with top supplier share at %.1f%% in the live sample.", nonEmptyOr(result.SupplierData.ConcentrationRisk, "unknown"), share))
+		} else {
+			highlights = append(highlights, fmt.Sprintf("Supplier coverage shows %d observed suppliers with %s concentration risk.", result.SupplierData.TotalSuppliers, nonEmptyOr(result.SupplierData.ConcentrationRisk, "unknown")))
+		}
+	}
+
+	if abilityOne.ProducingNPA != "" {
+		status := nonEmptyOr(abilityOne.ProgramStatus, "Program context available")
+		highlights = append(highlights, fmt.Sprintf("AbilityOne context is active (%s) with producer %s; procurement decisions should preserve mandatory-source compliance.", status, abilityOne.ProducingNPA))
+	}
+
+	if ets.MatchedRows > 0 {
+		highlights = append(highlights, fmt.Sprintf("ETS intelligence mapped %d cross-reference row(s), %d manufacturer(s), and %d SKU(s), expanding substitution and continuity visibility.", ets.MatchedRows, maxInt(ets.UniqueManufacturerCt, len(ets.Manufacturers)), ets.UniqueSKUCt))
+	}
+
+	if web.ResultCount > 0 {
+		domainCount := len(web.DistinctDomains)
+		if domainCount == 0 {
+			domainCount = web.ResultCount
+		}
+		highlights = append(highlights, fmt.Sprintf("External web intelligence added %d references across %d domains, including %d procurement-oriented domains.", web.ResultCount, domainCount, len(web.ProcurementDomains)))
+	}
+
+	if len(result.TopCommercialSuppliers) > 0 {
+		top := result.TopCommercialSuppliers[0]
+		highlights = append(highlights, fmt.Sprintf("Commercial cross-reference leader: %s appears in %d mapped reference(s), supporting fallback market awareness.", nonEmptyOr(top.Name, "top supplier"), top.Count))
+	}
+
+	if topFlag, ok := topPriorityFlag(result.Flags); ok {
+		highlights = append(highlights, fmt.Sprintf("Primary risk driver: [%s] %s.", strings.ToUpper(nonEmptyOr(topFlag.Severity, "medium")), truncateSentence(nonEmptyOr(topFlag.Description, "Risk requires review"), 150)))
+	}
+
+	if !evidence.HasLiveGSA {
+		highlights = append(highlights, "Live GSA pricing rows were not returned in this run; treat price reasonableness as an explicit validation task.")
+	}
+
+	merged := make([]string, 0, len(highlights)+len(existing))
+	for _, highlight := range highlights {
+		merged = appendUniqueInsight(merged, highlight)
+	}
+	for _, current := range existing {
+		merged = appendUniqueInsight(merged, current)
+	}
+	if len(merged) > 9 {
+		merged = merged[:9]
+	}
+	return merged
+}
+
+func enrichSupplierNarrativesForCards(result *models.InsightResult, abilityOne abilityOneContext, ets etsSignal, evidence scoringEvidenceProfile) {
+	supplier := &result.SupplierData
+	if supplier.TotalSuppliers > 0 {
+		share := topSupplierShare(*supplier)
+		sentence := fmt.Sprintf("Observed supplier footprint: %d supplier(s), concentration risk %s.", supplier.TotalSuppliers, nonEmptyOr(supplier.ConcentrationRisk, "unknown"))
+		if share > 0 {
+			sentence = strings.TrimSuffix(sentence, ".") + fmt.Sprintf(" Top supplier share is %.1f%% in this live sample.", share)
+		}
+		supplier.EcosystemNote = appendUniqueSentence(supplier.EcosystemNote, sentence)
+	}
+	if supplier.TopSuppliersTotalValue > 0 {
+		supplier.EcosystemNote = appendUniqueSentence(supplier.EcosystemNote, fmt.Sprintf("Top-supplier obligations represented in this run total approximately %s.", formatUSDCompact(supplier.TopSuppliersTotalValue)))
+	}
+	if ets.MatchedRows > 0 {
+		supplier.EcosystemNote = appendUniqueSentence(supplier.EcosystemNote, fmt.Sprintf("ETS cross-reference confirms %d mapped row(s) across %d manufacturer(s), improving continuity visibility beyond award-only data.", ets.MatchedRows, maxInt(ets.UniqueManufacturerCt, len(ets.Manufacturers))))
+	}
+	if abilityOne.ProducingNPA != "" {
+		supplier.EcosystemNote = appendUniqueSentence(supplier.EcosystemNote, fmt.Sprintf("AbilityOne producer context identifies %s as the designated NPA for compliance planning.", abilityOne.ProducingNPA))
+	}
+
+	switch strings.ToLower(strings.TrimSpace(supplier.ConcentrationRisk)) {
+	case "high", "elevated":
+		supplier.ContinuityAssessment = appendUniqueSentence(supplier.ContinuityAssessment, "Continuity priority is elevated: maintain an actionable secondary-source plan and obtain written surge-capacity confirmation before major releases.")
+	case "medium":
+		supplier.ContinuityAssessment = appendUniqueSentence(supplier.ContinuityAssessment, "Continuity posture is moderate: keep dual-source routing active and refresh producer capacity checks ahead of seasonal peaks.")
+	case "low":
+		supplier.ContinuityAssessment = appendUniqueSentence(supplier.ContinuityAssessment, "Continuity posture is favorable: preserve resilience by rotating demand across qualified producers and monitoring for concentration drift.")
+	}
+
+	if !evidence.HasLiveFPDS {
+		supplier.ContinuityAssessment = appendUniqueSentence(supplier.ContinuityAssessment, "Live recipient-award coverage is incomplete in this run, so corroborate any high-value supplier commitments with direct award-history pulls.")
+	}
+}
+
+func enrichDemandNarrativesForCards(result *models.InsightResult, abilityOne abilityOneContext, ets etsSignal, web webSearchIntelSignal, evidence scoringEvidenceProfile) {
+	demand := &result.DemandSignals
+	if demand.TotalAwards > 0 || demand.TotalValueUSD > 0 {
+		window := strings.TrimSpace(demand.AwardPeriod)
+		windowText := ""
+		if window != "" {
+			windowText = " (" + window + ")"
+		}
+		demand.DemandNote = appendUniqueSentence(demand.DemandNote, fmt.Sprintf("Observed demand baseline in this run: %d awards and %s%s.", demand.TotalAwards, formatUSDCompact(demand.TotalValueUSD), windowText))
+		if len(demand.TopAgencies) > 0 {
+			demand.DemandNote = appendUniqueSentence(demand.DemandNote, "Highest-activity agencies in sample: "+summarizeStringList(demand.TopAgencies, 3)+".")
+		}
+	} else {
+		demand.DemandNote = appendUniqueSentence(demand.DemandNote, "No live USAspending award totals were returned; demand outlook should be treated as provisional until live award rows are available.")
+	}
+
+	if strings.TrimSpace(demand.YoYChange) != "" {
+		demand.DemandNote = appendUniqueSentence(demand.DemandNote, "YoY indicator: "+demand.YoYChange+".")
+	}
+	if strings.TrimSpace(demand.PeakPeriods) != "" {
+		demand.DemandNote = appendUniqueSentence(demand.DemandNote, "Peak periods detected: "+demand.PeakPeriods+".")
+	}
+
+	if ets.MatchedRows > 0 {
+		demand.DemandNote = appendUniqueSentence(demand.DemandNote, fmt.Sprintf("ETS maintenance activity contributes %d cross-reference row(s), supporting demand resilience interpretation.", ets.MatchedRows))
+	}
+	if web.ResultCount > 0 {
+		domainCount := len(web.DistinctDomains)
+		if domainCount == 0 {
+			domainCount = web.ResultCount
+		}
+		demand.DemandNote = appendUniqueSentence(demand.DemandNote, fmt.Sprintf("External market scan contributed %d references across %d domains for triangulating demand context.", web.ResultCount, domainCount))
+	}
+	if abilityOne.DemandCharacter != "" {
+		demand.DemandNote = appendUniqueSentence(demand.DemandNote, "Program demand characterization: "+truncateSentence(abilityOne.DemandCharacter, 200))
+	}
+	if !evidence.HasLiveFPDS {
+		demand.DemandNote = appendUniqueSentence(demand.DemandNote, "Demand confidence is currently limited by missing live award evidence; prioritize a refreshed FPDS pull before strategic volume moves.")
+	}
+}
+
+func enrichFlagImplicationsForCards(flags []models.RiskFlag, result *models.InsightResult, abilityOne abilityOneContext, evidence scoringEvidenceProfile) []models.RiskFlag {
+	for i := range flags {
+		addition := buildFlagImplicationAddition(flags[i], result, abilityOne, evidence)
+		if addition != "" {
+			flags[i].Implication = appendUniqueSentence(flags[i].Implication, addition)
+		}
+	}
+	return dedupeRiskFlags(flags)
+}
+
+func buildFlagImplicationAddition(flag models.RiskFlag, result *models.InsightResult, abilityOne abilityOneContext, evidence scoringEvidenceProfile) string {
+	switch strings.ToLower(strings.TrimSpace(flag.Type)) {
+	case "concentration":
+		if share := topSupplierShare(result.SupplierData); share > 0 {
+			return fmt.Sprintf("Current sample shows %.1f%% top-supplier share across %d observed supplier(s); establish and validate secondary-source coverage before surge demand.", share, result.SupplierData.TotalSuppliers)
+		}
+		return fmt.Sprintf("Current supplier concentration rating is %s; maintain at least two validated sources for continuity.", nonEmptyOr(result.SupplierData.ConcentrationRisk, "unknown"))
+	case "data_quality":
+		var missing []string
+		if !evidence.HasLiveFPDS {
+			missing = append(missing, "live USAspending awards")
+		}
+		if !evidence.HasLiveGSA {
+			missing = append(missing, "live GSA pricing")
+		}
+		if !evidence.HasETS {
+			missing = append(missing, "ETS cross-reference rows")
+		}
+		if len(missing) > 0 {
+			return "Missing evidence layers in this run: " + strings.Join(missing, ", ") + "; rerun those extracts before high-value commitments."
+		}
+	case "regulatory":
+		if abilityOne.CID != "" {
+			return fmt.Sprintf("Verify the active revision and applicability of %s before order release.", abilityOne.CID)
+		}
+		if abilityOne.MandatoryNote != "" {
+			return "Reconfirm current mandatory-source and waiver constraints in Program guidance before procurement execution."
+		}
+	case "technical":
+		if strings.TrimSpace(result.TechnicalCharacteristics) != "" {
+			return "Validate quoted alternatives against the recorded technical characteristics before substitution or waiver decisions."
+		}
+	case "sanctions", "geopolitical":
+		if abilityOne.ProducingNPA != "" {
+			return "Re-screen the producing network and key upstream suppliers at award time, and pair that check with current capacity confirmation."
+		}
+		return "Re-screen supplier entities and critical upstream partners immediately before award and at each major modification."
+	}
+	if strings.TrimSpace(flag.Implication) == "" {
+		return "Assign an owner and due date for mitigation before procurement release."
+	}
+	return ""
+}
+
+func topPriorityFlag(flags []models.RiskFlag) (models.RiskFlag, bool) {
+	if len(flags) == 0 {
+		return models.RiskFlag{}, false
+	}
+	best := flags[0]
+	for i := 1; i < len(flags); i++ {
+		cur := flags[i]
+		if flagSeverityRank(cur.Severity) < flagSeverityRank(best.Severity) {
+			best = cur
+			continue
+		}
+		if flagSeverityRank(cur.Severity) == flagSeverityRank(best.Severity) && len(strings.TrimSpace(cur.Description)) > len(strings.TrimSpace(best.Description)) {
+			best = cur
+		}
+	}
+	return best, true
+}
+
+func flagSeverityRank(severity string) int {
+	switch strings.ToLower(strings.TrimSpace(severity)) {
+	case "critical":
+		return 0
+	case "high":
+		return 1
+	case "medium":
+		return 2
+	case "low":
+		return 3
+	default:
+		return 4
+	}
+}
+
+func topSupplierShare(view models.SupplierView) float64 {
+	if len(view.TopSuppliers) == 0 {
+		return 0
+	}
+	return view.TopSuppliers[0].SharePercent
+}
+
+func formatUSDCompact(value float64) string {
+	switch {
+	case value >= 1000000000:
+		return fmt.Sprintf("$%.2fB", value/1000000000)
+	case value >= 1000000:
+		return fmt.Sprintf("$%.2fM", value/1000000)
+	case value >= 1000:
+		return fmt.Sprintf("$%.1fK", value/1000)
+	case value > 0:
+		return fmt.Sprintf("$%.0f", value)
+	default:
+		return "$0"
+	}
+}
+
+func firstSentence(text string) string {
+	text = strings.TrimSpace(strings.ReplaceAll(text, "\n", " "))
+	if text == "" {
+		return ""
+	}
+	for idx, r := range text {
+		if r == '.' || r == '!' || r == '?' {
+			return strings.TrimSpace(text[:idx+1])
+		}
+	}
+	return text
 }
 
 func buildWebSearchIntelSection(signal webSearchIntelSignal) string {
