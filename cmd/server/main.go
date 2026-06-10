@@ -42,8 +42,19 @@ func main() {
 	r.Use(middleware.Recoverer)
 
 	// Serve the clean, self-contained professional analyst dashboard (no Tailwind CDN)
+	// We inject the build commit directly into the HTML so the build number is always visible
+	// even if JS fails or browser cache is involved.
 	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
-		http.ServeFile(w, r, "./static/index.html")
+		htmlBytes, err := os.ReadFile("./static/index.html")
+		if err != nil {
+			http.Error(w, "Failed to load UI", http.StatusInternalServerError)
+			return
+		}
+		htmlStr := string(htmlBytes)
+		htmlStr = strings.ReplaceAll(htmlStr, "{{COMMIT}}", commit)
+		htmlStr = strings.ReplaceAll(htmlStr, "{{BUILDTIME}}", buildTime)
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Write([]byte(htmlStr))
 	})
 
 	// Health (used by reset.sh / test_release.sh gates)

@@ -42,7 +42,7 @@
       </div>
       <div class="text-right">
         <div class="text-xs text-zinc-400">Dedicated Sprite • Real-time Multi-Source Synthesis</div>
-        <div id="version-info" class="text-[10px] font-mono text-emerald-400 mt-0.5"></div>
+        <div id="version-info" class="text-[10px] font-mono text-emerald-400 mt-0.5">BUILD: {{COMMIT}} ({{BUILDTIME}})</div>
       </div>
     </div>
 
@@ -274,18 +274,41 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
     let currentNSN = '';
 
     async function loadVersionInfo() {
+      const el = document.getElementById('version-info');
+      if (!el) return;
+
+      // Set a default immediately so there's always something visible
+      el.textContent = 'loading build...';
+      el.title = 'Fetching version from server...';
+
       try {
-        const res = await fetch('/health');
-        if (!res.ok) return;
-        const data = await res.json();
-        const el = document.getElementById('version-info');
-        if (el && data.commit) {
+        // Try /health first (has commit from ldflags)
+        let res = await fetch('/health');
+        let data = null;
+        if (res.ok) {
+          data = await res.json();
+        }
+
+        // Fallback to /version
+        if (!data || !data.commit) {
+          res = await fetch('/version');
+          if (res.ok) {
+            data = await res.json();
+          }
+        }
+
+        if (data && data.commit) {
           const short = data.commit.substring(0, 7);
-          el.textContent = `commit ${short} • ${data.buildTime || ''}`;
+          el.textContent = `commit ${short} • ${data.buildTime || data.build_time || ''}`;
           el.title = `Full commit: ${data.commit}`;
+        } else {
+          el.textContent = 'build: unknown (check /health on server)';
+          el.title = 'Could not read commit from server response. Run curl http://localhost:8080/version on the sprite.';
         }
       } catch (e) {
-        // silent fail - version display is nice-to-have
+        el.textContent = 'build: fetch error';
+        el.title = 'Error fetching version: ' + (e.message || e);
+        console.error('loadVersionInfo error:', e);
       }
     }
 
@@ -301,15 +324,20 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
       el.classList.remove('flex');
     }
 
-    document.getElementById('analyze-form').addEventListener('submit', async (e) => {
-      e.preventDefault();
-      const nsn = document.getElementById('nsn-input').value.trim().replace(/\D/g, '');
-      if (!nsn || nsn.length < 9) {
-        showError('Enter a valid 9- or 13-digit NSN / NIIN');
-        return;
-      }
-      await performAnalysis(nsn);
-    });
+    const form = document.getElementById('analyze-form');
+    if (form) {
+      form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const nsn = document.getElementById('nsn-input').value.trim().replace(/\D/g, '');
+        if (!nsn || nsn.length < 9) {
+          showError('Enter a valid 9- or 13-digit NSN / NIIN');
+          return;
+        }
+        await performAnalysis(nsn);
+      });
+    } else {
+      console.error('analyze-form not found in DOM');
+    }
 
     // Subtle quick example NSNs — clicking populates the input and runs analysis
     document.querySelectorAll('.quick-nsn').forEach(btn => {
@@ -342,7 +370,12 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
         const data = await res.json();
         currentResult = data.result || data;
 
-        renderFullAnalysis(currentResult, nsn);
+        try {
+          renderFullAnalysis(currentResult, nsn);
+        } catch (renderErr) {
+          console.error('Render error:', renderErr);
+          showError('Analysis succeeded but UI render failed. Check console. Error: ' + (renderErr.message || renderErr));
+        }
       } catch (err) {
         showError('Analysis failed: ' + (err.message || 'Network or server error'));
       } finally {
