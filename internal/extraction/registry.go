@@ -2,6 +2,8 @@ package extraction
 
 import (
 	"context"
+	"os"
+	"strings"
 
 	"github.com/bmcelhaney/insight-forge/internal/models"
 )
@@ -44,6 +46,12 @@ func NewDefaultRegistry(samAPIKey string) *Registry {
 	// Critical upgrade for the general path on the large volume of AbilityOne-relevant NSNs.
 	ao := NewAbilityOneExtractor()
 	r.extractors[ao.SourceCode()] = ao
+
+	// AbilityOne ETS spreadsheet cross-reference data (SKU/UPC/manufacturer mappings).
+	// This enriches NSN analysis with additional commercial identifiers and descriptions.
+	etsPath := strings.TrimSpace(os.Getenv("IF_ETS_XLSX_PATH"))
+	ets := NewAbilityOneETSExtractor(etsPath)
+	r.extractors[ets.SourceCode()] = ets
 
 	// Future: MCRL, SAM.gov, historical award feeds, technical manuals, bulk PUB LOG integration, etc.
 	return r

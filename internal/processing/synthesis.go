@@ -82,6 +82,28 @@ func Synthesize(ctx context.Context, entityID string, snapshots []models.DataSna
 		}
 	}
 	if result.ItemName == "" {
+		// Secondary fallback: AbilityOne ETS cross-reference descriptions
+		for _, s := range snapshots {
+			if s.SourceCode != "ABILITYONE_ETS" {
+				continue
+			}
+			if descs := toStringSlice(s.RawResponse["abilityone_descriptions"]); len(descs) > 0 {
+				result.ItemName = descs[0]
+			}
+			if result.ItemName == "" {
+				if descs := toStringSlice(s.RawResponse["commercial_descriptions"]); len(descs) > 0 {
+					result.ItemName = descs[0]
+				}
+			}
+			if result.TechnicalCharacteristics == "" {
+				if descs := toStringSlice(s.RawResponse["commercial_descriptions"]); len(descs) > 0 {
+					result.TechnicalCharacteristics = descs[0]
+				}
+			}
+			break
+		}
+	}
+	if result.ItemName == "" {
 		// Fallback to WEBFLIS for non-AbilityOne items
 		for _, s := range snapshots {
 			if s.SourceCode == "WEBFLIS" {
@@ -187,6 +209,28 @@ func Synthesize(ctx context.Context, entityID string, snapshots []models.DataSna
 		result.FullAnalystReport += supSection
 	}
 
+	// If ETS cross-reference data matched the NSN, surface that signal clearly.
+	etsRows, etsManufacturers := extractETSSummary(snapshots)
+	if etsRows > 0 {
+		result.Citations = appendUniqueString(
+			result.Citations,
+			"AbilityOne ETS cross-reference spreadsheet (docs/20260701 AbilityOne ETS File.xlsx)",
+		)
+
+		mfrPhrase := ""
+		if len(etsManufacturers) > 0 {
+			mfrPhrase = fmt.Sprintf(" across %d manufacturer(s)", len(etsManufacturers))
+		}
+		etsInsight := fmt.Sprintf(
+			"AbilityOne ETS cross-reference matched %d row(s)%s, adding SKU/UPC/manufacturer evidence for this NSN.",
+			etsRows,
+			mfrPhrase,
+		)
+		if !containsText(result.KeyInsights, "AbilityOne ETS cross-reference") {
+			result.KeyInsights = append([]string{etsInsight}, result.KeyInsights...)
+		}
+	}
+
 	// Fallback legacy summary if rich path produced nothing
 	if result.Summary == "" {
 		result.Summary = generateExecutiveSummary(entityID, result.ViabilityScore, result.RiskScore, flags, supplierView)
@@ -202,57 +246,34 @@ func extractCommercialReferences(snaps []models.DataSnapshot) []models.Commercia
 	var refs []models.CommercialReference
 
 	for _, s := range snaps {
-		// GSA Advantage often returns commercial product identifiers
-		if s.SourceCode == "GSA_ADVANTAGE" {
-			if rawRefs, ok := s.RawResponse["commercial_references"].([]map[string]any); ok {
-				for _, r := range rawRefs {
-					ref := models.CommercialReference{
-						Source: s.SourceCode,
-					}
-					if sku, ok := r["mfr_part"].(string); ok && sku != "" {
-						ref.SKU = sku
-					} else if sku, ok := r["sku"].(string); ok {
-						ref.SKU = sku
-					}
-					if upc, ok := r["upc"].(string); ok {
-						ref.UPC = upc
-					}
-					if mfr, ok := r["manufacturer"].(string); ok {
-						ref.Manufacturer = mfr
-					}
-					if price, ok := r["price"].(string); ok {
-						ref.Price = price
-					}
-					if ctx, ok := r["context"].(string); ok {
-						ref.Context = ctx
-					}
-					if ref.SKU != "" || ref.UPC != "" {
-						refs = append(refs, ref)
-					}
+		for _, r := range mapSliceFromAny(s.RawResponse["commercial_references"]) {
+			ref := models.CommercialReference{
+				Source: s.SourceCode,
+			}
+			ref.SKU = firstNonEmptyString(r, "sku", "mfr_part", "manufacturer_part", "part_number")
+			ref.UPC = firstNonEmptyString(r, "upc")
+			ref.GTIN = firstNonEmptyString(r, "gtin")
+			ref.Manufacturer = firstNonEmptyString(r, "manufacturer", "mfg_name", "mfr_name")
+			ref.Price = firstNonEmptyString(r, "price")
+
+			var contextParts []string
+			if ctx := firstNonEmptyString(r, "context"); ctx != "" {
+				contextParts = append(contextParts, ctx)
+			}
+			if s.SourceCode == "ABILITYONE_ETS" {
+				if desc := firstNonEmptyString(r, "abilityone_description"); desc != "" {
+					contextParts = append(contextParts, "AbilityOne: "+desc)
+				}
+				if desc := firstNonEmptyString(r, "commercial_description"); desc != "" {
+					contextParts = append(contextParts, "Commercial: "+desc)
 				}
 			}
-		}
+			if len(contextParts) > 0 {
+				ref.Context = strings.Join(contextParts, " | ")
+			}
 
-		// WebFLIS prototype now carries commercial reference numbers
-		if s.SourceCode == "WEBFLIS" {
-			if rawRefs, ok := s.RawResponse["commercial_references"].([]map[string]any); ok {
-				for _, r := range rawRefs {
-					ref := models.CommercialReference{
-						Source: s.SourceCode,
-					}
-					if sku, ok := r["sku"].(string); ok {
-						ref.SKU = sku
-					}
-					if upc, ok := r["upc"].(string); ok {
-						ref.UPC = upc
-					}
-					if ctx, ok := r["context"].(string); ok {
-						ref.Context = ctx
-					}
-					if ref.SKU != "" || ref.UPC != "" {
-						refs = append(refs, ref)
-					}
-				}
+			if ref.SKU != "" || ref.UPC != "" || ref.GTIN != "" {
+				refs = append(refs, ref)
 			}
 		}
 
@@ -268,7 +289,116 @@ func extractCommercialReferences(snaps []models.DataSnapshot) []models.Commercia
 		}
 	}
 
+	refs = dedupeCommercialReferences(refs)
+	if len(refs) > 75 {
+		refs = refs[:75]
+	}
 	return refs
+}
+
+func mapSliceFromAny(v any) []map[string]any {
+	if v == nil {
+		return nil
+	}
+	if out, ok := v.([]map[string]any); ok {
+		return out
+	}
+	if arr, ok := v.([]any); ok {
+		out := make([]map[string]any, 0, len(arr))
+		for _, item := range arr {
+			if m, ok := item.(map[string]any); ok {
+				out = append(out, m)
+			}
+		}
+		return out
+	}
+	return nil
+}
+
+func firstNonEmptyString(m map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if v, ok := m[key]; ok {
+			if s, ok := v.(string); ok && strings.TrimSpace(s) != "" {
+				return strings.TrimSpace(s)
+			}
+		}
+	}
+	return ""
+}
+
+func dedupeCommercialReferences(refs []models.CommercialReference) []models.CommercialReference {
+	seen := make(map[string]bool)
+	out := make([]models.CommercialReference, 0, len(refs))
+	for _, ref := range refs {
+		key := strings.Join([]string{
+			ref.Source,
+			ref.Manufacturer,
+			ref.SKU,
+			ref.UPC,
+			ref.GTIN,
+			ref.Price,
+			ref.Context,
+		}, "|")
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, ref)
+	}
+	return out
+}
+
+func toStringSlice(v any) []string {
+	if v == nil {
+		return nil
+	}
+	if raw, ok := v.([]string); ok {
+		return raw
+	}
+	if arr, ok := v.([]any); ok {
+		out := make([]string, 0, len(arr))
+		for _, item := range arr {
+			if s, ok := item.(string); ok && strings.TrimSpace(s) != "" {
+				out = append(out, strings.TrimSpace(s))
+			}
+		}
+		return out
+	}
+	return nil
+}
+
+func extractETSSummary(snaps []models.DataSnapshot) (int, []string) {
+	for _, s := range snaps {
+		if s.SourceCode != "ABILITYONE_ETS" {
+			continue
+		}
+		rows := 0
+		if v, ok := s.RawResponse["matched_rows_count"].(int); ok {
+			rows = v
+		} else if v, ok := s.RawResponse["matched_rows_count"].(float64); ok {
+			rows = int(v)
+		}
+		return rows, toStringSlice(s.RawResponse["manufacturers"])
+	}
+	return 0, nil
+}
+
+func appendUniqueString(items []string, item string) []string {
+	for _, existing := range items {
+		if existing == item {
+			return items
+		}
+	}
+	return append(items, item)
+}
+
+func containsText(items []string, needle string) bool {
+	for _, item := range items {
+		if strings.Contains(item, needle) {
+			return true
+		}
+	}
+	return false
 }
 
 // buildExtendedCommercialAnalysis produces the "extended analysis" text that relates
@@ -336,7 +466,7 @@ func appendCommercialInsights(result *models.InsightResult, refs []models.Commer
 		return
 	}
 
-	insight := fmt.Sprintf("Commercial cross-reference: %d associated SKU(s)/UPC(s) identified (primarily from GSA Advantage and WebFLIS). These commercial equivalents provide additional pricing and availability signals that should be factored into total cost of ownership and any waiver considerations for the NSN.", len(refs))
+	insight := fmt.Sprintf("Commercial cross-reference: %d associated SKU(s)/UPC(s) identified (from GSA Advantage, WebFLIS, and AbilityOne ETS cross-reference data). These commercial equivalents provide additional pricing and availability signals that should be factored into total cost of ownership and any waiver considerations for the NSN.", len(refs))
 
 	// Insert near the top but after the strongest mandatory-source insight if present
 	insertAt := 1
