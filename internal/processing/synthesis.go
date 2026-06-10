@@ -38,10 +38,10 @@ func Synthesize(ctx context.Context, entityID string, snapshots []models.DataSna
 
 	// === Viability Scoring (0-100) ===
 	// Base score from data richness + quality + recency
-	viability := calculateViability(snapshots)
+	viability := calculateViability(entityID, snapshots)
 
 	// === Risk Scoring (0-100) ===
-	risk, flags := calculateRisk(snapshots)
+	risk, flags := calculateRisk(entityID, snapshots)
 
 	// === Supplier & Ecosystem View ===
 	supplierView := buildSupplierView(snapshots)
@@ -853,7 +853,21 @@ func min(a, b int) int {
 	return b
 }
 
-func calculateViability(snaps []models.DataSnapshot) float64 {
+func calculateViability(entityID string, snaps []models.DataSnapshot) float64 {
+	if isDemoNSN(entityID) {
+		return calculateViabilityLegacy(snaps)
+	}
+	return calculateViabilityFromEvidence(snaps)
+}
+
+func calculateRisk(entityID string, snaps []models.DataSnapshot) (float64, []models.RiskFlag) {
+	if isDemoNSN(entityID) {
+		return calculateRiskLegacy(snaps)
+	}
+	return calculateRiskFromEvidence(snaps)
+}
+
+func calculateViabilityLegacy(snaps []models.DataSnapshot) float64 {
 	if len(snaps) == 0 {
 		return 25.0
 	}
@@ -882,7 +896,7 @@ func calculateViability(snaps []models.DataSnapshot) float64 {
 	score := base + avgQuality + diversity + recencyBonus
 	return math.Min(98, math.Max(15, score))
 }
-
+func calculateRiskLegacy(snaps []models.DataSnapshot) (float64, []models.RiskFlag) {
 func calculateRisk(snaps []models.DataSnapshot) (float64, []models.RiskFlag) {
 	risk := 25.0
 	var flags []models.RiskFlag
@@ -937,6 +951,258 @@ func calculateRisk(snaps []models.DataSnapshot) (float64, []models.RiskFlag) {
 
 	risk = math.Min(95, risk)
 	return risk, flags
+}
+
+type scoringEvidenceProfile struct {
+	HasLiveFPDS      bool
+	HasPrototypeFPDS bool
+	LiveAwardCount   int
+	HasLiveGSA       bool
+	GSAPriceCount    int
+	HasETS           bool
+	ETSMatchedRows   int
+	HasAbilityOne    bool
+	LiveSignalCount  int
+}
+
+func calculateViabilityFromEvidence(snaps []models.DataSnapshot) float64 {
+	if len(snaps) == 0 {
+		return 15
+	}
+
+	e := collectScoringEvidence(snaps)
+
+	score := 22.0
+	if e.HasLiveFPDS {
+		score += 30
+		if e.LiveAwardCount > 0 {
+			score += math.Min(10, math.Log10(float64(e.LiveAwardCount)+1)*4.5)
+		}
+	}
+	if e.HasLiveGSA {
+		score += 10 + math.Min(6, float64(e.GSAPriceCount))
+	}
+	if e.HasETS {
+		score += 8 + math.Min(8, float64(e.ETSMatchedRows)/15.0)
+	}
+	if e.HasAbilityOne {
+		score += 7
+	}
+
+	if e.HasPrototypeFPDS && !e.HasLiveFPDS {
+		score -= 16
+	}
+	if e.LiveSignalCount == 0 {
+		score -= 15
+	}
+
+	liveRecencyBonus, hasLiveRecency := computeLiveRecencyBonus(snaps)
+	if hasLiveRecency {
+		score += liveRecencyBonus
+	} else {
+		score -= 6
+	}
+
+	return math.Max(8, math.Min(88, score))
+}
+
+func calculateRiskFromEvidence(snaps []models.DataSnapshot) (float64, []models.RiskFlag) {
+	risk := 50.0
+	var flags []models.RiskFlag
+
+	e := collectScoringEvidence(snaps)
+
+	if e.HasLiveFPDS {
+		risk -= 14
+		if e.LiveAwardCount >= 25 {
+			risk -= 4
+		}
+	} else {
+		risk += 14
+		flags = append(flags, models.RiskFlag{
+			Type:        "data_quality",
+			Severity:    "high",
+			Description: "No live USAspending award evidence was returned for this NSN query.",
+			Implication: "Scores reflect elevated uncertainty until live federal award evidence is available.",
+			SourceCodes: []string{"FPDS"},
+		})
+	}
+
+	if e.HasPrototypeFPDS && !e.HasLiveFPDS {
+		risk += 16
+		flags = append(flags, models.RiskFlag{
+			Type:        "data_quality",
+			Severity:    "high",
+			Description: "FPDS data fell back to prototype mode for this NSN query.",
+			Implication: "Demand and score confidence are reduced until live USAspending evidence is returned.",
+			SourceCodes: []string{"FPDS"},
+		})
+	}
+
+	if e.HasLiveGSA {
+		risk -= 6
+	} else {
+		risk += 4
+	}
+
+	if e.HasETS {
+		risk -= 4
+	}
+
+	if e.LiveSignalCount == 0 {
+		risk += 10
+		flags = append(flags, models.RiskFlag{
+			Type:        "data_quality",
+			Severity:    "high",
+			Description: "No live pricing, award, or ETS evidence is available for this NSN.",
+			Implication: "Treat this result as preliminary and gather additional source evidence before committing significant volume.",
+			SourceCodes: []string{"FPDS", "GSA_ADVANTAGE", "ABILITYONE_ETS"},
+		})
+	}
+
+	risk = math.Max(18, math.Min(95, risk))
+	return risk, dedupeRiskFlags(flags)
+}
+
+func collectScoringEvidence(snaps []models.DataSnapshot) scoringEvidenceProfile {
+	e := scoringEvidenceProfile{}
+	for _, s := range snaps {
+		switch s.SourceCode {
+		case "FPDS":
+			dataSource := strings.TrimSpace(firstStringFromAny(s.RawResponse["data_source"]))
+			if dataSource == "live_usaspending" {
+				e.HasLiveFPDS = true
+				e.LiveAwardCount = maxInt(e.LiveAwardCount, intFromAny(s.RawResponse["total_awards"]))
+			} else if dataSource == "prototype" {
+				e.HasPrototypeFPDS = true
+			}
+		case "GSA_ADVANTAGE":
+			priceCount := len(mapSliceFromAny(s.RawResponse["prices_found"]))
+			if priceCount > 0 {
+				e.HasLiveGSA = true
+				e.GSAPriceCount = maxInt(e.GSAPriceCount, priceCount)
+			}
+		case "ABILITYONE_ETS":
+			rows := intFromAny(s.RawResponse["matched_rows_count"])
+			if rows > 0 {
+				e.HasETS = true
+				e.ETSMatchedRows = maxInt(e.ETSMatchedRows, rows)
+			}
+		case "ABILITYONE":
+			if strings.TrimSpace(firstStringFromAny(s.RawResponse["producing_npa"])) != "" {
+				e.HasAbilityOne = true
+			}
+		}
+	}
+
+	if e.HasLiveFPDS {
+		e.LiveSignalCount++
+	}
+	if e.HasLiveGSA {
+		e.LiveSignalCount++
+	}
+	if e.HasETS {
+		e.LiveSignalCount++
+	}
+
+	return e
+}
+
+func computeLiveRecencyBonus(snaps []models.DataSnapshot) (float64, bool) {
+	now := time.Now()
+	bonus := 0.0
+	count := 0
+	for _, s := range snaps {
+		if !isLiveSnapshotForScoring(s) {
+			continue
+		}
+		count++
+		ageDays := now.Sub(s.SnapshotAt).Hours() / 24
+		switch {
+		case ageDays <= 7:
+			bonus += 2.0
+		case ageDays <= 30:
+			bonus += 1.5
+		case ageDays <= 90:
+			bonus += 1.0
+		case ageDays <= 180:
+			bonus += 0.5
+		}
+	}
+	if count == 0 {
+		return 0, false
+	}
+	return math.Min(8, bonus), true
+}
+
+func isLiveSnapshotForScoring(s models.DataSnapshot) bool {
+	switch s.SourceCode {
+	case "FPDS":
+		return strings.TrimSpace(firstStringFromAny(s.RawResponse["data_source"])) == "live_usaspending"
+	case "GSA_ADVANTAGE":
+		return len(mapSliceFromAny(s.RawResponse["prices_found"])) > 0
+	case "ABILITYONE_ETS":
+		return intFromAny(s.RawResponse["matched_rows_count"]) > 0
+	default:
+		return false
+	}
+}
+
+func dedupeRiskFlags(flags []models.RiskFlag) []models.RiskFlag {
+	if len(flags) <= 1 {
+		return flags
+	}
+	seen := make(map[string]bool)
+	out := make([]models.RiskFlag, 0, len(flags))
+	for _, f := range flags {
+		key := strings.Join([]string{f.Type, f.Severity, f.Description, f.Implication}, "|")
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, f)
+	}
+	return out
+}
+
+func isDemoNSN(entityID string) bool {
+	nsn := digitsOnlyString(entityID)
+	if len(nsn) == 0 {
+		return false
+	}
+	_, ok := demoNSNSet[nsn]
+	return ok
+}
+
+var demoNSNSet = map[string]struct{}{
+	"7520009357136": {},
+	"7530015399831": {},
+	"7530012345678": {},
+	"8540013800690": {},
+	"8540015909073": {},
+	"7920014487052": {},
+	"7920015552900": {},
+	"7930015552900": {},
+	"8105015171352": {},
+	"7220015826246": {},
+	"8415016107327": {},
+	"8415016123456": {},
+	"4510015219866": {},
+	"7210002053205": {},
+	"7210001396424": {},
+	"7125011515435": {},
+	"5180006507821": {},
+	"5120008785932": {},
+}
+
+func digitsOnlyString(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if r >= '0' && r <= '9' {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 func buildSupplierView(snaps []models.DataSnapshot) models.SupplierView {
