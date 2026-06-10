@@ -897,7 +897,6 @@ func calculateViabilityLegacy(snaps []models.DataSnapshot) float64 {
 	return math.Min(98, math.Max(15, score))
 }
 func calculateRiskLegacy(snaps []models.DataSnapshot) (float64, []models.RiskFlag) {
-func calculateRisk(snaps []models.DataSnapshot) (float64, []models.RiskFlag) {
 	risk := 25.0
 	var flags []models.RiskFlag
 
