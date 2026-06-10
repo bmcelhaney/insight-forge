@@ -53,6 +53,10 @@ func NewDefaultRegistry(samAPIKey string) *Registry {
 	ets := NewAbilityOneETSExtractor(etsPath)
 	r.extractors[ets.SourceCode()] = ets
 
+	// Live web-search intelligence layer for deeper non-demo NSN insights.
+	wi := NewWebSearchIntelExtractor()
+	r.extractors[wi.SourceCode()] = wi
+
 	// Future: MCRL, SAM.gov, historical award feeds, technical manuals, bulk PUB LOG integration, etc.
 	return r
 }
