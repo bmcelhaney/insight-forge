@@ -39,6 +39,39 @@ If the verification step fails, it kills the new process and exits with an error
 - The UI header shows the live commit hash + build time in the top right.
 - The binary prints its commit on startup.
 
+## Verifying the Live Deployment
+
+After a deploy, verify that the running service matches the latest source commit.
+
+### From the sprite (canonical)
+
+```bash
+curl http://127.0.0.1:8080/version
+curl http://127.0.0.1:8080/health
+```
+
+Both return `commit` and `buildTime`. The `commit` value must match `git rev-parse --short origin/main`.
+
+### From a local machine (via the sprite CLI)
+
+The public URL (https://nib-insightforge-bsmmx.sprites.app/) is gated behind sprites.dev auth, so an anonymous `curl` to `/version` returns an auth **redirect**, not JSON. Do not use the public URL for automated verification.
+
+Instead, run the check inside the sprite from your machine using `sprite exec`:
+
+```bash
+sprite exec -s nib-insightforge -- sh -c 'curl -s http://127.0.0.1:8080/version'
+```
+
+Then confirm the reported `commit` matches the latest origin/main:
+
+```bash
+git rev-parse --short origin/main
+```
+
+If the two values match, the latest build is live. If they differ, an old binary is still serving traffic — re-run `./scripts/reset.sh` on the sprite.
+
+> Note: when passing a shell command to `sprite exec`, use `--` before `sh -c '...'` so flags like `-c` are not consumed by the CLI.
+
 ## Common Failure Modes We Have Seen (and how the new process addresses them)
 
 | Failure Mode                          | Symptom                              | How New Process Prevents It                          |
