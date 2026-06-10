@@ -314,57 +314,84 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
 
     function showError(msg) {
       const el = document.getElementById('analysis-error');
-      document.getElementById('error-text').textContent = msg;
-      el.classList.remove('hidden');
-      el.classList.add('flex');
+      const txt = document.getElementById('error-text');
+      if (txt) txt.textContent = msg || 'Unknown error';
+      if (el) {
+        el.classList.remove('hidden');
+        el.classList.add('flex');
+      } else {
+        // Fallback: alert so user sees something even if banner missing
+        console.error('analysis-error banner not found; msg was:', msg);
+        alert('Analysis error: ' + (msg || 'see console'));
+      }
     }
     function dismissError() {
       const el = document.getElementById('analysis-error');
-      el.classList.add('hidden');
-      el.classList.remove('flex');
+      if (el) {
+        el.classList.add('hidden');
+        el.classList.remove('flex');
+      }
     }
 
-    // Boot
-    window.onload = () => {
-      loadVersionInfo();
-      const input = document.getElementById('nsn-input');
-      input.focus();
-      input.select();
+    // Boot: attach listeners immediately. This script is at the very end of <body>,
+    // so the DOM (form, quick-nsn buttons, inputs, results containers) is fully parsed.
+    // Using window.onload previously could delay or skip attachment if load timing
+    // was affected by external CDNs (Tailwind, FA). Immediate attach is reliable here.
+    (function attachUI() {
+      try {
+        loadVersionInfo();
 
-      // Attach listeners after DOM is ready (defensive)
-      const form = document.getElementById('analyze-form');
-      if (form) {
-        form.addEventListener('submit', async (e) => {
-          e.preventDefault();
-          const nsn = document.getElementById('nsn-input').value.trim().replace(/\D/g, '');
-          if (!nsn || nsn.length < 9) {
-            showError('Enter a valid 9- or 13-digit NSN / NIIN');
-            return;
-          }
-          await performAnalysis(nsn);
+        const input = document.getElementById('nsn-input');
+        if (input) {
+          input.focus();
+          input.select();
+        } else {
+          console.error('nsn-input not found');
+        }
+
+        const form = document.getElementById('analyze-form');
+        if (form) {
+          form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const nsnInput = document.getElementById('nsn-input');
+            const nsn = nsnInput ? nsnInput.value.trim().replace(/\D/g, '') : '';
+            if (!nsn || nsn.length < 9) {
+              showError('Enter a valid 9- or 13-digit NSN / NIIN');
+              return;
+            }
+            await performAnalysis(nsn);
+          });
+        } else {
+          console.error('analyze-form not found in DOM');
+        }
+
+        // Subtle quick example NSNs — clicking populates the input and runs analysis
+        const quickBtns = document.querySelectorAll('.quick-nsn');
+        console.log('Attaching listeners to', quickBtns.length, 'quick-nsn buttons');
+        quickBtns.forEach(btn => {
+          btn.addEventListener('click', async (e) => {
+            e.preventDefault();
+            const nsn = btn.getAttribute('data-nsn');
+            if (!nsn) return;
+            const nsnInput = document.getElementById('nsn-input');
+            if (nsnInput) nsnInput.value = nsn;
+            await performAnalysis(nsn);
+          });
         });
-      } else {
-        console.error('analyze-form not found in DOM');
+
+        console.log('Insight Forge UI listeners attached successfully');
+      } catch (e) {
+        console.error('Failed to attach analyze UI listeners on boot:', e);
       }
-
-      // Subtle quick example NSNs — clicking populates the input and runs analysis
-      document.querySelectorAll('.quick-nsn').forEach(btn => {
-        btn.addEventListener('click', async (e) => {
-          e.preventDefault();
-          const nsn = btn.getAttribute('data-nsn');
-          if (!nsn) return;
-          const input = document.getElementById('nsn-input');
-          if (input) input.value = nsn;
-          await performAnalysis(nsn);
-        });
-      });
-    };
+    })();
 
     async function performAnalysis(nsn) {
       currentNSN = nsn;
       dismissError();
-      document.getElementById('loading').classList.remove('hidden');
-      document.getElementById('results').classList.add('hidden');
+      const loadingEl = document.getElementById('loading');
+      const resultsEl = document.getElementById('results');
+      if (loadingEl) loadingEl.classList.remove('hidden');
+      if (resultsEl) resultsEl.classList.add('hidden');
 
       try {
         const res = await fetch('/api/analyze', {
@@ -388,18 +415,21 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
       } catch (err) {
         showError('Analysis failed: ' + (err.message || 'Network or server error'));
       } finally {
-        document.getElementById('loading').classList.add('hidden');
+        const loadingEl = document.getElementById('loading');
+        if (loadingEl) loadingEl.classList.add('hidden');
       }
     }
 
     function renderFullAnalysis(result, nsn) {
-      document.getElementById('results').classList.remove('hidden');
+      const resultsEl = document.getElementById('results');
+      if (resultsEl) resultsEl.classList.remove('hidden');
 
       // === CRITICAL: Always restore the exact NSN the user typed into the input ===
       const inputEl = document.getElementById('nsn-input');
       if (inputEl) inputEl.value = nsn;
 
-      document.getElementById('nsn-header').textContent = nsn;
+      const nsnHeader = document.getElementById('nsn-header');
+      if (nsnHeader) nsnHeader.textContent = nsn;
 
       // === SMALL SCORE BAR GRAPHS (not dominant 7xl numbers) ===
       const sourcing = result.sourcing_attractiveness || result.viability_score || 50;
@@ -408,11 +438,15 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
       const sVal = Math.round(sourcing);
       const rVal = Math.round(supply);
 
-      document.getElementById('sourcing-val').textContent = sVal;
-      document.getElementById('risk-val').textContent = rVal;
+      const sourcingVal = document.getElementById('sourcing-val');
+      if (sourcingVal) sourcingVal.textContent = sVal;
+      const riskVal = document.getElementById('risk-val');
+      if (riskVal) riskVal.textContent = rVal;
 
-      document.getElementById('sourcing-bar').style.width = sVal + '%';
-      document.getElementById('risk-bar').style.width = rVal + '%';
+      const sourcingBar = document.getElementById('sourcing-bar');
+      if (sourcingBar) sourcingBar.style.width = sVal + '%';
+      const riskBar = document.getElementById('risk-bar');
+      if (riskBar) riskBar.style.width = rVal + '%';
 
       // Dynamic colors for Supply Risk (lower is better, so invert the traffic light)
       let riskTextClass = 'text-rose-400';
@@ -429,9 +463,12 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
         riskHoverClass = 'hover:text-amber-400';
       }
 
-      document.getElementById('risk-val').className = `metric text-3xl font-semibold ${riskTextClass} tabular-nums`;
-      document.getElementById('risk-bar').className = `score-fill ${riskBarClass}`;
-      document.getElementById('risk-header').className = `section-header flex items-center gap-1.5 ${riskTextClass}`;
+      const riskValEl = document.getElementById('risk-val');
+      if (riskValEl) riskValEl.className = `metric text-3xl font-semibold ${riskTextClass} tabular-nums`;
+      const riskBarEl = document.getElementById('risk-bar');
+      if (riskBarEl) riskBarEl.className = `score-fill ${riskBarClass}`;
+      const riskHeader = document.getElementById('risk-header');
+      if (riskHeader) riskHeader.className = `section-header flex items-center gap-1.5 ${riskTextClass}`;
       const riskIcon = document.getElementById('risk-icon');
       if (riskIcon) {
         riskIcon.className = `cursor-help text-[10px] text-zinc-500 ${riskHoverClass}`;
@@ -449,19 +486,24 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
       } else if (sVal >= 55) {
         sourcingTextClass = 'text-amber-400';
         sourcingBarClass = 'bg-amber-500';
-        sourcingHoverClass = 'hover:text-amber-400';
+        sourcingHoverClass = 'hover:text-emerald-400';
       }
 
-      document.getElementById('sourcing-val').className = `metric text-3xl font-semibold ${sourcingTextClass} tabular-nums`;
-      document.getElementById('sourcing-bar').className = `score-fill ${sourcingBarClass}`;
-      document.getElementById('sourcing-header').className = `section-header flex items-center gap-1.5 ${sourcingTextClass}`;
+      const sourcingValEl = document.getElementById('sourcing-val');
+      if (sourcingValEl) sourcingValEl.className = `metric text-3xl font-semibold ${sourcingTextClass} tabular-nums`;
+      const sourcingBarEl = document.getElementById('sourcing-bar');
+      if (sourcingBarEl) sourcingBarEl.className = `score-fill ${sourcingBarClass}`;
+      const sourcingHeader = document.getElementById('sourcing-header');
+      if (sourcingHeader) sourcingHeader.className = `section-header flex items-center gap-1.5 ${sourcingTextClass}`;
       const sourcingIcon = document.getElementById('sourcing-icon');
       if (sourcingIcon) {
         sourcingIcon.className = `cursor-help text-[10px] text-zinc-500 ${sourcingHoverClass}`;
       }
 
-      document.getElementById('sourcing-sub').textContent = 'Data richness • Supplier diversity • Recency • Program fit';
-      document.getElementById('risk-sub').textContent = 'Concentration • Geopolitical • Data quality • Producer capacity';
+      const sourcingSub = document.getElementById('sourcing-sub');
+      if (sourcingSub) sourcingSub.textContent = 'Data richness • Supplier diversity • Recency • Program fit';
+      const riskSub = document.getElementById('risk-sub');
+      if (riskSub) riskSub.textContent = 'Concentration • Geopolitical • Data quality • Producer capacity';
 
       // Recommendation (clearer language)
       // Prefer rich recommendation from backend when available (for AbilityOne general-path items)
@@ -477,8 +519,10 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
         rec = deriveRecommendation(result, sVal, rVal);
       }
       const badge = document.getElementById('recommendation-badge');
-      badge.textContent = rec.level;
-      badge.className = `px-4 py-1.5 rounded-2xl text-sm font-medium border ${rec.cls}`;
+      if (badge) {
+        badge.textContent = rec.level;
+        badge.className = `px-4 py-1.5 rounded-2xl text-sm font-medium border ${rec.cls}`;
+      }
 
       // Make the Analyst Recommendation card consistent with the score coloring scheme
       const recCard = document.getElementById('analyst-recommendation-card');
@@ -489,7 +533,7 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
       let headerColor = 'text-emerald-400';
       let bodyColor = 'text-emerald-200';
 
-      const level = rec.level.toUpperCase();
+      const level = (rec.level || '').toUpperCase();
 
       if (level.includes('ELEVATED')) {
         cardBorder = 'border-rose-800';
@@ -505,52 +549,58 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
       if (recHeader) recHeader.className = `section-header mb-2 ${headerColor}`;
       if (recBody) recBody.className = `text-sm leading-relaxed ${bodyColor}`;
 
-      recBody.textContent = rec.text;
+      if (recBody) recBody.textContent = rec.text;
 
       // Executive Summary
-      document.getElementById('summary').textContent = result.summary || result.Summary || 'No summary generated.';
+      const summaryEl = document.getElementById('summary');
+      if (summaryEl) summaryEl.textContent = result.summary || result.Summary || 'No summary generated.';
 
       // Item Identity (from WebFLIS prototype data) - new for arbitrary NSNs
       const itemIdEl = document.getElementById('item-identity');
       const itemName = result.item_name || result.ItemName || '';
-      if (itemName) {
-        const unit = result.unit_of_issue || result.UnitOfIssue || '';
-        const tech = result.technical_characteristics || result.TechnicalCharacteristics || '';
-        let html = `<span class="font-semibold text-emerald-300">Item:</span> ${itemName}`;
-        if (unit) html += ` <span class="text-zinc-500">(${unit})</span>`;
-        if (tech) html += `<div class="text-xs text-zinc-400 mt-0.5">${tech}</div>`;
-        itemIdEl.innerHTML = html;
-        itemIdEl.classList.remove('hidden');
-      } else {
-        itemIdEl.classList.add('hidden');
+      if (itemIdEl) {
+        if (itemName) {
+          const unit = result.unit_of_issue || result.UnitOfIssue || '';
+          const tech = result.technical_characteristics || result.TechnicalCharacteristics || '';
+          let html = `<span class="font-semibold text-emerald-300">Item:</span> ${itemName}`;
+          if (unit) html += ` <span class="text-zinc-500">(${unit})</span>`;
+          if (tech) html += `<div class="text-xs text-zinc-400 mt-0.5">${tech}</div>`;
+          itemIdEl.innerHTML = html;
+          itemIdEl.classList.remove('hidden');
+        } else {
+          itemIdEl.classList.add('hidden');
+        }
       }
 
       // Key Insights
       const ig = document.getElementById('key-insights');
-      ig.innerHTML = '';
+      if (ig) ig.innerHTML = '';
       const insights = result.key_insights || generateDefaultInsights(result, sVal, rVal);
-      if (insights.length > 0) {
+      if (ig && insights.length > 0) {
         const header = document.createElement('div');
         header.style.cssText = 'grid-column: 1 / -1; font-size:10px; color:#64748b; margin-bottom:4px; text-transform:uppercase; letter-spacing:0.5px;';
         header.textContent = 'Key Takeaways from Multi-Source Analysis';
         ig.appendChild(header);
       }
-      insights.forEach(i => {
-        const d = document.createElement('div');
-        d.className = 'flex gap-2';
-        d.innerHTML = `<i class="fa-solid fa-check text-emerald-400 mt-1"></i><div>${i}</div>`;
-        ig.appendChild(d);
-      });
+      if (ig) {
+        insights.forEach(i => {
+          const d = document.createElement('div');
+          d.className = 'flex gap-2';
+          d.innerHTML = `<i class="fa-solid fa-check text-emerald-400 mt-1"></i><div>${i}</div>`;
+          ig.appendChild(d);
+        });
+      }
 
       // Full Analyst Report (rich content)
       const reportEl = document.getElementById('full-report');
-      reportEl.textContent = result.full_analyst_report || result.FullAnalystReport || result.market_commentary || 'Detailed report not available for this NSN.';
+      if (reportEl) reportEl.textContent = result.full_analyst_report || result.FullAnalystReport || result.market_commentary || 'Detailed report not available for this NSN.';
 
       // Flags
       const fEl = document.getElementById('flags');
-      fEl.innerHTML = '';
+      if (fEl) fEl.innerHTML = '';
       const fl = result.flags || [];
-      document.getElementById('flag-count').textContent = fl.length + ' identified';
+      const flagCountEl2 = document.getElementById('flag-count');
+      if (flagCountEl2) flagCountEl2.textContent = fl.length + ' identified';
 
       // Sort so critical/high appear first
       const sortedFlags = [...fl].sort((a, b) => {
@@ -657,22 +707,25 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
         extraLine += `<div style="font-size:10px; color:${scoreColor}; margin-top:3px; font-weight:600;">${divLabel}</div>`;
       }
 
-      document.getElementById('supplier-summary').innerHTML =
-        `${sup.total_suppliers || sup.TotalSuppliers || 0} suppliers across ${(sup.primary_countries || sup.PrimaryCountries || []).length} countries. Concentration risk: <span class="font-medium">${sup.concentration_risk || sup.ConcentrationRisk || 'medium'}</span>.` +
-        (supplierPeriod ? `<div style="font-size:11px; color:#a1a1aa; margin-top:4px;">${supplierPeriod}</div>` : '') + extraLine;
+      const supplierSummaryEl = document.getElementById('supplier-summary');
+      if (supplierSummaryEl) {
+        supplierSummaryEl.innerHTML =
+          `${sup.total_suppliers || sup.TotalSuppliers || 0} suppliers across ${(sup.primary_countries || sup.PrimaryCountries || []).length} countries. Concentration risk: <span class="font-medium">${sup.concentration_risk || sup.ConcentrationRisk || 'medium'}</span>.` +
+          (supplierPeriod ? `<div style="font-size:11px; color:#a1a1aa; margin-top:4px;">${supplierPeriod}</div>` : '') + extraLine;
+      }
 
       const tsEl = document.getElementById('top-suppliers');
-      tsEl.innerHTML = '';
+      if (tsEl) tsEl.innerHTML = '';
 
-      const tops = (sup.top_suppliers || sup.TopSuppliers || []);
-      if (tops.length > 0) {
+      const supplierTops = (sup.top_suppliers || sup.TopSuppliers || []);
+      if (supplierTops.length > 0) {
         const header = document.createElement('div');
         header.style.cssText = 'font-size:10px; color:#64748b; margin-bottom:4px; text-transform:uppercase; letter-spacing:0.5px;';
         header.textContent = 'Top Suppliers (by recent federal awards)';
         tsEl.appendChild(header);
       }
 
-      tops.forEach(s => {
+      supplierTops.forEach(s => {
         const row = document.createElement('div');
         row.className = 'text-xs py-0.5 border-b border-zinc-800 last:border-none';
         
@@ -709,13 +762,15 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
       const demandPeriod = dem.award_period || dem.AwardPeriod || '';
 
       const dm = document.getElementById('demand-metrics');
-      dm.innerHTML = '';
+      if (dm) dm.innerHTML = '';
 
       // Header
-      const demandHeader = document.createElement('div');
-      demandHeader.style.cssText = 'grid-column: 1 / -1; font-size:10px; color:#64748b; margin-bottom:4px; text-transform:uppercase; letter-spacing:0.5px;';
-      demandHeader.textContent = 'Demand Overview (36 months)';
-      dm.appendChild(demandHeader);
+      if (dm) {
+        const demandHeader = document.createElement('div');
+        demandHeader.style.cssText = 'grid-column: 1 / -1; font-size:10px; color:#64748b; margin-bottom:4px; text-transform:uppercase; letter-spacing:0.5px;';
+        demandHeader.textContent = 'Demand Overview (36 months)';
+        dm.appendChild(demandHeader);
+      }
 
       // Core metrics
       const coreMetrics = [
@@ -783,7 +838,7 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
 
       // Related & Equivalent NSNs (federal related + commercial SKU/UPC as additional reference box + associated commercial suppliers)
       const relEl = document.getElementById('related-nsns');
-      relEl.innerHTML = '';
+      if (relEl) relEl.innerHTML = '';
 
       const relHeader = document.createElement('div');
       relHeader.style.cssText = 'grid-column: 1 / -1; font-size:10px; color:#64748b; margin-bottom:4px; text-transform:uppercase; letter-spacing:0.5px;';
@@ -815,13 +870,19 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
         relEl.appendChild(a);
       });
 
-      // Commercial SKUs/UPCs as additional reference box
+      // Commercial SKUs/UPCs as additional reference box (full width)
       const comms = result.commercial_references || [];
       if (comms.length > 0) {
+        const commWrapper = document.createElement('div');
+        commWrapper.style.cssText = 'grid-column: 1 / -1; margin-top: 8px;';
+
         const commHeader = document.createElement('div');
-        commHeader.style.cssText = 'grid-column: 1 / -1; font-size:10px; color:#64748b; margin-top:10px; margin-bottom:4px; text-transform:uppercase; letter-spacing:0.5px;';
+        commHeader.style.cssText = 'font-size:10px; color:#64748b; margin-bottom:4px; text-transform:uppercase; letter-spacing:0.5px;';
         commHeader.textContent = 'Commercial Cross-References (SKUs / UPCs)';
-        relEl.appendChild(commHeader);
+        commWrapper.appendChild(commHeader);
+
+        const innerGrid = document.createElement('div');
+        innerGrid.className = 'grid grid-cols-1 md:grid-cols-2 gap-3';
 
         comms.slice(0, 6).forEach(c => {
           const box = document.createElement('div');
@@ -836,19 +897,22 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
             <div class="text-xs text-zinc-200 mt-0.5">${txt}</div>
             ${c.context ? '<div class="text-[10px] text-zinc-400 mt-0.5">' + c.context + '</div>' : ''}
           `;
-          relEl.appendChild(box);
+          innerGrid.appendChild(box);
         });
+
+        commWrapper.appendChild(innerGrid);
+        relEl.appendChild(commWrapper);
       }
 
       // Associated commercial suppliers as part of the related/equivalent reference box
-      const tops = result.top_commercial_suppliers || [];
-      if (tops.length > 0) {
+      const commTops = result.top_commercial_suppliers || [];
+      if (commTops.length > 0) {
         const suppHeader = document.createElement('div');
         suppHeader.style.cssText = 'grid-column: 1 / -1; font-size:10px; color:#64748b; margin-top:10px; margin-bottom:4px; text-transform:uppercase; letter-spacing:0.5px;';
         suppHeader.textContent = 'Associated Commercial Suppliers (from SKU/UPC)';
         relEl.appendChild(suppHeader);
 
-        tops.slice(0, 5).forEach(s => {
+        commTops.slice(0, 5).forEach(s => {
           const box = document.createElement('div');
           box.className = 'block bg-zinc-950 border border-zinc-700 p-3 rounded-2xl text-sm';
           let txt = s.name || 'Unknown';
@@ -866,7 +930,8 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
         });
       }
 
-      document.getElementById('generated-at').textContent = new Date().toLocaleString();
+      const genAt = document.getElementById('generated-at');
+      if (genAt) genAt.textContent = new Date().toLocaleString();
     }
 
     function deriveRecommendation(result, sourcing, supply) {
