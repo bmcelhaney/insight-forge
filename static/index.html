@@ -933,16 +933,27 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
             line2.textContent = `SKUs: ${skuText}` + (s.examplePrice ? ` | Example: ${s.examplePrice}` : '');
             row.appendChild(line2);
 
-            const website = getSupplierWebsiteLink(s.name);
-            if (website) {
+            const supplierLinks = resolveSupplierLinks(s.name, s.skus && s.skus.length > 0 ? s.skus[0] : '');
+            if (supplierLinks && supplierLinks.website) {
               const link = document.createElement('a');
-              link.href = website.url;
+              link.href = supplierLinks.website.url;
               link.target = '_blank';
               link.rel = 'noopener noreferrer';
               link.className = 'inline-block mt-0.5 text-[11px] text-sky-300 hover:text-sky-200 underline';
-              link.textContent = website.label;
+              link.textContent = supplierLinks.website.label;
               row.appendChild(link);
             }
+
+            if (supplierLinks && supplierLinks.sku) {
+              const skuLink = document.createElement('a');
+              skuLink.href = supplierLinks.sku.url;
+              skuLink.target = '_blank';
+              skuLink.rel = 'noopener noreferrer';
+              skuLink.className = 'inline-block ml-2 mt-0.5 text-[11px] text-emerald-300 hover:text-emerald-200 underline';
+              skuLink.textContent = supplierLinks.sku.label;
+              row.appendChild(skuLink);
+            }
+
 
             supplierBlock.appendChild(row);
           });
@@ -979,15 +990,24 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
             box.appendChild(context);
           }
 
-          const website = getSupplierWebsiteLink(c.manufacturer);
-          if (website) {
+          const supplierLinks = resolveSupplierLinks(c.manufacturer, c.sku || '');
+          if (supplierLinks && supplierLinks.website) {
             const link = document.createElement('a');
-            link.href = website.url;
+            link.href = supplierLinks.website.url;
             link.target = '_blank';
             link.rel = 'noopener noreferrer';
             link.className = 'inline-block mt-1 text-[11px] text-sky-300 hover:text-sky-200 underline';
-            link.textContent = website.label;
+            link.textContent = supplierLinks.website.label;
             box.appendChild(link);
+          }
+          if ((c.source || '').toUpperCase() === 'ABILITYONE_ETS' && supplierLinks && supplierLinks.sku) {
+            const skuLink = document.createElement('a');
+            skuLink.href = supplierLinks.sku.url;
+            skuLink.target = '_blank';
+            skuLink.rel = 'noopener noreferrer';
+            skuLink.className = 'inline-block ml-2 mt-1 text-[11px] text-emerald-300 hover:text-emerald-200 underline';
+            skuLink.textContent = 'Open ETS SKU on supplier site';
+            box.appendChild(skuLink);
           }
 
           innerGrid.appendChild(box);
@@ -1029,27 +1049,65 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
         .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
     }
 
-    function getSupplierWebsiteLink(name) {
+    const SUPPLIER_LINK_CATALOG = [
+      { aliases: ['3m'], website: 'https://www.3m.com', skuSearch: 'https://www.3m.com/3M/en_US/p/search/?Ntt={sku}' },
+      { aliases: ['avery'], website: 'https://www.avery.com', skuSearch: 'https://www.avery.com/search?query={sku}' },
+      { aliases: ['universal'], website: 'https://www.universaloffice.com' },
+      { aliases: ['sanford'], website: 'https://www.newellbrands.com/our-brands/sanford' },
+      { aliases: ['esselte pendaflex corp', 'pendaflex', 'esselte'], website: 'https://www.pendaflex.com' },
+      { aliases: ['kimberly clark', 'kimberly-clark'], website: 'https://www.kimberly-clark.com' },
+      { aliases: ['georgia pacific', 'georgia-pacific'], website: 'https://www.gp.com' },
+      { aliases: ['boardwalk'], website: 'https://www.boardwalkbrand.com' },
+      { aliases: ['pilot'], website: 'https://pilotpen.us', skuSearch: 'https://pilotpen.us/search?type=product&q={sku}' },
+      { aliases: ['smead'], website: 'https://www.smead.com', skuSearch: 'https://www.smead.com/search?query={sku}' },
+      { aliases: ['gojo'], website: 'https://www.gojo.com', skuSearch: 'https://www.gojo.com/en/Search?query={sku}' },
+      { aliases: ['bic'], website: 'https://us.bic.com', skuSearch: 'https://us.bic.com/en_us/catalogsearch/result/?q={sku}' },
+      { aliases: ['pentel'], website: 'https://www.pentel.com', skuSearch: 'https://www.pentel.com/search?q={sku}' },
+      { aliases: ['dixie'], website: 'https://www.dixie.com' },
+      { aliases: ['business source'], website: 'https://www.businesssourceproducts.com' },
+      { aliases: ['office depot'], website: 'https://www.officedepot.com', skuSearch: 'https://www.officedepot.com/a/search/?q={sku}' },
+      { aliases: ['sparco'], website: 'https://www.sparco.com' },
+      { aliases: ['rubbermaid'], website: 'https://www.rubbermaidcommercial.com', skuSearch: 'https://www.rubbermaidcommercial.com/search/?q={sku}' },
+      { aliases: ['innovera'], website: 'https://www.innovera.com' },
+      { aliases: ['quartet'], website: 'https://www.quartet.com' },
+      { aliases: ['staples'], website: 'https://www.staples.com', skuSearch: 'https://www.staples.com/search?query={sku}' },
+      { aliases: ['fellowes'], website: 'https://www.fellowes.com', skuSearch: 'https://www.fellowes.com/us/en/search?term={sku}' },
+      { aliases: ['jessup'], website: 'https://www.jessupmfg.com' },
+      { aliases: ['acco'], website: 'https://www.accobrands.com' },
+      { aliases: ['genuine joe'], website: 'https://www.genuinejoe.com' },
+      { aliases: ['unisan'], website: 'https://www.unisan.com' },
+      { aliases: ['wilson jones', 'wilson-jones'], website: 'https://www.wilsonjones.com' },
+      { aliases: ['tough guy'], website: 'https://www.grainger.com/brand/TOUGH-GUY' },
+      { aliases: ['brady'], website: 'https://www.bradyid.com', skuSearch: 'https://www.bradyid.com/search?text={sku}' },
+    ];
+
+    function normalizeSupplierName(value) {
+      return (value || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+    }
+
+    function resolveSupplierLinks(name, sku) {
       const supplier = (name || '').trim();
-      if (!supplier || supplier.toLowerCase().includes('unknown')) return null;
+      if (!supplier || normalizeSupplierName(supplier).includes('unknown')) return null;
 
-      const normalized = supplier.toLowerCase();
-      const knownSites = [
-        { needle: '3m', url: 'https://www.3m.com' },
-        { needle: 'kimberly-clark', url: 'https://www.kimberly-clark.com' },
-        { needle: 'georgia-pacific', url: 'https://www.gp.com' },
-      ];
+      const normalized = normalizeSupplierName(supplier);
+      for (const entry of SUPPLIER_LINK_CATALOG) {
+        const matched = (entry.aliases || []).some(alias => normalized.includes(normalizeSupplierName(alias)));
+        if (!matched) continue;
 
-      for (const site of knownSites) {
-        if (normalized.includes(site.needle)) {
-          return { url: site.url, label: 'Supplier website' };
+        const links = {
+          website: { url: entry.website, label: 'Supplier website' },
+          sku: null,
+        };
+        const skuValue = (sku || '').trim();
+        if (entry.skuSearch && skuValue) {
+          links.sku = {
+            url: entry.skuSearch.replace('{sku}', encodeURIComponent(skuValue)),
+            label: 'Open SKU on supplier site',
+          };
         }
+        return links;
       }
-
-      return {
-        url: `https://www.google.com/search?q=${encodeURIComponent(supplier + ' official website')}`,
-        label: 'Find supplier website',
-      };
+      return null;
     }
 
     function deriveRecommendation(result, sourcing, supply) {
