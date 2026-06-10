@@ -234,7 +234,7 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
           <div id="flags" class="flex flex-wrap gap-2"></div>
         </div>
 
-        <!-- Related / Alternative NSNs (includes federal related + commercial SKU/UPC cross-refs as additional reference box, plus associated commercial suppliers) -->
+        <!-- Related / Alternative NSNs (includes federal related + expanded commercial SKU/UPC cross-reference intelligence) -->
         <div class="analyst-card bg-zinc-900 border border-zinc-700 rounded-3xl p-6">
           <div class="section-header text-zinc-400 mb-3">Related &amp; Equivalent NSNs</div>
           <div id="related-nsns" class="grid grid-cols-1 md:grid-cols-2 gap-3"></div>
@@ -836,7 +836,7 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
         dm.appendChild(noteContainer);
       }
 
-      // Related & Equivalent NSNs (federal related + commercial SKU/UPC as additional reference box + associated commercial suppliers)
+      // Related & Equivalent NSNs (federal related + expanded commercial SKU/UPC cross-reference intelligence)
       const relEl = document.getElementById('related-nsns');
       if (relEl) relEl.innerHTML = '';
 
@@ -870,33 +870,126 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
         relEl.appendChild(a);
       });
 
-      // Commercial SKUs/UPCs as additional reference box (full width)
-      const comms = result.commercial_references || [];
+      // Commercial SKUs/UPCs as one expanded reference box (full width)
+      const comms = result.commercial_references || result.CommercialReferences || [];
+      const commTops = result.top_commercial_suppliers || result.TopCommercialSuppliers || [];
       if (comms.length > 0) {
         const commWrapper = document.createElement('div');
         commWrapper.style.cssText = 'grid-column: 1 / -1; margin-top: 8px;';
 
         const commHeader = document.createElement('div');
-        commHeader.style.cssText = 'font-size:10px; color:#64748b; margin-bottom:4px; text-transform:uppercase; letter-spacing:0.5px;';
-        commHeader.textContent = 'Commercial Cross-References (SKUs / UPCs)';
+        commHeader.style.cssText = 'font-size:10px; color:#64748b; margin-bottom:6px; text-transform:uppercase; letter-spacing:0.5px;';
+        commHeader.textContent = 'Commercial Cross-References (SKUs / UPCs + Supplier Snapshot)';
         commWrapper.appendChild(commHeader);
+
+        const uniqueSuppliers = new Set();
+        const uniqueSKUs = new Set();
+        const uniqueUPCs = new Set();
+        comms.forEach(c => {
+          const name = (c.manufacturer || '').trim();
+          if (name) uniqueSuppliers.add(name);
+          if (c.sku) uniqueSKUs.add(c.sku);
+          if (c.upc) uniqueUPCs.add(c.upc);
+        });
+
+        const metrics = [
+          { label: 'Total refs', value: comms.length },
+          { label: 'Suppliers', value: uniqueSuppliers.size },
+          { label: 'Unique SKUs', value: uniqueSKUs.size },
+          { label: 'Unique UPCs', value: uniqueUPCs.size },
+        ];
+        const metricRow = document.createElement('div');
+        metricRow.className = 'flex flex-wrap gap-2 mb-3';
+        metrics.forEach(m => {
+          const pill = document.createElement('div');
+          pill.className = 'text-[11px] text-zinc-300 bg-zinc-900 border border-zinc-700 rounded-full px-2.5 py-1';
+          pill.textContent = `${m.label}: ${m.value}`;
+          metricRow.appendChild(pill);
+        });
+        commWrapper.appendChild(metricRow);
+
+        const supplierSummary = buildCommercialSupplierRollup(comms, commTops).slice(0, 5);
+        if (supplierSummary.length > 0) {
+          const supplierBlock = document.createElement('div');
+          supplierBlock.className = 'mb-3 bg-zinc-950 border border-zinc-700 rounded-2xl p-3';
+
+          const supplierTitle = document.createElement('div');
+          supplierTitle.className = 'text-[10px] text-zinc-400 uppercase tracking-wide mb-2';
+          supplierTitle.textContent = 'Supplier summary';
+          supplierBlock.appendChild(supplierTitle);
+
+          supplierSummary.forEach(s => {
+            const row = document.createElement('div');
+            row.className = 'text-xs text-zinc-300 border-b border-zinc-800 last:border-b-0 py-1.5';
+
+            const line1 = document.createElement('div');
+            line1.className = 'font-medium';
+            line1.textContent = `${s.name} · ${s.count} ref${s.count === 1 ? '' : 's'}`;
+            row.appendChild(line1);
+
+            const skuText = s.skus.length > 0 ? s.skus.slice(0, 2).join(', ') + (s.skus.length > 2 ? ', ...' : '') : '—';
+            const line2 = document.createElement('div');
+            line2.className = 'text-[11px] text-zinc-400';
+            line2.textContent = `SKUs: ${skuText}` + (s.examplePrice ? ` | Example: ${s.examplePrice}` : '');
+            row.appendChild(line2);
+
+            const website = getSupplierWebsiteLink(s.name);
+            if (website) {
+              const link = document.createElement('a');
+              link.href = website.url;
+              link.target = '_blank';
+              link.rel = 'noopener noreferrer';
+              link.className = 'inline-block mt-0.5 text-[11px] text-sky-300 hover:text-sky-200 underline';
+              link.textContent = website.label;
+              row.appendChild(link);
+            }
+
+            supplierBlock.appendChild(row);
+          });
+
+          commWrapper.appendChild(supplierBlock);
+        }
 
         const innerGrid = document.createElement('div');
         innerGrid.className = 'grid grid-cols-1 md:grid-cols-2 gap-3';
 
-        comms.slice(0, 6).forEach(c => {
+        comms.slice(0, 8).forEach(c => {
           const box = document.createElement('div');
           box.className = 'block bg-amber-950/30 border border-amber-700 p-3 rounded-2xl text-sm';
-          let txt = '';
-          if (c.manufacturer) txt += c.manufacturer + ' ';
-          if (c.sku) txt += '<span class="font-mono font-semibold">' + c.sku + '</span> ';
-          if (c.upc) txt += '(UPC ' + c.upc + ') ';
-          if (c.price) txt += '— ' + c.price;
-          box.innerHTML = `
-            <div class="text-[10px] text-amber-300 uppercase">Commercial Equivalent</div>
-            <div class="text-xs text-zinc-200 mt-0.5">${txt}</div>
-            ${c.context ? '<div class="text-[10px] text-zinc-400 mt-0.5">' + c.context + '</div>' : ''}
-          `;
+
+          const tag = document.createElement('div');
+          tag.className = 'text-[10px] text-amber-300 uppercase';
+          tag.textContent = 'Commercial Equivalent';
+          box.appendChild(tag);
+
+          const main = document.createElement('div');
+          main.className = 'text-xs text-zinc-200 mt-0.5';
+          let summary = '';
+          if (c.manufacturer) summary += c.manufacturer + ' ';
+          if (c.sku) summary += `SKU ${c.sku} `;
+          if (c.upc) summary += `(UPC ${c.upc}) `;
+          if (c.price) summary += `— ${c.price}`;
+          main.textContent = summary.trim() || 'Commercial reference';
+          box.appendChild(main);
+
+          if (c.context) {
+            const context = document.createElement('div');
+            context.className = 'text-[10px] text-zinc-400 mt-0.5';
+            context.textContent = c.context;
+            box.appendChild(context);
+          }
+
+          const website = getSupplierWebsiteLink(c.manufacturer);
+          if (website) {
+            const link = document.createElement('a');
+            link.href = website.url;
+            link.target = '_blank';
+            link.rel = 'noopener noreferrer';
+            link.className = 'inline-block mt-1 text-[11px] text-sky-300 hover:text-sky-200 underline';
+            link.textContent = website.label;
+            box.appendChild(link);
+          }
+
           innerGrid.appendChild(box);
         });
 
@@ -904,34 +997,59 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
         relEl.appendChild(commWrapper);
       }
 
-      // Associated commercial suppliers as part of the related/equivalent reference box
-      const commTops = result.top_commercial_suppliers || [];
-      if (commTops.length > 0) {
-        const suppHeader = document.createElement('div');
-        suppHeader.style.cssText = 'grid-column: 1 / -1; font-size:10px; color:#64748b; margin-top:10px; margin-bottom:4px; text-transform:uppercase; letter-spacing:0.5px;';
-        suppHeader.textContent = 'Associated Commercial Suppliers (from SKU/UPC)';
-        relEl.appendChild(suppHeader);
-
-        commTops.slice(0, 5).forEach(s => {
-          const box = document.createElement('div');
-          box.className = 'block bg-zinc-950 border border-zinc-700 p-3 rounded-2xl text-sm';
-          let txt = s.name || 'Unknown';
-          txt += ` (refs: ${s.count || 0}`;
-          if (s.skus && s.skus.length > 0) {
-            txt += `, SKUs: ${s.skus.slice(0,2).join(', ')}`;
-            if (s.skus.length > 2) txt += '...';
-          }
-          if (s.example_price) txt += `, ex: ${s.example_price}`;
-          txt += ')';
-          box.innerHTML = `
-            <div class="text-xs text-zinc-300">${txt}</div>
-          `;
-          relEl.appendChild(box);
-        });
-      }
-
       const genAt = document.getElementById('generated-at');
       if (genAt) genAt.textContent = new Date().toLocaleString();
+    }
+
+    function buildCommercialSupplierRollup(comms, commTops) {
+      const topSuppliers = Array.isArray(commTops) ? commTops : [];
+      if (topSuppliers.length > 0) {
+        return topSuppliers.map(s => ({
+          name: s.name || s.Name || 'Unknown supplier',
+          count: s.count || s.Count || 0,
+          skus: (s.skus || s.SKUs || []).filter(Boolean),
+          examplePrice: s.example_price || s.ExamplePrice || '',
+        }));
+      }
+
+      const grouped = new Map();
+      (Array.isArray(comms) ? comms : []).forEach(c => {
+        const name = (c.manufacturer || 'Unknown supplier').trim() || 'Unknown supplier';
+        if (!grouped.has(name)) {
+          grouped.set(name, { name, count: 0, skus: new Set(), examplePrice: '' });
+        }
+        const item = grouped.get(name);
+        item.count += 1;
+        if (c.sku) item.skus.add(c.sku);
+        if (!item.examplePrice && c.price) item.examplePrice = c.price;
+      });
+
+      return Array.from(grouped.values())
+        .map(s => ({ ...s, skus: Array.from(s.skus) }))
+        .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+    }
+
+    function getSupplierWebsiteLink(name) {
+      const supplier = (name || '').trim();
+      if (!supplier || supplier.toLowerCase().includes('unknown')) return null;
+
+      const normalized = supplier.toLowerCase();
+      const knownSites = [
+        { needle: '3m', url: 'https://www.3m.com' },
+        { needle: 'kimberly-clark', url: 'https://www.kimberly-clark.com' },
+        { needle: 'georgia-pacific', url: 'https://www.gp.com' },
+      ];
+
+      for (const site of knownSites) {
+        if (normalized.includes(site.needle)) {
+          return { url: site.url, label: 'Supplier website' };
+        }
+      }
+
+      return {
+        url: `https://www.google.com/search?q=${encodeURIComponent(supplier + ' official website')}`,
+        label: 'Find supplier website',
+      };
     }
 
     function deriveRecommendation(result, sourcing, supply) {
