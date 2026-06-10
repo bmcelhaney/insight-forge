@@ -215,6 +215,7 @@ func Synthesize(ctx context.Context, entityID string, snapshots []models.DataSna
 	// Synchronize supplier ecosystem, demand signals, citations, and narrative reporting
 	// using ETS cross-reference evidence.
 	applyETSAnalysisSync(&result, snapshots)
+	appendDeepAnalystExpansion(analysisEntityID, &result, snapshots)
 
 	// Fallback legacy summary if rich path produced nothing
 	if result.Summary == "" {
@@ -3227,6 +3228,383 @@ func summarizeStringList(items []string, limit int) string {
 		return strings.Join(clean, ", ")
 	}
 	return fmt.Sprintf("%s, +%d more", strings.Join(clean[:limit], ", "), len(clean)-limit)
+}
+
+type abilityOneContext struct {
+	ProgramStatus            string
+	ProducingNPA             string
+	CID                      string
+	MandatoryNote            string
+	MPLPricingNote           string
+	DemandCharacter          string
+	KeyRisks                 string
+	ItemName                 string
+	UnitOfIssue              string
+	TechnicalCharacteristics string
+}
+
+type programIntelContext struct {
+	ProgramFamily string
+	SocioEconomic string
+	AdditionalRisks string
+}
+
+type technicalContext struct {
+	TechnicalNotes  string
+	RegulatoryNotes string
+	MaintenanceNotes string
+}
+
+func appendDeepAnalystExpansion(entityID string, result *models.InsightResult, snaps []models.DataSnapshot) {
+	if strings.Contains(result.FullAnalystReport, "DEEP ANALYST EXPANSION (EVIDENCE-BASED)") {
+		return
+	}
+
+	ao := extractAbilityOneContext(snaps)
+	program := extractProgramIntelContext(snaps)
+	tech := extractTechnicalContext(snaps)
+	ets := extractETSSignal(snaps)
+	web := extractWebSearchIntelSignal(snaps)
+	evidence := collectScoringEvidence(snaps)
+
+	itemName := strings.TrimSpace(result.ItemName)
+	if itemName == "" {
+		itemName = nonEmptyOr(ao.ItemName, "Unspecified federal stock item")
+	}
+	unitOfIssue := strings.TrimSpace(result.UnitOfIssue)
+	if unitOfIssue == "" {
+		unitOfIssue = strings.TrimSpace(ao.UnitOfIssue)
+	}
+	technical := strings.TrimSpace(result.TechnicalCharacteristics)
+	if technical == "" {
+		technical = nonEmptyOr(ao.TechnicalCharacteristics, tech.TechnicalNotes)
+	}
+
+	var b strings.Builder
+	b.WriteString("\n\nDEEP ANALYST EXPANSION (EVIDENCE-BASED)\n")
+
+	// 1) Product overview
+	fsc := getFSC(entityID)
+	fmt.Fprintf(&b, "1) PRODUCT OVERVIEW\n")
+	fmt.Fprintf(&b, "- NSN: %s | FSC %s (%s)\n", entityID, fsc, describeFSC(fsc))
+	fmt.Fprintf(&b, "- Item identity: %s\n", itemName)
+	if unitOfIssue != "" {
+		fmt.Fprintf(&b, "- Unit of issue: %s\n", unitOfIssue)
+	}
+	if strings.TrimSpace(technical) != "" {
+		fmt.Fprintf(&b, "- Technical profile: %s\n", truncateSentence(strings.TrimSpace(technical), 320))
+	}
+	if ao.ProducingNPA != "" {
+		fmt.Fprintf(&b, "- AbilityOne producer context: %s (%s)\n", ao.ProducingNPA, nonEmptyOr(ao.ProgramStatus, "status not specified"))
+	}
+
+	// 2) Commercial equivalents / ETS deep dive
+	fmt.Fprintf(&b, "\n2) COMMERCIAL EQUIVALENTS & CROSS-REFERENCE INTELLIGENCE\n")
+	if ets.MatchedRows > 0 || len(result.TopCommercialSuppliers) > 0 || len(result.CommercialReferences) > 0 {
+		if ets.MatchedRows > 0 {
+			fmt.Fprintf(
+				&b,
+				"- ETS cross-reference depth: %d matched rows, %d manufacturers, %d unique SKUs, %d unique UPCs (trend: %s).\n",
+				ets.MatchedRows,
+				maxInt(ets.UniqueManufacturerCt, len(ets.Manufacturers)),
+				ets.UniqueSKUCt,
+				ets.UniqueUPCCt,
+				nonEmptyOr(ets.MappingTrend, inferETSMappingTrend(ets)),
+			)
+		}
+		if len(result.TopCommercialSuppliers) > 0 {
+			fmt.Fprintf(&b, "- Top mapped commercial suppliers:\n")
+			for i, sup := range result.TopCommercialSuppliers {
+				if i >= 4 {
+					break
+				}
+				skuPreview := summarizeStringList(sup.SKUs, 3)
+				line := fmt.Sprintf("  - %s (references: %d", sup.Name, sup.Count)
+				if skuPreview != "" {
+					line += fmt.Sprintf(", SKUs: %s", skuPreview)
+				}
+				if sup.ExamplePrice != "" {
+					line += fmt.Sprintf(", example price: %s", sup.ExamplePrice)
+				}
+				line += ")"
+				b.WriteString(line + "\n")
+			}
+		} else if len(result.CommercialReferences) > 0 {
+			fmt.Fprintf(&b, "- Commercial references captured: %d (SKU/UPC/GTIN evidence available for analyst follow-up).\n", len(result.CommercialReferences))
+		}
+	} else {
+		fmt.Fprintf(&b, "- No ETS/commercial cross-reference rows were returned in this run.\n")
+	}
+
+	// 3) Federal procurement and program context
+	fmt.Fprintf(&b, "\n3) FEDERAL PROCUREMENT CONTEXT\n")
+	if result.DemandSignals.TotalAwards > 0 {
+		fmt.Fprintf(
+			&b,
+			"- Live federal demand signal: %d awards, approx. $%.2fM observed obligations (%s).\n",
+			result.DemandSignals.TotalAwards,
+			result.DemandSignals.TotalValueUSD/1000000,
+			nonEmptyOr(result.DemandSignals.AwardPeriod, "current sample window"),
+		)
+	} else {
+		fmt.Fprintf(&b, "- No live federal award rows were returned for this query; confidence is being driven by non-award evidence layers.\n")
+	}
+	if len(result.DemandSignals.TopAgencies) > 0 {
+		fmt.Fprintf(&b, "- Top agencies in observed demand stream: %s.\n", summarizeStringList(result.DemandSignals.TopAgencies, 4))
+	}
+	if ao.MandatoryNote != "" {
+		fmt.Fprintf(&b, "- AbilityOne / compliance posture: %s\n", truncateSentence(ao.MandatoryNote, 300))
+	} else if program.ProgramFamily != "" {
+		fmt.Fprintf(&b, "- Program-family context: %s\n", truncateSentence(program.ProgramFamily, 280))
+	}
+	if ao.CID != "" {
+		fmt.Fprintf(&b, "- Governing specification context: %s\n", ao.CID)
+	}
+	if ao.MPLPricingNote != "" {
+		fmt.Fprintf(&b, "- Pricing context from program data: %s\n", truncateSentence(ao.MPLPricingNote, 240))
+	}
+
+	// 4) Market and external intelligence
+	fmt.Fprintf(&b, "\n4) MARKET & EXTERNAL INTELLIGENCE SIGNALS\n")
+	if web.ResultCount > 0 {
+		domainCt := len(web.DistinctDomains)
+		if domainCt == 0 {
+			domainCt = web.ResultCount
+		}
+		fmt.Fprintf(
+			&b,
+			"- External signal coverage: %d references across %d domains (procurement domains: %d).\n",
+			web.ResultCount,
+			domainCt,
+			len(web.ProcurementDomains),
+		)
+		if len(web.SignalFlags) > 0 {
+			fmt.Fprintf(&b, "- Web signal flags: %s.\n", strings.Join(web.SignalFlags, ", "))
+		}
+		if len(web.TopResults) > 0 {
+			fmt.Fprintf(&b, "- Highest-priority external references:\n")
+			for i, r := range web.TopResults {
+				if i >= 3 {
+					break
+				}
+				title := nonEmptyOr(strings.TrimSpace(r.Title), "Untitled reference")
+				domain := nonEmptyOr(strings.TrimSpace(r.Domain), "unknown-domain")
+				line := fmt.Sprintf("  - %s (%s)", title, domain)
+				if strings.TrimSpace(r.Snippet) != "" {
+					line += fmt.Sprintf(" — %s", truncateSentence(strings.TrimSpace(r.Snippet), 180))
+				}
+				b.WriteString(line + "\n")
+			}
+		}
+	} else {
+		fmt.Fprintf(&b, "- No external web references were captured in this run; market trend statements should be treated as low-confidence.\n")
+	}
+	if result.DemandSignals.YoYChange != "" || result.DemandSignals.RecentTrend != "" {
+		fmt.Fprintf(
+			&b,
+			"- Demand trend indicators: trend=%s, YoY=%s, peak periods=%s.\n",
+			nonEmptyOr(result.DemandSignals.RecentTrend, "unknown"),
+			nonEmptyOr(result.DemandSignals.YoYChange, "not available"),
+			nonEmptyOr(result.DemandSignals.PeakPeriods, "not available"),
+		)
+	}
+
+	// 5) Scoring interpretation
+	fmt.Fprintf(&b, "\n5) SCORE INTERPRETATION (HOW TO READ THIS OUTPUT)\n")
+	fmt.Fprintf(
+		&b,
+		"- Current scores: sourcing attractiveness %.0f / supply risk %.0f.\n",
+		result.SourcingAttractiveness,
+		result.SupplyRisk,
+	)
+	fmt.Fprintf(&b, "- Primary score drivers in this run: %s\n", summarizeScoringDrivers(evidence))
+	if len(result.Flags) > 0 {
+		fmt.Fprintf(&b, "- Active risk flags:\n")
+		for i, f := range result.Flags {
+			if i >= 5 {
+				break
+			}
+			imp := truncateSentence(nonEmptyOr(f.Implication, "Monitor and validate with source before large commitments."), 170)
+			fmt.Fprintf(&b, "  - [%s] %s — %s\n", strings.ToUpper(f.Severity), truncateSentence(f.Description, 140), imp)
+		}
+	}
+
+	// 6) Risks, opportunities, and utility actions
+	fmt.Fprintf(&b, "\n6) RISKS, OPPORTUNITIES, AND PRACTICAL ACTIONS\n")
+	if ao.KeyRisks != "" {
+		fmt.Fprintf(&b, "- Program-risk context: %s\n", truncateSentence(ao.KeyRisks, 260))
+	} else if program.AdditionalRisks != "" {
+		fmt.Fprintf(&b, "- Program-risk context: %s\n", truncateSentence(program.AdditionalRisks, 260))
+	}
+	if len(result.TopCommercialSuppliers) > 0 || ets.MatchedRows > 0 {
+		fmt.Fprintf(&b, "- Opportunity: use ETS/commercial mappings as surge and waiver-intelligence inputs without displacing mandatory-source compliance.\n")
+	}
+	if program.SocioEconomic != "" {
+		fmt.Fprintf(&b, "- Socio-economic signal: %s\n", truncateSentence(program.SocioEconomic, 220))
+	}
+	if tech.RegulatoryNotes != "" {
+		fmt.Fprintf(&b, "- Regulatory/technical watchpoint: %s\n", truncateSentence(tech.RegulatoryNotes, 220))
+	}
+	if tech.MaintenanceNotes != "" {
+		fmt.Fprintf(&b, "- Lifecycle/maintenance note: %s\n", truncateSentence(tech.MaintenanceNotes, 220))
+	}
+
+	// 7) Overall position
+	fmt.Fprintf(&b, "\n7) OVERALL MARKET POSITION\n")
+	fmt.Fprintf(&b, "- %s\n", buildOverallPositionStatement(result, evidence, ao, web))
+
+	result.FullAnalystReport += b.String()
+	result.Citations = appendUniqueString(result.Citations, "Deep analyst expansion (multi-source synthesis layer)")
+}
+
+func extractAbilityOneContext(snaps []models.DataSnapshot) abilityOneContext {
+	var out abilityOneContext
+	for _, s := range snaps {
+		if s.SourceCode != "ABILITYONE" {
+			continue
+		}
+		out.ProgramStatus = strings.TrimSpace(firstStringFromAny(s.RawResponse["program_status"]))
+		out.ProducingNPA = strings.TrimSpace(firstStringFromAny(s.RawResponse["producing_npa"]))
+		out.CID = strings.TrimSpace(firstStringFromAny(s.RawResponse["cid"]))
+		out.MandatoryNote = strings.TrimSpace(firstStringFromAny(s.RawResponse["mandatory_source_note"]))
+		out.MPLPricingNote = strings.TrimSpace(firstStringFromAny(s.RawResponse["mpl_pricing_note"]))
+		out.DemandCharacter = strings.TrimSpace(firstStringFromAny(s.RawResponse["demand_character"]))
+		out.KeyRisks = strings.TrimSpace(firstStringFromAny(s.RawResponse["key_risks"]))
+		out.ItemName = strings.TrimSpace(firstStringFromAny(s.RawResponse["item_name"]))
+		out.UnitOfIssue = strings.TrimSpace(firstStringFromAny(s.RawResponse["unit_of_issue"]))
+		out.TechnicalCharacteristics = strings.TrimSpace(firstStringFromAny(s.RawResponse["technical_characteristics"]))
+		return out
+	}
+	return out
+}
+
+func extractProgramIntelContext(snaps []models.DataSnapshot) programIntelContext {
+	var out programIntelContext
+	for _, s := range snaps {
+		if s.SourceCode != "PROGRAM_INTEL" {
+			continue
+		}
+		out.ProgramFamily = strings.TrimSpace(firstStringFromAny(s.RawResponse["program_family"]))
+		out.SocioEconomic = strings.TrimSpace(firstStringFromAny(s.RawResponse["socio_economic_notes"]))
+		out.AdditionalRisks = strings.TrimSpace(firstStringFromAny(s.RawResponse["additional_risks"]))
+		return out
+	}
+	return out
+}
+
+func extractTechnicalContext(snaps []models.DataSnapshot) technicalContext {
+	var out technicalContext
+	for _, s := range snaps {
+		if s.SourceCode != "TECH_CONTEXT" {
+			continue
+		}
+		out.TechnicalNotes = strings.TrimSpace(firstStringFromAny(s.RawResponse["technical_notes"]))
+		out.RegulatoryNotes = strings.TrimSpace(firstStringFromAny(s.RawResponse["regulatory_notes"]))
+		out.MaintenanceNotes = strings.TrimSpace(firstStringFromAny(s.RawResponse["maintenance_notes"]))
+		return out
+	}
+	return out
+}
+
+func summarizeScoringDrivers(e scoringEvidenceProfile) string {
+	var drivers []string
+	if e.HasLiveFPDS {
+		drivers = append(drivers, fmt.Sprintf("live federal awards present (count=%d)", e.LiveAwardCount))
+	} else if e.HasPrototypeFPDS {
+		drivers = append(drivers, "FPDS fallback/prototype evidence only (confidence penalty)")
+	} else {
+		drivers = append(drivers, "no FPDS award evidence returned")
+	}
+	if e.HasLiveGSA {
+		drivers = append(drivers, fmt.Sprintf("live GSA pricing rows=%d", e.GSAPriceCount))
+	} else {
+		drivers = append(drivers, "no live GSA pricing rows")
+	}
+	if e.HasETS {
+		drivers = append(drivers, fmt.Sprintf("ETS cross-reference rows=%d", e.ETSMatchedRows))
+	}
+	if e.HasWebSearchIntel {
+		drivers = append(drivers, fmt.Sprintf("external web intelligence references=%d", e.WebSearchResultCount))
+	}
+	if e.HasAbilityOne {
+		drivers = append(drivers, "AbilityOne program evidence detected")
+	}
+	if len(drivers) == 0 {
+		return "insufficient evidence to determine score drivers"
+	}
+	return strings.Join(drivers, "; ") + "."
+}
+
+func describeFSC(fsc string) string {
+	switch fsc {
+	case "7340":
+		return "Cutlery and Flatware"
+	case "7920":
+		return "Cleaning Equipment and Supplies"
+	case "7930":
+		return "Cleaning Compounds and Preparations"
+	case "7520":
+		return "Office Devices and Accessories"
+	case "7530":
+		return "Stationery and Record Forms"
+	case "8105":
+		return "Bags and Sacks"
+	case "8540":
+		return "Toilet and Facial Tissues"
+	case "8415":
+		return "Clothing, Special Purpose"
+	case "7125":
+		return "Cabinets, Lockers, Bins, and Shelving"
+	case "5180":
+		return "Sets, Kits, and Outfits of Hand Tools"
+	case "7220":
+		return "Floor Coverings"
+	case "4510":
+		return "Plumbing Fixtures and Accessories"
+	default:
+		return "Federal supply class"
+	}
+}
+
+func truncateSentence(s string, max int) string {
+	s = strings.TrimSpace(strings.ReplaceAll(s, "\n", " "))
+	if s == "" || len(s) <= max {
+		return s
+	}
+	return strings.TrimSpace(s[:max-3]) + "..."
+}
+
+func buildOverallPositionStatement(result *models.InsightResult, e scoringEvidenceProfile, ao abilityOneContext, web webSearchIntelSignal) string {
+	position := "Mixed"
+	switch {
+	case result.SourcingAttractiveness >= 70 && result.SupplyRisk <= 40:
+		position = "Favorable"
+	case result.SupplyRisk >= 75:
+		position = "Risk-elevated"
+	case result.SourcingAttractiveness <= 30:
+		position = "Low-confidence / low-attractiveness"
+	}
+
+	var qualifiers []string
+	if ao.MandatoryNote != "" {
+		qualifiers = append(qualifiers, "mandatory-source or program-driven demand context is present")
+	}
+	if e.HasLiveFPDS {
+		qualifiers = append(qualifiers, "live award evidence supports demand interpretation")
+	} else {
+		qualifiers = append(qualifiers, "live award evidence is limited, increasing uncertainty")
+	}
+	if e.HasETS {
+		qualifiers = append(qualifiers, "ETS cross-reference depth improves commercial visibility")
+	}
+	if e.HasWebSearchIntel {
+		qualifiers = append(qualifiers, fmt.Sprintf("external intelligence layer captured %d references", web.ResultCount))
+	}
+	if len(qualifiers) == 0 {
+		qualifiers = append(qualifiers, "position is based on sparse multi-source evidence")
+	}
+
+	return fmt.Sprintf("%s position for this NSN. %s.", position, strings.Join(qualifiers, "; "))
 }
 
 // enrichSupplierAndDemandForSpecialNSNs provides much richer, time-bounded data
