@@ -82,6 +82,7 @@ func Synthesize(ctx context.Context, entityID string, snapshots []models.DataSna
 			break
 		}
 	}
+
 	if result.ItemName == "" {
 		// Secondary fallback: AbilityOne ETS cross-reference descriptions
 		for _, s := range snapshots {
@@ -140,6 +141,26 @@ func Synthesize(ctx context.Context, entityID string, snapshots []models.DataSna
 	}
 	if rich.AnalystRecommendation != "" {
 		result.AnalystRecommendation = rich.AnalystRecommendation
+	}
+	evidence := collectScoringEvidence(snapshots)
+	if evidence.HasPartsBase {
+		result.Citations = appendUniqueString(result.Citations, "PartsBase market-pricing API (live)")
+		result.MarketCommentary = appendUniqueSentence(
+			result.MarketCommentary,
+			fmt.Sprintf(
+				"PartsBase contributed %d live pricing/offer signal(s) across %d supplier(s) for additional market triangulation.",
+				evidence.PartsBaseResultCount,
+				evidence.PartsBaseSupplierCount,
+			),
+		)
+		result.KeyInsights = appendUniqueInsight(
+			result.KeyInsights,
+			fmt.Sprintf(
+				"PartsBase evidence: %d live pricing/offer signal(s) across %d supplier(s).",
+				evidence.PartsBaseResultCount,
+				evidence.PartsBaseSupplierCount,
+			),
+		)
 	}
 	// Preserve curated demo enrichment for the Examples row while keeping non-demo NSNs on live/transparent paths.
 	if isDemoNSN(entityID) {
@@ -956,18 +977,21 @@ func calculateRiskLegacy(snaps []models.DataSnapshot) (float64, []models.RiskFla
 }
 
 type scoringEvidenceProfile struct {
-	HasLiveFPDS      bool
-	HasPrototypeFPDS bool
-	LiveAwardCount   int
-	HasLiveGSA       bool
-	GSAPriceCount    int
-	HasETS           bool
-	ETSMatchedRows   int
-	HasAbilityOne    bool
+	HasLiveFPDS              bool
+	HasPrototypeFPDS         bool
+	LiveAwardCount           int
+	HasLiveGSA               bool
+	GSAPriceCount            int
+	HasETS                   bool
+	ETSMatchedRows           int
+	HasPartsBase             bool
+	PartsBaseResultCount     int
+	PartsBaseSupplierCount   int
+	HasAbilityOne            bool
 	HasWebSearchIntel            bool
 	WebSearchResultCount         int
 	WebSearchProcurementDomains  int
-	LiveSignalCount  int
+	LiveSignalCount          int
 }
 
 func calculateViabilityFromEvidence(snaps []models.DataSnapshot) float64 {
@@ -989,6 +1013,12 @@ func calculateViabilityFromEvidence(snaps []models.DataSnapshot) float64 {
 	}
 	if e.HasETS {
 		score += 8 + math.Min(8, float64(e.ETSMatchedRows)/15.0)
+	}
+	if e.HasPartsBase {
+		score += 7 + math.Min(6, float64(e.PartsBaseResultCount)/2.0)
+		if e.PartsBaseSupplierCount > 0 {
+			score += math.Min(3, float64(e.PartsBaseSupplierCount)/2.0)
+		}
 	}
 	if e.HasAbilityOne {
 		score += 7
@@ -1059,6 +1089,14 @@ func calculateRiskFromEvidence(snaps []models.DataSnapshot) (float64, []models.R
 	if e.HasETS {
 		risk -= 4
 	}
+	if e.HasPartsBase {
+		risk -= 5
+		if e.PartsBaseSupplierCount >= 3 {
+			risk -= 2
+		}
+	} else {
+		risk += 2
+	}
 	if e.HasWebSearchIntel {
 		risk -= 4
 		if e.WebSearchProcurementDomains > 0 {
@@ -1073,9 +1111,9 @@ func calculateRiskFromEvidence(snaps []models.DataSnapshot) (float64, []models.R
 		flags = append(flags, models.RiskFlag{
 			Type:        "data_quality",
 			Severity:    "high",
-			Description: "No live pricing, award, ETS, or web-intelligence evidence is available for this NSN.",
+			Description: "No live pricing, award, ETS, PartsBase, or web-intelligence evidence is available for this NSN.",
 			Implication: "Treat this result as preliminary and gather additional source evidence before committing significant volume.",
-			SourceCodes: []string{"FPDS", "GSA_ADVANTAGE", "ABILITYONE_ETS", "WEB_SEARCH_INTEL"},
+			SourceCodes: []string{"FPDS", "GSA_ADVANTAGE", "ABILITYONE_ETS", "PARTSBASE", "WEB_SEARCH_INTEL"},
 		})
 	}
 
@@ -1107,6 +1145,20 @@ func collectScoringEvidence(snaps []models.DataSnapshot) scoringEvidenceProfile 
 				e.HasETS = true
 				e.ETSMatchedRows = maxInt(e.ETSMatchedRows, rows)
 			}
+		case "PARTSBASE":
+			resultCount := intFromAny(s.RawResponse["result_count"])
+			if resultCount == 0 {
+				resultCount = len(mapSliceFromAny(s.RawResponse["price_signals"]))
+			}
+			supplierCount := intFromAny(s.RawResponse["supplier_count"])
+			if supplierCount == 0 {
+				supplierCount = len(toStringSlice(s.RawResponse["suppliers"]))
+			}
+			if resultCount > 0 || supplierCount > 0 {
+				e.HasPartsBase = true
+				e.PartsBaseResultCount = maxInt(e.PartsBaseResultCount, resultCount)
+				e.PartsBaseSupplierCount = maxInt(e.PartsBaseSupplierCount, supplierCount)
+			}
 		case "ABILITYONE":
 			if strings.TrimSpace(firstStringFromAny(s.RawResponse["producing_npa"])) != "" {
 				e.HasAbilityOne = true
@@ -1131,6 +1183,9 @@ func collectScoringEvidence(snaps []models.DataSnapshot) scoringEvidenceProfile 
 		e.LiveSignalCount++
 	}
 	if e.HasETS {
+		e.LiveSignalCount++
+	}
+	if e.HasPartsBase {
 		e.LiveSignalCount++
 	}
 	if e.HasWebSearchIntel {
@@ -1175,6 +1230,17 @@ func isLiveSnapshotForScoring(s models.DataSnapshot) bool {
 		return len(mapSliceFromAny(s.RawResponse["prices_found"])) > 0
 	case "ABILITYONE_ETS":
 		return intFromAny(s.RawResponse["matched_rows_count"]) > 0
+	case "PARTSBASE":
+		if intFromAny(s.RawResponse["result_count"]) > 0 {
+			return true
+		}
+		if intFromAny(s.RawResponse["supplier_count"]) > 0 {
+			return true
+		}
+		if len(mapSliceFromAny(s.RawResponse["price_signals"])) > 0 {
+			return true
+		}
+		return len(toStringSlice(s.RawResponse["suppliers"])) > 0
 	case "WEB_SEARCH_INTEL":
 		if intFromAny(s.RawResponse["result_count"]) > 0 {
 			return true
@@ -2273,6 +2339,25 @@ func buildDynamicFullReport(entityID string, viability, risk float64, flags []mo
 		gsaPricingSection = "No current GSA Advantage (ADV.JWOD) listings found for this NSN via live scrape.\n"
 	}
 
+	partsBaseSignals := 0
+	partsBaseSuppliers := 0
+	partsBaseLastUpdated := ""
+	for _, s := range snaps {
+		if s.SourceCode != "PARTSBASE" {
+			continue
+		}
+		partsBaseSignals = intFromAny(s.RawResponse["result_count"])
+		if partsBaseSignals == 0 {
+			partsBaseSignals = len(mapSliceFromAny(s.RawResponse["price_signals"]))
+		}
+		partsBaseSuppliers = intFromAny(s.RawResponse["supplier_count"])
+		if partsBaseSuppliers == 0 {
+			partsBaseSuppliers = len(toStringSlice(s.RawResponse["suppliers"]))
+		}
+		partsBaseLastUpdated = strings.TrimSpace(firstStringFromAny(s.RawResponse["last_updated"]))
+		break
+	}
+
 	// Detect if we have real USAspending data for this run
 	liveNote := ""
 	for _, s := range snaps {
@@ -2302,6 +2387,14 @@ QUANTITATIVE HIGHLIGHTS
 
 	// Prominent GSA pricing block right after the numbers (real data when present)
 	fmt.Fprintf(&b, "REAL-TIME PRICING (GSA Advantage JWOD scrape)\n%s\n", gsaPricingSection)
+	if partsBaseSignals > 0 {
+		partsBaseLine := fmt.Sprintf("PARTSBASE MARKET PRICING (live API)\n- Pricing/offer signals: %d\n- Supplier count: %d\n", partsBaseSignals, partsBaseSuppliers)
+		if partsBaseLastUpdated != "" {
+			partsBaseLine += fmt.Sprintf("- Last updated: %s\n", partsBaseLastUpdated)
+		}
+		partsBaseLine += "Source: PartsBase market-pricing API feed.\n"
+		fmt.Fprintf(&b, "%s\n", partsBaseLine)
+	}
 
 	// Dedicated AbilityOne / Mandatory Source section when real program data is present
 	if abilityOneNote != "" || producingNPA != "" {
@@ -2421,7 +2514,7 @@ OVERALL CONFIDENCE: Medium (synthesis with live award + pricing feeds + catalog 
 This report incorporates live USAspending award aggregates%s and real GSA Advantage JWOD pricing where available. All numbers and agencies reflect the latest public data pull at generation time.
 
 SOURCES & METHODOLOGY
-USAspending award data (live public API) • GSA Advantage pricing (direct form POST + HTML scrape, ADV.JWOD) • AbilityOne program data (PLIMS / DLA MPL patterns / Federal Register) • WebFLIS item master • Program/socio-economic and technical context layers.`, liveNote)
+USAspending award data (live public API) • GSA Advantage pricing (direct form POST + HTML scrape, ADV.JWOD) • PartsBase market-pricing API (live, when available) • AbilityOne program data (PLIMS / DLA MPL patterns / Federal Register) • WebFLIS item master • Program/socio-economic and technical context layers.`, liveNote)
 
 	return b.String()
 }
@@ -3237,6 +3330,9 @@ func buildCardAnalystRecommendation(existing string, result *models.InsightResul
 	case "medium":
 		recommendation = appendUniqueSentence(recommendation, "Concentration is moderate; maintain dual-source validation and refresh producer capacity checks ahead of surge periods.")
 	}
+	if evidence.HasPartsBase {
+		recommendation = appendUniqueSentence(recommendation, fmt.Sprintf("Use %d PartsBase market-pricing signal(s) across %d supplier(s) to benchmark condition-code pricing before award.", evidence.PartsBaseResultCount, evidence.PartsBaseSupplierCount))
+	}
 
 	if web.ResultCount > 0 {
 		recommendation = appendUniqueSentence(recommendation, fmt.Sprintf("Leverage %d external references from this run to validate lead-time and pricing assumptions.", web.ResultCount))
@@ -3278,6 +3374,9 @@ func enrichKeyInsightsForCards(existing []string, result *models.InsightResult, 
 
 	if ets.MatchedRows > 0 {
 		highlights = append(highlights, fmt.Sprintf("ETS intelligence mapped %d cross-reference row(s), %d manufacturer(s), and %d SKU(s), expanding substitution and continuity visibility.", ets.MatchedRows, maxInt(ets.UniqueManufacturerCt, len(ets.Manufacturers)), ets.UniqueSKUCt))
+	}
+	if evidence.HasPartsBase {
+		highlights = append(highlights, fmt.Sprintf("PartsBase market pricing contributed %d live pricing/offer signal(s) across %d supplier(s).", evidence.PartsBaseResultCount, evidence.PartsBaseSupplierCount))
 	}
 
 	if web.ResultCount > 0 {
@@ -3416,6 +3515,9 @@ func buildFlagImplicationAddition(flag models.RiskFlag, result *models.InsightRe
 		}
 		if !evidence.HasETS {
 			missing = append(missing, "ETS cross-reference rows")
+		}
+		if !evidence.HasPartsBase {
+			missing = append(missing, "PartsBase market pricing")
 		}
 		if len(missing) > 0 {
 			return "Missing evidence layers in this run: " + strings.Join(missing, ", ") + "; rerun those extracts before high-value commitments."
@@ -3887,6 +3989,9 @@ func summarizeScoringDrivers(e scoringEvidenceProfile) string {
 	}
 	if e.HasETS {
 		drivers = append(drivers, fmt.Sprintf("ETS cross-reference rows=%d", e.ETSMatchedRows))
+	}
+	if e.HasPartsBase {
+		drivers = append(drivers, fmt.Sprintf("PartsBase live pricing signals=%d (suppliers=%d)", e.PartsBaseResultCount, e.PartsBaseSupplierCount))
 	}
 	if e.HasWebSearchIntel {
 		drivers = append(drivers, fmt.Sprintf("external web intelligence references=%d", e.WebSearchResultCount))

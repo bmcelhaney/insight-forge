@@ -35,7 +35,14 @@ func main() {
 	}
 
 	samAPIKey := strings.TrimSpace(os.Getenv("SAM_API_KEY"))
-	extractorReg := extraction.NewDefaultRegistry(samAPIKey)
+	partsBaseCfg := extraction.PartsBaseConfig{
+		Enabled:           cfg.PartsBaseEnabled,
+		APIKey:            cfg.PartsBaseAPIKey,
+		BaseURL:           cfg.PartsBaseBaseURL,
+		MarketPricingPath: cfg.PartsBaseMarketPricingPath,
+		TimeoutSeconds:    cfg.PartsBaseTimeoutSeconds,
+	}
+	extractorReg := extraction.NewDefaultRegistry(samAPIKey, partsBaseCfg)
 
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
@@ -145,6 +152,27 @@ func main() {
 			"data_source":    dataSource,
 			"fpds_snapshots": snaps,
 			"note":           "data_source will be 'live_usaspending' (real) or 'prototype'. SAM.gov path is currently disabled.",
+		})
+	})
+
+	// Debug endpoint for PartsBase market-pricing data
+	r.Get("/debug/partsbase/{nsn}", func(w http.ResponseWriter, r *http.Request) {
+		nsn := chi.URLParam(r, "nsn")
+		snaps, _ := extractorReg.FetchAll(r.Context(), nsn, []string{"PARTSBASE"}, nil)
+
+		dataSource := "unavailable"
+		if len(snaps) > 0 {
+			if ds, ok := snaps[0].RawResponse["data_source"].(string); ok && ds != "" {
+				dataSource = ds
+			}
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"nsn":                 nsn,
+			"data_source":         dataSource,
+			"partsbase_snapshots": snaps,
+			"partsbase_enabled":   cfg.PartsBaseEnabled,
 		})
 	})
 

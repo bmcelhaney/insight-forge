@@ -14,8 +14,9 @@ type Registry struct {
 }
 
 // NewDefaultRegistry returns the standard set of extractors for Insight Forge.
-// Pass a non-empty samAPIKey to enable real SAM.gov FPDS calls.
-func NewDefaultRegistry(samAPIKey string) *Registry {
+// Pass a non-empty samAPIKey to enable SAM-backed FPDS behavior.
+// PartsBase is registered when enabled and configured with a key.
+func NewDefaultRegistry(samAPIKey string, partsBaseCfg PartsBaseConfig) *Registry {
 	r := &Registry{
 		extractors: make(map[string]Extractor),
 	}
@@ -56,6 +57,12 @@ func NewDefaultRegistry(samAPIKey string) *Registry {
 	// Live web-search intelligence layer for deeper non-demo NSN insights.
 	wi := NewWebSearchIntelExtractor()
 	r.extractors[wi.SourceCode()] = wi
+
+	// PartsBase market-pricing intelligence (feature-toggled, key-gated).
+	if partsBaseCfg.Enabled && strings.TrimSpace(partsBaseCfg.APIKey) != "" {
+		pb := NewPartsBaseExtractor(partsBaseCfg)
+		r.extractors[pb.SourceCode()] = pb
+	}
 
 	// Future: MCRL, SAM.gov, historical award feeds, technical manuals, bulk PUB LOG integration, etc.
 	return r

@@ -17,6 +17,7 @@ Insight Forge uses a simple, maintainable Go + static frontend architecture opti
 2. `Extractor` registry runs multiple sources in parallel:
    - USAspending (live award aggregates)
    - GSA Advantage (direct JWOD form POST + HTML scrape)
+   - PartsBase market-pricing API (live supplier and condition-code price signals)
    - WebFLIS
    - Curated high-fidelity AbilityOne map (strongest signal for many items)
    - OFAC sanctions

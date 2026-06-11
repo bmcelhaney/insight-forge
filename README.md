@@ -40,7 +40,7 @@ Open http://localhost:8080
 
 - Pure Go backend using `chi`
 - Static single-file frontend (`static/index.html`) with Tailwind CDN + vanilla JavaScript + Chart.js
-- Parallel extractors pulling from USAspending, GSA Advantage (direct scrape), WebFLIS, a curated high-fidelity AbilityOne map, and the AbilityOne ETS spreadsheet cross-reference (`docs/20260701 AbilityOne ETS File.xlsx`) for SKU/UPC/manufacturer enrichment
+- Parallel extractors pulling from USAspending, GSA Advantage (direct scrape), WebFLIS, PartsBase market-pricing data, a curated high-fidelity AbilityOne map, and the AbilityOne ETS spreadsheet cross-reference (`docs/20260701 AbilityOne ETS File.xlsx`) for SKU/UPC/manufacturer enrichment
 - Central synthesis engine that produces:
   - Dynamic Sourcing Attractiveness & Supply Risk scores (with traffic-light coloring)
   - Key Insights
