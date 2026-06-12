@@ -29,6 +29,7 @@ go.work.sum
 .env
 .env.local
 .env.*.local
+.env.partsbase
 
 # Data (DuckDB files are the source of truth but large)
 data/*.duckdb

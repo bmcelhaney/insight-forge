@@ -1058,6 +1058,15 @@ func calculateRiskFromEvidence(snaps []models.DataSnapshot) (float64, []models.R
 		if e.LiveAwardCount >= 25 {
 			risk -= 4
 		}
+	} else if e.HasPartsBase {
+		risk += 6
+		flags = append(flags, models.RiskFlag{
+			Type:        "data_quality",
+			Severity:    "medium",
+			Description: "Live USAspending award rows were not returned; PartsBase GovData procurement signals were used as alternate federal-market evidence.",
+			Implication: "Confidence is moderate until USAspending and PartsBase evidence are reconciled in the same run.",
+			SourceCodes: []string{"FPDS", "PARTSBASE"},
+		})
 	} else {
 		risk += 14
 		flags = append(flags, models.RiskFlag{
@@ -1070,14 +1079,25 @@ func calculateRiskFromEvidence(snaps []models.DataSnapshot) (float64, []models.R
 	}
 
 	if e.HasPrototypeFPDS && !e.HasLiveFPDS {
-		risk += 16
-		flags = append(flags, models.RiskFlag{
-			Type:        "data_quality",
-			Severity:    "high",
-			Description: "FPDS data fell back to prototype mode for this NSN query.",
-			Implication: "Demand and score confidence are reduced until live USAspending evidence is returned.",
-			SourceCodes: []string{"FPDS"},
-		})
+		if e.HasPartsBase {
+			risk += 6
+			flags = append(flags, models.RiskFlag{
+				Type:        "data_quality",
+				Severity:    "medium",
+				Description: "FPDS data fell back to prototype mode; PartsBase GovData partially mitigates demand/supplier visibility.",
+				Implication: "Refresh live USAspending rows when possible to align federal-award totals with PartsBase signal coverage.",
+				SourceCodes: []string{"FPDS", "PARTSBASE"},
+			})
+		} else {
+			risk += 16
+			flags = append(flags, models.RiskFlag{
+				Type:        "data_quality",
+				Severity:    "high",
+				Description: "FPDS data fell back to prototype mode for this NSN query.",
+				Implication: "Demand and score confidence are reduced until live USAspending evidence is returned.",
+				SourceCodes: []string{"FPDS"},
+			})
+		}
 	}
 
 	if e.HasLiveGSA {
@@ -1347,6 +1367,11 @@ func buildSupplierView(snaps []models.DataSnapshot) models.SupplierView {
 			return view
 		}
 	}
+	if partsBase, ok := findPartsBaseSnapshot(snaps); ok {
+		if view, ok := buildSupplierViewFromPartsBase(partsBase); ok {
+			return view
+		}
+	}
 
 	for _, s := range snaps {
 		if s.SourceCode != "ABILITYONE" {
@@ -1396,6 +1421,29 @@ func findLiveFPDSSnapshot(snaps []models.DataSnapshot) (models.DataSnapshot, boo
 			continue
 		}
 		if strings.TrimSpace(firstStringFromAny(s.RawResponse["data_source"])) == "live_usaspending" {
+			return s, true
+		}
+	}
+	return models.DataSnapshot{}, false
+}
+
+func findPartsBaseSnapshot(snaps []models.DataSnapshot) (models.DataSnapshot, bool) {
+	for _, s := range snaps {
+		if s.SourceCode != "PARTSBASE" {
+			continue
+		}
+		if strings.TrimSpace(firstStringFromAny(s.RawResponse["data_source"])) == "partsbase_unavailable" {
+			continue
+		}
+		resultCount := intFromAny(s.RawResponse["result_count"])
+		supplierCount := intFromAny(s.RawResponse["supplier_count"])
+		if resultCount == 0 {
+			resultCount = len(mapSliceFromAny(s.RawResponse["price_signals"]))
+		}
+		if supplierCount == 0 {
+			supplierCount = len(dedupeTrimmedStrings(toStringSlice(s.RawResponse["suppliers"])))
+		}
+		if resultCount > 0 || supplierCount > 0 {
 			return s, true
 		}
 	}
@@ -1556,6 +1604,199 @@ func buildSupplierViewFromLiveFPDS(fpds models.DataSnapshot) (models.SupplierVie
 			totalAwards,
 		),
 		ContinuityAssessment: "Because USAspending keyword search returns a live sample rather than a complete historical time series, corroborate major sourcing decisions with direct award-history pulls and current producer capacity checks.",
+	}, true
+}
+
+func buildSupplierViewFromPartsBase(partsBase models.DataSnapshot) (models.SupplierView, bool) {
+	type supplierAggregate struct {
+		SignalCount int
+		TotalValue  float64
+		MostRecent  time.Time
+		HasRecent   bool
+	}
+	type supplierRank struct {
+		Name string
+		Agg  supplierAggregate
+	}
+
+	priceSignals := mapSliceFromAny(partsBase.RawResponse["price_signals"])
+	totalSignals := intFromAny(partsBase.RawResponse["result_count"])
+	if totalSignals == 0 {
+		totalSignals = len(priceSignals)
+	}
+	suppliers := dedupeTrimmedStrings(toStringSlice(partsBase.RawResponse["suppliers"]))
+	supplierCount := intFromAny(partsBase.RawResponse["supplier_count"])
+	if supplierCount == 0 {
+		supplierCount = len(suppliers)
+	}
+	if totalSignals == 0 && supplierCount == 0 {
+		return models.SupplierView{}, false
+	}
+
+	aggregates := make(map[string]supplierAggregate)
+	minDate := time.Time{}
+	maxDate := time.Time{}
+	hasDate := false
+	totalSignalRows := 0
+	totalValue := 0.0
+
+	for _, signal := range priceSignals {
+		supplier := strings.TrimSpace(firstStringFromAny(signal["supplier"]))
+		if supplier == "" {
+			supplier = strings.TrimSpace(firstStringFromAny(signal["manufacturer"]))
+		}
+		if supplier == "" {
+			continue
+		}
+		agg := aggregates[supplier]
+		agg.SignalCount++
+		totalSignalRows++
+
+		quantity := intFromAny(signal["quantity"])
+		if quantity <= 0 {
+			quantity = 1
+		}
+		unitPrice := toFloatFromAny(signal["unit_price"])
+		if unitPrice == 0 {
+			unitPrice = toFloatFromAny(signal["max_unit_price"])
+		}
+		if unitPrice == 0 {
+			unitPrice = toFloatFromAny(signal["min_unit_price"])
+		}
+		if unitPrice > 0 {
+			extended := unitPrice * float64(quantity)
+			agg.TotalValue += extended
+			totalValue += extended
+		}
+
+		awardDate := strings.TrimSpace(firstStringFromAny(signal["award_date"]))
+		if awardDate == "" {
+			awardDate = strings.TrimSpace(firstStringFromAny(signal["last_updated"]))
+		}
+		if dt, ok := parseAwardDate(awardDate); ok {
+			if !agg.HasRecent || dt.After(agg.MostRecent) {
+				agg.MostRecent = dt
+				agg.HasRecent = true
+			}
+			if !hasDate || dt.Before(minDate) {
+				minDate = dt
+			}
+			if !hasDate || dt.After(maxDate) {
+				maxDate = dt
+			}
+			hasDate = true
+		}
+
+		aggregates[supplier] = agg
+	}
+
+	if len(aggregates) == 0 {
+		if len(suppliers) == 0 {
+			return models.SupplierView{}, false
+		}
+		equalShare := 100.0 / float64(len(suppliers))
+		top := make([]models.SupplierSummary, 0, min(6, len(suppliers)))
+		for i, supplier := range suppliers {
+			if i >= 6 {
+				break
+			}
+			top = append(top, models.SupplierSummary{
+				Name:         supplier,
+				SharePercent: equalShare,
+			})
+		}
+		if supplierCount == 0 {
+			supplierCount = len(suppliers)
+		}
+		awardPeriod := "PartsBase GovData procurement signals (live API sample)"
+		if lastUpdated := strings.TrimSpace(firstStringFromAny(partsBase.RawResponse["last_updated"])); lastUpdated != "" {
+			awardPeriod = fmt.Sprintf("Through %s (PartsBase GovData procurement signals)", lastUpdated)
+		}
+		return models.SupplierView{
+			TotalSuppliers:    supplierCount,
+			TopSuppliers:      top,
+			ConcentrationRisk: classifyLiveSupplierConcentration(supplierCount, equalShare),
+			AwardPeriod:       awardPeriod,
+			EcosystemNote: fmt.Sprintf(
+				"USAspending recipient-award rows were not returned; supplier ecosystem is derived from %d PartsBase GovData procurement signal(s) across %d supplier(s).",
+				maxInt(totalSignals, len(priceSignals)),
+				supplierCount,
+			),
+			ContinuityAssessment: "PartsBase supplier coverage improves market visibility, but cross-source reconciliation with refreshed USAspending rows is still recommended before major volume commitments.",
+		}, true
+	}
+
+	ranked := make([]supplierRank, 0, len(aggregates))
+	for name, agg := range aggregates {
+		ranked = append(ranked, supplierRank{Name: name, Agg: agg})
+	}
+	sort.Slice(ranked, func(i, j int) bool {
+		if ranked[i].Agg.SignalCount == ranked[j].Agg.SignalCount {
+			if ranked[i].Agg.TotalValue == ranked[j].Agg.TotalValue {
+				return ranked[i].Name < ranked[j].Name
+			}
+			return ranked[i].Agg.TotalValue > ranked[j].Agg.TotalValue
+		}
+		return ranked[i].Agg.SignalCount > ranked[j].Agg.SignalCount
+	})
+
+	denominator := totalSignalRows
+	if denominator == 0 {
+		denominator = totalSignals
+	}
+	if denominator <= 0 {
+		denominator = len(ranked)
+	}
+
+	topSuppliers := make([]models.SupplierSummary, 0, min(6, len(ranked)))
+	topShare := 0.0
+	for i, entry := range ranked {
+		if i >= 6 {
+			break
+		}
+		share := 0.0
+		if denominator > 0 {
+			share = (float64(entry.Agg.SignalCount) / float64(denominator)) * 100
+		}
+		if i == 0 {
+			topShare = share
+		}
+		recent := ""
+		if entry.Agg.HasRecent {
+			recent = entry.Agg.MostRecent.Format("2006-01")
+		}
+		topSuppliers = append(topSuppliers, models.SupplierSummary{
+			Name:            entry.Name,
+			AwardCount:      entry.Agg.SignalCount,
+			TotalValue:      entry.Agg.TotalValue,
+			SharePercent:    share,
+			MostRecentAward: recent,
+		})
+	}
+
+	if supplierCount == 0 {
+		supplierCount = len(ranked)
+	}
+
+	awardPeriod := "PartsBase GovData procurement signals (live API sample)"
+	if hasDate {
+		awardPeriod = fmt.Sprintf("%s – %s (PartsBase GovData signal sample)", minDate.Format("Jan 2006"), maxDate.Format("Jan 2006"))
+	} else if lastUpdated := strings.TrimSpace(firstStringFromAny(partsBase.RawResponse["last_updated"])); lastUpdated != "" {
+		awardPeriod = fmt.Sprintf("Through %s (PartsBase GovData procurement signals)", lastUpdated)
+	}
+
+	return models.SupplierView{
+		TotalSuppliers:         supplierCount,
+		TopSuppliers:           topSuppliers,
+		ConcentrationRisk:      classifyLiveSupplierConcentration(supplierCount, topShare),
+		AwardPeriod:            awardPeriod,
+		TopSuppliersTotalValue: totalValue,
+		EcosystemNote: fmt.Sprintf(
+			"USAspending recipient-award rows were not returned; supplier view is built from %d PartsBase GovData procurement signal(s) across %d supplier(s).",
+			maxInt(totalSignals, totalSignalRows),
+			supplierCount,
+		),
+		ContinuityAssessment: "PartsBase supplier-level signal depth is strong for this run. Confirm capacity and lead-time assumptions with producer outreach and reconcile with USAspending when available.",
 	}, true
 }
 
@@ -1988,6 +2229,11 @@ func buildDemandSignals(snaps []models.DataSnapshot) models.DemandSignals {
 	if fpds, ok := findLiveFPDSSnapshot(snaps); ok {
 		return buildDemandSignalsFromLiveFPDS(fpds, snaps)
 	}
+	if partsBase, ok := findPartsBaseSnapshot(snaps); ok {
+		if demand, ok := buildDemandSignalsFromPartsBase(partsBase, snaps); ok {
+			return demand
+		}
+	}
 
 	for _, s := range snaps {
 		if s.SourceCode != "ABILITYONE" {
@@ -2076,6 +2322,110 @@ func buildDemandSignalsFromLiveFPDS(fpds models.DataSnapshot, snaps []models.Dat
 		PeakPeriods:         peakPeriods,
 		DemandNote:          demandNote,
 	}
+}
+
+func buildDemandSignalsFromPartsBase(partsBase models.DataSnapshot, snaps []models.DataSnapshot) (models.DemandSignals, bool) {
+	priceSignals := mapSliceFromAny(partsBase.RawResponse["price_signals"])
+	signalCount := intFromAny(partsBase.RawResponse["result_count"])
+	if signalCount == 0 {
+		signalCount = len(priceSignals)
+	}
+	supplierCount := intFromAny(partsBase.RawResponse["supplier_count"])
+	if supplierCount == 0 {
+		supplierCount = len(dedupeTrimmedStrings(toStringSlice(partsBase.RawResponse["suppliers"])))
+	}
+	if signalCount == 0 && supplierCount == 0 {
+		return models.DemandSignals{}, false
+	}
+
+	estimatedValue := 0.0
+	minDate := time.Time{}
+	maxDate := time.Time{}
+	hasDate := false
+	for _, signal := range priceSignals {
+		quantity := intFromAny(signal["quantity"])
+		if quantity <= 0 {
+			quantity = 1
+		}
+		unitPrice := toFloatFromAny(signal["unit_price"])
+		if unitPrice == 0 {
+			unitPrice = toFloatFromAny(signal["max_unit_price"])
+		}
+		if unitPrice == 0 {
+			unitPrice = toFloatFromAny(signal["min_unit_price"])
+		}
+		if unitPrice > 0 {
+			estimatedValue += unitPrice * float64(quantity)
+		}
+
+		awardDate := strings.TrimSpace(firstStringFromAny(signal["award_date"]))
+		if awardDate == "" {
+			awardDate = strings.TrimSpace(firstStringFromAny(signal["last_updated"]))
+		}
+		if dt, ok := parseAwardDate(awardDate); ok {
+			if !hasDate || dt.Before(minDate) {
+				minDate = dt
+			}
+			if !hasDate || dt.After(maxDate) {
+				maxDate = dt
+			}
+			hasDate = true
+		}
+	}
+
+	awardPeriod := "PartsBase GovData procurement signals (live API sample)"
+	if hasDate {
+		awardPeriod = fmt.Sprintf("%s – %s (PartsBase GovData signal sample)", minDate.Format("Jan 2006"), maxDate.Format("Jan 2006"))
+	} else if lastUpdated := strings.TrimSpace(firstStringFromAny(partsBase.RawResponse["last_updated"])); lastUpdated != "" {
+		awardPeriod = fmt.Sprintf("Through %s (PartsBase GovData procurement signals)", lastUpdated)
+	}
+
+	programs := []string{"PartsBase GovData procurement signals"}
+	demandNote := fmt.Sprintf(
+		"USAspending live award totals were not returned for this NSN query. PartsBase GovData supplied %d procurement signal(s) across %d supplier(s), and that evidence is included in demand and supplier analysis.",
+		signalCount,
+		maxInt(supplierCount, 1),
+	)
+	if estimatedValue > 0 {
+		demandNote = appendUniqueSentence(
+			demandNote,
+			fmt.Sprintf("Estimated line-value coverage from returned PartsBase signal rows is %s (informational, not a USAspending obligation total).", formatUSDCompact(estimatedValue)),
+		)
+	}
+
+	for _, s := range snaps {
+		if s.SourceCode != "ABILITYONE" {
+			continue
+		}
+		if status := strings.TrimSpace(firstStringFromAny(s.RawResponse["program_status"])); status != "" {
+			programs = appendUniqueString(programs, "AbilityOne "+status)
+		} else {
+			programs = appendUniqueString(programs, "AbilityOne Program")
+		}
+		if abilityDemand := strings.TrimSpace(firstStringFromAny(s.RawResponse["demand_character"])); abilityDemand != "" {
+			demandNote = appendUniqueSentence(demandNote, "AbilityOne context: "+abilityDemand)
+		}
+		break
+	}
+
+	return models.DemandSignals{
+		TotalAwards:         signalCount,
+		TotalValueUSD:       estimatedValue,
+		TopAgencies:         nil,
+		RecentTrend:         "observed",
+		ProgramAssociations: programs,
+		AwardPeriod:         awardPeriod,
+		DemandNote:          demandNote,
+	}, true
+}
+
+func isPartsBaseDemandFallback(demand models.DemandSignals) bool {
+	for _, assoc := range demand.ProgramAssociations {
+		if strings.Contains(strings.ToLower(strings.TrimSpace(assoc)), "partsbase govdata") {
+			return true
+		}
+	}
+	return strings.Contains(strings.ToLower(demand.AwardPeriod), "partsbase")
 }
 
 func summarizeDemandTimeline(rows []map[string]any) (awardPeriod, trend, yoyChange, peakPeriods string) {
@@ -2360,12 +2710,22 @@ func buildDynamicFullReport(entityID string, viability, risk float64, flags []mo
 
 	// Detect if we have real USAspending data for this run
 	liveNote := ""
+	hasLiveFPDS := false
 	for _, s := range snaps {
 		if s.SourceCode == "FPDS" {
 			if ds, ok := s.RawResponse["data_source"].(string); ok && ds == "live_usaspending" {
+				hasLiveFPDS = true
 				liveNote = " (LIVE from USAspending.gov public API)"
 				break
 			}
+		}
+	}
+	observedVolumeLine := fmt.Sprintf("Observed volume: %d awards | ~$%.1fM", demand.TotalAwards, float64(demand.TotalValueUSD)/1000000)
+	if isPartsBaseDemandFallback(demand) {
+		if demand.TotalValueUSD > 0 {
+			observedVolumeLine = fmt.Sprintf("Observed volume: %d PartsBase procurement signal(s) | estimated line-value ~$%.1fM", demand.TotalAwards, float64(demand.TotalValueUSD)/1000000)
+		} else {
+			observedVolumeLine = fmt.Sprintf("Observed volume: %d PartsBase procurement signal(s) (USAspending totals unavailable in this run)", demand.TotalAwards)
 		}
 	}
 
@@ -2377,12 +2737,12 @@ func buildDynamicFullReport(entityID string, viability, risk float64, flags []mo
 QUANTITATIVE HIGHLIGHTS
 - Sourcing Attractiveness: %.0f | Supply Risk: %.0f
 - Supplier base: %d vendors across %d countries | Concentration risk: %s
-- Observed volume: %d awards | ~$%.1fM
+- %s
 - Demand profile: %s
 
 `, entityID, itemName, fsc, liveNote, viability, risk,
 		suppliers.TotalSuppliers, len(suppliers.PrimaryCountries), suppliers.ConcentrationRisk,
-		demand.TotalAwards, float64(demand.TotalValueUSD)/1000000,
+		observedVolumeLine,
 		demand.DemandNote)
 
 	// Prominent GSA pricing block right after the numbers (real data when present)
@@ -2506,15 +2866,24 @@ RISK FLAGS & IMPLICATIONS
 		b.WriteString("- No high-severity flags identified from current data sources.\n")
 	}
 
+	confidenceLine := fmt.Sprintf("This report incorporates live USAspending award aggregates%s and real GSA Advantage JWOD pricing where available. All numbers and agencies reflect the latest public data pull at generation time.", liveNote)
+	if !hasLiveFPDS {
+		if partsBaseSignals > 0 {
+			confidenceLine = fmt.Sprintf("This report incorporates %d PartsBase GovData procurement signal(s) as alternate government-market evidence because live USAspending award rows were unavailable in this run.", partsBaseSignals)
+		} else {
+			confidenceLine = "Live USAspending award rows were unavailable in this run, so confidence is constrained by missing federal-award baseline data."
+		}
+	}
+
 	fmt.Fprintf(&b, `
 DATA GAPS & RECOMMENDED FOLLOW-UP
 Real-time capacity, sub-tier visibility, and exact current pricing beyond the GSA Advantage scrape are limited in public sources. For any material requirement, direct engagement with qualified sources is strongly advised.
 
 OVERALL CONFIDENCE: Medium (synthesis with live award + pricing feeds + catalog context)
-This report incorporates live USAspending award aggregates%s and real GSA Advantage JWOD pricing where available. All numbers and agencies reflect the latest public data pull at generation time.
+%s
 
 SOURCES & METHODOLOGY
-USAspending award data (live public API) • GSA Advantage pricing (direct form POST + HTML scrape, ADV.JWOD) • PartsBase GovData API (live, when available) • AbilityOne program data (PLIMS / DLA MPL patterns / Federal Register) • WebFLIS item master • Program/socio-economic and technical context layers.`, liveNote)
+USAspending award data (live public API) • GSA Advantage pricing (direct form POST + HTML scrape, ADV.JWOD) • PartsBase GovData API (live, when available) • AbilityOne program data (PLIMS / DLA MPL patterns / Federal Register) • WebFLIS item master • Program/socio-economic and technical context layers.`, confidenceLine)
 
 	return b.String()
 }
@@ -3266,7 +3635,16 @@ func buildExecutiveCardSummary(entityID string, result *models.InsightResult, ab
 		if window != "" {
 			windowText = " (" + window + ")"
 		}
-		parts = append(parts, fmt.Sprintf("Observed demand baseline: %d awards and %s in obligations%s.", result.DemandSignals.TotalAwards, formatUSDCompact(result.DemandSignals.TotalValueUSD), windowText))
+		if isPartsBaseDemandFallback(result.DemandSignals) {
+			parts = append(parts, fmt.Sprintf("Observed demand baseline: %d PartsBase government procurement signal(s)%s.", result.DemandSignals.TotalAwards, windowText))
+			if result.DemandSignals.TotalValueUSD > 0 {
+				parts = append(parts, fmt.Sprintf("Estimated line-value coverage from PartsBase signals is %s (informational, not a USAspending obligation total).", formatUSDCompact(result.DemandSignals.TotalValueUSD)))
+			}
+		} else {
+			parts = append(parts, fmt.Sprintf("Observed demand baseline: %d awards and %s in obligations%s.", result.DemandSignals.TotalAwards, formatUSDCompact(result.DemandSignals.TotalValueUSD), windowText))
+		}
+	} else if evidence.HasPartsBase {
+		parts = append(parts, fmt.Sprintf("USAspending award totals were unavailable in this run, but PartsBase contributed %d government procurement signal(s) across %d supplier(s).", evidence.PartsBaseResultCount, evidence.PartsBaseSupplierCount))
 	} else {
 		parts = append(parts, "No live USAspending award totals were returned in this run, so demand confidence is currently driven by non-award evidence layers.")
 	}
@@ -3319,7 +3697,16 @@ func buildCardAnalystRecommendation(existing string, result *models.InsightResul
 	}
 
 	if result.DemandSignals.TotalAwards > 0 || result.DemandSignals.TotalValueUSD > 0 {
-		recommendation = appendUniqueSentence(recommendation, fmt.Sprintf("Use the observed baseline of %d awards and %s to anchor order-sizing assumptions.", result.DemandSignals.TotalAwards, formatUSDCompact(result.DemandSignals.TotalValueUSD)))
+		if isPartsBaseDemandFallback(result.DemandSignals) {
+			recommendation = appendUniqueSentence(recommendation, fmt.Sprintf("Use the observed baseline of %d PartsBase government procurement signal(s) to anchor order-sizing assumptions while USAspending totals are unavailable.", result.DemandSignals.TotalAwards))
+			if result.DemandSignals.TotalValueUSD > 0 {
+				recommendation = appendUniqueSentence(recommendation, fmt.Sprintf("Estimated line-value coverage from PartsBase signals is %s (informational, not a USAspending obligation total).", formatUSDCompact(result.DemandSignals.TotalValueUSD)))
+			}
+		} else {
+			recommendation = appendUniqueSentence(recommendation, fmt.Sprintf("Use the observed baseline of %d awards and %s to anchor order-sizing assumptions.", result.DemandSignals.TotalAwards, formatUSDCompact(result.DemandSignals.TotalValueUSD)))
+		}
+	} else if evidence.HasPartsBase {
+		recommendation = appendUniqueSentence(recommendation, fmt.Sprintf("USAspending totals are currently unavailable; use %d PartsBase GovData procurement signal(s) across %d supplier(s) as interim federal-market evidence.", evidence.PartsBaseResultCount, evidence.PartsBaseSupplierCount))
 	} else if !evidence.HasLiveFPDS {
 		recommendation = appendUniqueSentence(recommendation, "Capture live USAspending award evidence before committing large or time-sensitive volume.")
 	}
@@ -3349,7 +3736,16 @@ func enrichKeyInsightsForCards(existing []string, result *models.InsightResult, 
 	var highlights []string
 
 	if result.DemandSignals.TotalAwards > 0 || result.DemandSignals.TotalValueUSD > 0 {
-		highlights = append(highlights, fmt.Sprintf("Observed live federal demand includes %d award(s) totaling %s in obligations for this run.", result.DemandSignals.TotalAwards, formatUSDCompact(result.DemandSignals.TotalValueUSD)))
+		if isPartsBaseDemandFallback(result.DemandSignals) {
+			highlights = append(highlights, fmt.Sprintf("USAspending live totals were unavailable in this run; PartsBase GovData surfaced %d government procurement signal(s) and that evidence is included in demand analysis.", result.DemandSignals.TotalAwards))
+			if result.DemandSignals.TotalValueUSD > 0 {
+				highlights = append(highlights, fmt.Sprintf("Estimated line-value coverage from PartsBase signal rows is %s (non-obligation estimate).", formatUSDCompact(result.DemandSignals.TotalValueUSD)))
+			}
+		} else {
+			highlights = append(highlights, fmt.Sprintf("Observed live federal demand includes %d award(s) totaling %s in obligations for this run.", result.DemandSignals.TotalAwards, formatUSDCompact(result.DemandSignals.TotalValueUSD)))
+		}
+	} else if evidence.HasPartsBase {
+		highlights = append(highlights, fmt.Sprintf("USAspending live totals were unavailable in this run, but PartsBase GovData returned %d procurement signal(s) across %d supplier(s).", evidence.PartsBaseResultCount, evidence.PartsBaseSupplierCount))
 	} else {
 		highlights = append(highlights, "No live USAspending award totals were returned in this run, so demand trends should be treated as lower confidence until refreshed.")
 	}
@@ -3443,7 +3839,11 @@ func enrichSupplierNarrativesForCards(result *models.InsightResult, abilityOne a
 	}
 
 	if !evidence.HasLiveFPDS {
-		supplier.ContinuityAssessment = appendUniqueSentence(supplier.ContinuityAssessment, "Live recipient-award coverage is incomplete in this run, so corroborate any high-value supplier commitments with direct award-history pulls.")
+		if evidence.HasPartsBase {
+			supplier.ContinuityAssessment = appendUniqueSentence(supplier.ContinuityAssessment, "Live recipient-award coverage is incomplete in this run, but PartsBase supplier signals are available; corroborate high-value commitments with refreshed USAspending pulls when possible.")
+		} else {
+			supplier.ContinuityAssessment = appendUniqueSentence(supplier.ContinuityAssessment, "Live recipient-award coverage is incomplete in this run, so corroborate any high-value supplier commitments with direct award-history pulls.")
+		}
 	}
 }
 
@@ -3455,10 +3855,19 @@ func enrichDemandNarrativesForCards(result *models.InsightResult, abilityOne abi
 		if window != "" {
 			windowText = " (" + window + ")"
 		}
-		demand.DemandNote = appendUniqueSentence(demand.DemandNote, fmt.Sprintf("Observed demand baseline in this run: %d awards and %s%s.", demand.TotalAwards, formatUSDCompact(demand.TotalValueUSD), windowText))
+		if isPartsBaseDemandFallback(*demand) {
+			demand.DemandNote = appendUniqueSentence(demand.DemandNote, fmt.Sprintf("Observed demand baseline in this run: %d PartsBase government procurement signal(s)%s.", demand.TotalAwards, windowText))
+			if demand.TotalValueUSD > 0 {
+				demand.DemandNote = appendUniqueSentence(demand.DemandNote, fmt.Sprintf("Estimated line-value coverage from PartsBase rows: %s (non-obligation estimate).", formatUSDCompact(demand.TotalValueUSD)))
+			}
+		} else {
+			demand.DemandNote = appendUniqueSentence(demand.DemandNote, fmt.Sprintf("Observed demand baseline in this run: %d awards and %s%s.", demand.TotalAwards, formatUSDCompact(demand.TotalValueUSD), windowText))
+		}
 		if len(demand.TopAgencies) > 0 {
 			demand.DemandNote = appendUniqueSentence(demand.DemandNote, "Highest-activity agencies in sample: "+summarizeStringList(demand.TopAgencies, 3)+".")
 		}
+	} else if evidence.HasPartsBase {
+		demand.DemandNote = appendUniqueSentence(demand.DemandNote, fmt.Sprintf("USAspending live totals were unavailable in this run; PartsBase provided %d procurement signal(s) across %d supplier(s).", evidence.PartsBaseResultCount, evidence.PartsBaseSupplierCount))
 	} else {
 		demand.DemandNote = appendUniqueSentence(demand.DemandNote, "No live USAspending award totals were returned; demand outlook should be treated as provisional until live award rows are available.")
 	}
@@ -3484,7 +3893,11 @@ func enrichDemandNarrativesForCards(result *models.InsightResult, abilityOne abi
 		demand.DemandNote = appendUniqueSentence(demand.DemandNote, "Program demand characterization: "+truncateSentence(abilityOne.DemandCharacter, 200))
 	}
 	if !evidence.HasLiveFPDS {
-		demand.DemandNote = appendUniqueSentence(demand.DemandNote, "Demand confidence is currently limited by missing live award evidence; prioritize a refreshed FPDS pull before strategic volume moves.")
+		if evidence.HasPartsBase {
+			demand.DemandNote = appendUniqueSentence(demand.DemandNote, "Demand confidence is moderate: PartsBase procurement signals are available, but a refreshed USAspending pull is still recommended for cross-source reconciliation.")
+		} else {
+			demand.DemandNote = appendUniqueSentence(demand.DemandNote, "Demand confidence is currently limited by missing live award evidence; prioritize a refreshed FPDS pull before strategic volume moves.")
+		}
 	}
 }
 
@@ -4061,6 +4474,8 @@ func buildOverallPositionStatement(result *models.InsightResult, e scoringEviden
 	}
 	if e.HasLiveFPDS {
 		qualifiers = append(qualifiers, "live award evidence supports demand interpretation")
+	} else if e.HasPartsBase {
+		qualifiers = append(qualifiers, "USAspending award rows were unavailable, but PartsBase GovData provides alternate procurement-signal evidence")
 	} else {
 		qualifiers = append(qualifiers, "live award evidence is limited, increasing uncertainty")
 	}
