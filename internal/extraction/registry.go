@@ -58,8 +58,8 @@ func NewDefaultRegistry(samAPIKey string, partsBaseCfg PartsBaseConfig) *Registr
 	wi := NewWebSearchIntelExtractor()
 	r.extractors[wi.SourceCode()] = wi
 
-	// PartsBase market-pricing intelligence (feature-toggled, key-gated).
-	if partsBaseCfg.Enabled && strings.TrimSpace(partsBaseCfg.APIKey) != "" {
+	// PartsBase GovData intelligence (feature-toggled, OAuth credential-gated).
+	if partsBaseCfg.Enabled && partsBaseCfg.HasCredentials() {
 		pb := NewPartsBaseExtractor(partsBaseCfg)
 		r.extractors[pb.SourceCode()] = pb
 	}

@@ -144,11 +144,11 @@ func Synthesize(ctx context.Context, entityID string, snapshots []models.DataSna
 	}
 	evidence := collectScoringEvidence(snapshots)
 	if evidence.HasPartsBase {
-		result.Citations = appendUniqueString(result.Citations, "PartsBase market-pricing API (live)")
+		result.Citations = appendUniqueString(result.Citations, "PartsBase GovData API (live)")
 		result.MarketCommentary = appendUniqueSentence(
 			result.MarketCommentary,
 			fmt.Sprintf(
-				"PartsBase contributed %d live pricing/offer signal(s) across %d supplier(s) for additional market triangulation.",
+				"PartsBase GovData contributed %d live procurement/pricing signal(s) across %d supplier(s) for additional market triangulation.",
 				evidence.PartsBaseResultCount,
 				evidence.PartsBaseSupplierCount,
 			),
@@ -156,7 +156,7 @@ func Synthesize(ctx context.Context, entityID string, snapshots []models.DataSna
 		result.KeyInsights = appendUniqueInsight(
 			result.KeyInsights,
 			fmt.Sprintf(
-				"PartsBase evidence: %d live pricing/offer signal(s) across %d supplier(s).",
+				"PartsBase GovData evidence: %d live procurement/pricing signal(s) across %d supplier(s).",
 				evidence.PartsBaseResultCount,
 				evidence.PartsBaseSupplierCount,
 			),
@@ -2388,11 +2388,11 @@ QUANTITATIVE HIGHLIGHTS
 	// Prominent GSA pricing block right after the numbers (real data when present)
 	fmt.Fprintf(&b, "REAL-TIME PRICING (GSA Advantage JWOD scrape)\n%s\n", gsaPricingSection)
 	if partsBaseSignals > 0 {
-		partsBaseLine := fmt.Sprintf("PARTSBASE MARKET PRICING (live API)\n- Pricing/offer signals: %d\n- Supplier count: %d\n", partsBaseSignals, partsBaseSuppliers)
+		partsBaseLine := fmt.Sprintf("PARTSBASE GOVERNMENT DATA (live API)\n- Procurement/pricing signals: %d\n- Supplier count: %d\n", partsBaseSignals, partsBaseSuppliers)
 		if partsBaseLastUpdated != "" {
 			partsBaseLine += fmt.Sprintf("- Last updated: %s\n", partsBaseLastUpdated)
 		}
-		partsBaseLine += "Source: PartsBase market-pricing API feed.\n"
+		partsBaseLine += "Source: PartsBase GovData API feed.\n"
 		fmt.Fprintf(&b, "%s\n", partsBaseLine)
 	}
 
@@ -2514,7 +2514,7 @@ OVERALL CONFIDENCE: Medium (synthesis with live award + pricing feeds + catalog 
 This report incorporates live USAspending award aggregates%s and real GSA Advantage JWOD pricing where available. All numbers and agencies reflect the latest public data pull at generation time.
 
 SOURCES & METHODOLOGY
-USAspending award data (live public API) • GSA Advantage pricing (direct form POST + HTML scrape, ADV.JWOD) • PartsBase market-pricing API (live, when available) • AbilityOne program data (PLIMS / DLA MPL patterns / Federal Register) • WebFLIS item master • Program/socio-economic and technical context layers.`, liveNote)
+USAspending award data (live public API) • GSA Advantage pricing (direct form POST + HTML scrape, ADV.JWOD) • PartsBase GovData API (live, when available) • AbilityOne program data (PLIMS / DLA MPL patterns / Federal Register) • WebFLIS item master • Program/socio-economic and technical context layers.`, liveNote)
 
 	return b.String()
 }
@@ -3331,7 +3331,7 @@ func buildCardAnalystRecommendation(existing string, result *models.InsightResul
 		recommendation = appendUniqueSentence(recommendation, "Concentration is moderate; maintain dual-source validation and refresh producer capacity checks ahead of surge periods.")
 	}
 	if evidence.HasPartsBase {
-		recommendation = appendUniqueSentence(recommendation, fmt.Sprintf("Use %d PartsBase market-pricing signal(s) across %d supplier(s) to benchmark condition-code pricing before award.", evidence.PartsBaseResultCount, evidence.PartsBaseSupplierCount))
+		recommendation = appendUniqueSentence(recommendation, fmt.Sprintf("Use %d PartsBase GovData signal(s) across %d supplier(s) to benchmark condition-code pricing before award.", evidence.PartsBaseResultCount, evidence.PartsBaseSupplierCount))
 	}
 
 	if web.ResultCount > 0 {
@@ -3376,7 +3376,7 @@ func enrichKeyInsightsForCards(existing []string, result *models.InsightResult, 
 		highlights = append(highlights, fmt.Sprintf("ETS intelligence mapped %d cross-reference row(s), %d manufacturer(s), and %d SKU(s), expanding substitution and continuity visibility.", ets.MatchedRows, maxInt(ets.UniqueManufacturerCt, len(ets.Manufacturers)), ets.UniqueSKUCt))
 	}
 	if evidence.HasPartsBase {
-		highlights = append(highlights, fmt.Sprintf("PartsBase market pricing contributed %d live pricing/offer signal(s) across %d supplier(s).", evidence.PartsBaseResultCount, evidence.PartsBaseSupplierCount))
+		highlights = append(highlights, fmt.Sprintf("PartsBase GovData contributed %d live procurement/pricing signal(s) across %d supplier(s).", evidence.PartsBaseResultCount, evidence.PartsBaseSupplierCount))
 	}
 
 	if web.ResultCount > 0 {
@@ -3517,7 +3517,7 @@ func buildFlagImplicationAddition(flag models.RiskFlag, result *models.InsightRe
 			missing = append(missing, "ETS cross-reference rows")
 		}
 		if !evidence.HasPartsBase {
-			missing = append(missing, "PartsBase market pricing")
+			missing = append(missing, "PartsBase GovData")
 		}
 		if len(missing) > 0 {
 			return "Missing evidence layers in this run: " + strings.Join(missing, ", ") + "; rerun those extracts before high-value commitments."

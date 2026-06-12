@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -12,55 +14,101 @@ func TestPartsBaseExtractorFetchSuccess(t *testing.T) {
 	t.Parallel()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got := r.Header.Get("Authorization"); got != "Bearer test-key" {
-			t.Fatalf("expected bearer auth header, got %q", got)
-		}
-		if got := r.URL.Query().Get("partNumber"); got == "" {
-			t.Fatalf("expected partNumber query param to be set")
-		}
+		switch r.URL.Path {
+		case "/connect/token":
+			if r.Method != http.MethodPost {
+				t.Fatalf("expected POST for token endpoint, got %s", r.Method)
+			}
+			if got := r.Header.Get("Content-Type"); !strings.Contains(got, "application/x-www-form-urlencoded") {
+				t.Fatalf("expected form encoded token request, got %q", got)
+			}
+			if err := r.ParseForm(); err != nil {
+				t.Fatalf("failed to parse form body: %v", err)
+			}
+			if got := r.Form.Get("grant_type"); got != "password" {
+				t.Fatalf("expected grant_type=password, got %q", got)
+			}
+			if got := r.Form.Get("client_id"); got != "client-id" {
+				t.Fatalf("expected client_id=client-id, got %q", got)
+			}
+			if got := r.Form.Get("client_secret"); got != "client-secret" {
+				t.Fatalf("expected client_secret=client-secret, got %q", got)
+			}
+			if got := r.Form.Get("username"); got != "user" {
+				t.Fatalf("expected username=user, got %q", got)
+			}
+			if got := r.Form.Get("password"); got != "pass" {
+				t.Fatalf("expected password=pass, got %q", got)
+			}
 
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"ValuesPerCode": []map[string]any{
-				{
-					"ConditionCode": "NE",
-					"MinUnitPrice":  12.5,
-					"MaxUnitPrice":  18.0,
-					"LastUpdated":   "2026-06-10",
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"access_token": "test-token",
+				"expires_in":   3600,
+				"token_type":   "Bearer",
+			})
+		case "/api/data/GovData":
+			if got := r.Header.Get("Authorization"); got != "Bearer test-token" {
+				t.Fatalf("expected bearer token auth header, got %q", got)
+			}
+			if got := r.URL.Query().Get("Filter"); got != "8415016107327" {
+				t.Fatalf("expected Filter query value, got %q", got)
+			}
+			if got := r.URL.Query().Get("Type"); got != "Nsn" {
+				t.Fatalf("expected Type=Nsn, got %q", got)
+			}
+			if got := r.URL.Query().Get("startDate"); got != "2000-01-01" {
+				t.Fatalf("expected startDate=2000-01-01, got %q", got)
+			}
+			if got := r.URL.Query()["Section"]; len(got) != 2 || !containsAll(got, []string{"Procurement", "NsnId"}) {
+				t.Fatalf("expected Section values [Procurement NsnId], got %v", got)
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"procurement": []map[string]any{
+					{
+						"unitPrice":  "15.25",
+						"vendor":     "Vendor A",
+						"contractNo": "SPE1M1-26-P-001",
+						"awardDate":  "2026/05",
+						"quantity":   "20",
+						"cage":       "1A2B3",
+					},
+					{
+						"unitPrice":  10.0,
+						"vendor":     "Vendor B",
+						"contractNo": "SPE1M1-26-P-002",
+						"awardDate":  "2026/04",
+						"quantity":   12,
+						"cage":       "4D5E6",
+					},
 				},
-				{
-					"ConditionCode": "SV",
-					"MinUnitPrice":  8.0,
-					"MaxUnitPrice":  11.0,
+				"nsnId": []map[string]any{
+					{"description": "TEST ITEM DESCRIPTION"},
 				},
-			},
-			"results": []map[string]any{
-				{
-					"SupplierName": "Vendor A",
-					"Manufacturer": "Acme Aero",
-					"PartNumber":   "PN-123",
-					"ConditionCode": "NE",
-					"UnitPrice":    15.25,
-					"UPC":          "123456789012",
-				},
-				{
-					"SupplierName": "Vendor B",
-					"Manufacturer": "Acme Aero",
-					"PartNumber":   "PN-456",
-					"ConditionCode": "SV",
-					"UnitPrice":    "9.75",
-				},
-			},
-		})
+			})
+		default:
+			http.NotFound(w, r)
+		}
 	}))
 	defer server.Close()
 
 	extractor := NewPartsBaseExtractor(PartsBaseConfig{
-		Enabled:           true,
-		APIKey:            "test-key",
-		BaseURL:           server.URL,
-		MarketPricingPath: "/api-market-pricing",
-		TimeoutSeconds:    5,
+		Enabled:          true,
+		ClientID:         "client-id",
+		ClientSecret:     "client-secret",
+		Username:         "user",
+		Password:         "pass",
+		AuthURL:          server.URL + "/connect/token",
+		BaseURL:          server.URL,
+		GovDataPath:      "/api/data/GovData",
+		GovDataType:      "Nsn",
+		GovDataStartDate: "2000-01-01",
+		GovDataSections:  []string{"Procurement", "NsnId"},
+		OAuthGrantType:   "password",
+		OAuthScope:       "api",
+		TimeoutSeconds:   5,
 	})
 
 	snaps, err := extractor.Fetch(context.Background(), "8415016107327", nil)
@@ -72,17 +120,86 @@ func TestPartsBaseExtractorFetchSuccess(t *testing.T) {
 	}
 
 	raw := snaps[0].RawResponse
-	if got := raw["data_source"]; got != "live_partsbase_market_pricing" {
-		t.Fatalf("expected live partsbase data source, got %#v", got)
+	if got := raw["data_source"]; got != "live_partsbase_govdata" {
+		t.Fatalf("expected live govdata source, got %#v", got)
 	}
-	if got := intFromAny(raw["result_count"]); got <= 0 {
-		t.Fatalf("expected positive result_count, got %d", got)
+	if got := intFromAny(raw["result_count"]); got != 2 {
+		t.Fatalf("expected result_count=2, got %d", got)
 	}
 	if got := intFromAny(raw["supplier_count"]); got != 2 {
 		t.Fatalf("expected supplier_count=2, got %d", got)
 	}
+	if got := strings.TrimSpace(firstNonEmptyString(raw["nsn_description"])); got != "TEST ITEM DESCRIPTION" {
+		t.Fatalf("expected nsn_description to be present, got %q", got)
+	}
+	if signals := mapSliceFromAny(raw["price_signals"]); len(signals) == 0 {
+		t.Fatalf("expected price_signals to be populated")
+	}
 	if refs := mapSliceFromAny(raw["commercial_references"]); len(refs) == 0 {
 		t.Fatalf("expected commercial_references to be populated")
+	}
+	if reqURL := strings.TrimSpace(firstNonEmptyString(raw["request_url"])); reqURL == "" {
+		t.Fatalf("expected request_url to be populated")
+	}
+}
+
+func TestPartsBaseExtractorCachesOAuthToken(t *testing.T) {
+	t.Parallel()
+
+	var tokenCalls int32
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/connect/token":
+			atomic.AddInt32(&tokenCalls, 1)
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"access_token": "cached-token",
+				"expires_in":   3600,
+				"token_type":   "Bearer",
+			})
+		case "/api/data/GovData":
+			if got := r.Header.Get("Authorization"); got != "Bearer cached-token" {
+				t.Fatalf("expected bearer token auth header, got %q", got)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"procurement": []map[string]any{
+					{"unitPrice": 5.5, "vendor": "Vendor A"},
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	extractor := NewPartsBaseExtractor(PartsBaseConfig{
+		Enabled:          true,
+		ClientID:         "client-id",
+		ClientSecret:     "client-secret",
+		Username:         "user",
+		Password:         "pass",
+		AuthURL:          server.URL + "/connect/token",
+		BaseURL:          server.URL,
+		GovDataPath:      "/api/data/GovData",
+		GovDataType:      "Nsn",
+		GovDataStartDate: "2000-01-01",
+		GovDataSections:  []string{"Procurement", "NsnId"},
+		OAuthGrantType:   "password",
+		OAuthScope:       "api",
+		TimeoutSeconds:   5,
+	})
+
+	if _, err := extractor.Fetch(context.Background(), "8415016107327", nil); err != nil {
+		t.Fatalf("first fetch returned error: %v", err)
+	}
+	if _, err := extractor.Fetch(context.Background(), "8415016107327", nil); err != nil {
+		t.Fatalf("second fetch returned error: %v", err)
+	}
+
+	if calls := atomic.LoadInt32(&tokenCalls); calls != 1 {
+		t.Fatalf("expected token endpoint to be called once, got %d", calls)
 	}
 }
 
@@ -90,16 +207,37 @@ func TestPartsBaseExtractorFetchUnavailable(t *testing.T) {
 	t.Parallel()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "upstream unavailable", http.StatusInternalServerError)
+		switch r.URL.Path {
+		case "/connect/token":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"access_token": "test-token",
+				"expires_in":   3600,
+				"token_type":   "Bearer",
+			})
+		case "/api/data/GovData":
+			http.Error(w, "upstream unavailable", http.StatusInternalServerError)
+		default:
+			http.NotFound(w, r)
+		}
 	}))
 	defer server.Close()
 
 	extractor := NewPartsBaseExtractor(PartsBaseConfig{
-		Enabled:           true,
-		APIKey:            "test-key",
-		BaseURL:           server.URL,
-		MarketPricingPath: "/api-market-pricing",
-		TimeoutSeconds:    5,
+		Enabled:          true,
+		ClientID:         "client-id",
+		ClientSecret:     "client-secret",
+		Username:         "user",
+		Password:         "pass",
+		AuthURL:          server.URL + "/connect/token",
+		BaseURL:          server.URL,
+		GovDataPath:      "/api/data/GovData",
+		GovDataType:      "Nsn",
+		GovDataStartDate: "2000-01-01",
+		GovDataSections:  []string{"Procurement", "NsnId"},
+		OAuthGrantType:   "password",
+		OAuthScope:       "api",
+		TimeoutSeconds:   5,
 	})
 
 	snaps, err := extractor.Fetch(context.Background(), "5120008785932", nil)
@@ -117,12 +255,11 @@ func TestPartsBaseExtractorFetchUnavailable(t *testing.T) {
 	}
 }
 
-func TestPartsBaseExtractorWithoutAPIKeyReturnsNoSnapshots(t *testing.T) {
+func TestPartsBaseExtractorWithoutCredentialsReturnsNoSnapshots(t *testing.T) {
 	t.Parallel()
 
 	extractor := NewPartsBaseExtractor(PartsBaseConfig{
 		Enabled: true,
-		APIKey:  "",
 	})
 
 	snaps, err := extractor.Fetch(context.Background(), "8540013800690", nil)
@@ -130,6 +267,19 @@ func TestPartsBaseExtractorWithoutAPIKeyReturnsNoSnapshots(t *testing.T) {
 		t.Fatalf("fetch returned error: %v", err)
 	}
 	if len(snaps) != 0 {
-		t.Fatalf("expected no snapshots without API key, got %d", len(snaps))
+		t.Fatalf("expected no snapshots without credentials, got %d", len(snaps))
 	}
+}
+
+func containsAll(values []string, required []string) bool {
+	seen := make(map[string]bool)
+	for _, value := range values {
+		seen[value] = true
+	}
+	for _, item := range required {
+		if !seen[item] {
+			return false
+		}
+	}
+	return true
 }

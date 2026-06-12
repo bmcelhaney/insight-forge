@@ -140,10 +140,10 @@ func TestSynthesizeAddsPartsBaseCitationAndNarrative(t *testing.T) {
 		t.Fatalf("synthesize returned error: %v", err)
 	}
 
-	if !stringSliceContains(result.Citations, "PartsBase market-pricing API (live)") {
+	if !stringSliceContains(result.Citations, "PartsBase GovData API (live)") {
 		t.Fatalf("expected PartsBase citation, got: %#v", result.Citations)
 	}
-	if !strings.Contains(result.MarketCommentary, "PartsBase contributed") {
+	if !strings.Contains(result.MarketCommentary, "PartsBase GovData contributed") {
 		t.Fatalf("expected market commentary to mention PartsBase contribution, got: %q", result.MarketCommentary)
 	}
 	if !insightsContainSubstring(result.KeyInsights, "PartsBase") {

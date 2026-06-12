@@ -36,11 +36,20 @@ func main() {
 
 	samAPIKey := strings.TrimSpace(os.Getenv("SAM_API_KEY"))
 	partsBaseCfg := extraction.PartsBaseConfig{
-		Enabled:           cfg.PartsBaseEnabled,
-		APIKey:            cfg.PartsBaseAPIKey,
-		BaseURL:           cfg.PartsBaseBaseURL,
-		MarketPricingPath: cfg.PartsBaseMarketPricingPath,
-		TimeoutSeconds:    cfg.PartsBaseTimeoutSeconds,
+		Enabled:          cfg.PartsBaseEnabled,
+		ClientID:         cfg.PartsBaseClientID,
+		ClientSecret:     cfg.PartsBaseClientSecret,
+		Username:         cfg.PartsBaseUsername,
+		Password:         cfg.PartsBasePassword,
+		AuthURL:          cfg.PartsBaseAuthURL,
+		BaseURL:          cfg.PartsBaseBaseURL,
+		GovDataPath:      cfg.PartsBaseGovDataPath,
+		GovDataType:      cfg.PartsBaseGovDataType,
+		GovDataStartDate: cfg.PartsBaseGovDataStart,
+		GovDataSections:  cfg.PartsBaseGovDataSections,
+		OAuthGrantType:   cfg.PartsBaseOAuthGrantType,
+		OAuthScope:       cfg.PartsBaseOAuthScope,
+		TimeoutSeconds:   cfg.PartsBaseTimeoutSeconds,
 	}
 	extractorReg := extraction.NewDefaultRegistry(samAPIKey, partsBaseCfg)
 
@@ -155,7 +164,7 @@ func main() {
 		})
 	})
 
-	// Debug endpoint for PartsBase market-pricing data
+	// Debug endpoint for PartsBase GovData extraction
 	r.Get("/debug/partsbase/{nsn}", func(w http.ResponseWriter, r *http.Request) {
 		nsn := chi.URLParam(r, "nsn")
 		snaps, _ := extractorReg.FetchAll(r.Context(), nsn, []string{"PARTSBASE"}, nil)
