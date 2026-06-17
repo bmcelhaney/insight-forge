@@ -145,22 +145,6 @@ func Synthesize(ctx context.Context, entityID string, snapshots []models.DataSna
 	evidence := collectScoringEvidence(snapshots)
 	if evidence.HasPartsBase {
 		result.Citations = appendUniqueString(result.Citations, "PartsBase GovData API (live)")
-		result.MarketCommentary = appendUniqueSentence(
-			result.MarketCommentary,
-			fmt.Sprintf(
-				"PartsBase GovData contributed %d live procurement/pricing signal(s) across %d supplier(s) for additional market triangulation.",
-				evidence.PartsBaseResultCount,
-				evidence.PartsBaseSupplierCount,
-			),
-		)
-		result.KeyInsights = appendUniqueInsight(
-			result.KeyInsights,
-			fmt.Sprintf(
-				"PartsBase GovData evidence: %d live procurement/pricing signal(s) across %d supplier(s).",
-				evidence.PartsBaseResultCount,
-				evidence.PartsBaseSupplierCount,
-			),
-		)
 	}
 	// Preserve curated demo enrichment for the Examples row while keeping non-demo NSNs on live/transparent paths.
 	if isDemoNSN(entityID) {
@@ -1002,23 +986,26 @@ func calculateViabilityFromEvidence(snaps []models.DataSnapshot) float64 {
 	e := collectScoringEvidence(snaps)
 
 	score := 22.0
-	if e.HasLiveFPDS {
-		score += 30
-		if e.LiveAwardCount > 0 {
-			score += math.Min(10, math.Log10(float64(e.LiveAwardCount)+1)*4.5)
+	if e.HasPartsBase {
+		score += 34 + math.Min(12, math.Log10(float64(e.PartsBaseResultCount)+1)*6.0)
+		if e.PartsBaseSupplierCount > 0 {
+			score += math.Min(5, float64(e.PartsBaseSupplierCount))
 		}
+	}
+	if e.HasLiveFPDS {
+		score += 12
+		if e.LiveAwardCount > 0 {
+			score += math.Min(6, math.Log10(float64(e.LiveAwardCount)+1)*3.0)
+		}
+	}
+	if e.HasPartsBase && e.HasLiveFPDS {
+		score += 4
 	}
 	if e.HasLiveGSA {
 		score += 10 + math.Min(6, float64(e.GSAPriceCount))
 	}
 	if e.HasETS {
 		score += 8 + math.Min(8, float64(e.ETSMatchedRows)/15.0)
-	}
-	if e.HasPartsBase {
-		score += 7 + math.Min(6, float64(e.PartsBaseResultCount)/2.0)
-		if e.PartsBaseSupplierCount > 0 {
-			score += math.Min(3, float64(e.PartsBaseSupplierCount)/2.0)
-		}
 	}
 	if e.HasAbilityOne {
 		score += 7
@@ -1031,7 +1018,11 @@ func calculateViabilityFromEvidence(snaps []models.DataSnapshot) float64 {
 	}
 
 	if e.HasPrototypeFPDS && !e.HasLiveFPDS {
-		score -= 16
+		if e.HasPartsBase {
+			score -= 2
+		} else {
+			score -= 16
+		}
 	}
 	if e.LiveSignalCount == 0 {
 		score -= 15
@@ -1052,19 +1043,36 @@ func calculateRiskFromEvidence(snaps []models.DataSnapshot) (float64, []models.R
 	var flags []models.RiskFlag
 
 	e := collectScoringEvidence(snaps)
-
-	if e.HasLiveFPDS {
-		risk -= 14
-		if e.LiveAwardCount >= 25 {
+	if e.HasPartsBase {
+		risk -= 16
+		if e.PartsBaseResultCount >= 100 {
 			risk -= 4
 		}
-	} else if e.HasPartsBase {
-		risk += 6
+		if e.PartsBaseSupplierCount >= 3 {
+			risk -= 3
+		}
+		if e.HasLiveFPDS {
+			risk -= 2
+		} else {
+			risk += 2
+			flags = append(flags, models.RiskFlag{
+				Type:        "data_quality",
+				Severity:    "low",
+				Description: "Live USAspending award rows were not returned; PartsBase GovData remains the primary federal evidence layer for this run.",
+				Implication: "Use USAspending as corroboration when available, but PartsBase signal depth is sufficient for baseline demand/supplier interpretation.",
+				SourceCodes: []string{"PARTSBASE", "FPDS"},
+			})
+		}
+	} else if e.HasLiveFPDS {
+		risk -= 8
+		if e.LiveAwardCount >= 25 {
+			risk -= 3
+		}
 		flags = append(flags, models.RiskFlag{
 			Type:        "data_quality",
 			Severity:    "medium",
-			Description: "Live USAspending award rows were not returned; PartsBase GovData procurement signals were used as alternate federal-market evidence.",
-			Implication: "Confidence is moderate until USAspending and PartsBase evidence are reconciled in the same run.",
+			Description: "PartsBase GovData evidence was not available; this run is relying on USAspending as the primary federal evidence source.",
+			Implication: "Re-run with PartsBase data when possible to improve supplier and pricing-signal depth.",
 			SourceCodes: []string{"FPDS", "PARTSBASE"},
 		})
 	} else {
@@ -1072,20 +1080,20 @@ func calculateRiskFromEvidence(snaps []models.DataSnapshot) (float64, []models.R
 		flags = append(flags, models.RiskFlag{
 			Type:        "data_quality",
 			Severity:    "high",
-			Description: "No live USAspending award evidence was returned for this NSN query.",
-			Implication: "Scores reflect elevated uncertainty until live federal award evidence is available.",
-			SourceCodes: []string{"FPDS"},
+			Description: "No PartsBase GovData or live USAspending federal-award evidence was returned for this NSN query.",
+			Implication: "Scores reflect elevated uncertainty until a primary federal evidence layer (preferably PartsBase) is available.",
+			SourceCodes: []string{"PARTSBASE", "FPDS"},
 		})
 	}
 
 	if e.HasPrototypeFPDS && !e.HasLiveFPDS {
 		if e.HasPartsBase {
-			risk += 6
+			risk += 1
 			flags = append(flags, models.RiskFlag{
 				Type:        "data_quality",
-				Severity:    "medium",
-				Description: "FPDS data fell back to prototype mode; PartsBase GovData partially mitigates demand/supplier visibility.",
-				Implication: "Refresh live USAspending rows when possible to align federal-award totals with PartsBase signal coverage.",
+				Severity:    "low",
+				Description: "FPDS data fell back to prototype mode; minimal impact because PartsBase GovData is prioritized in this synthesis.",
+				Implication: "Refresh live USAspending rows when possible for corroboration, not for primary demand baseline.",
 				SourceCodes: []string{"FPDS", "PARTSBASE"},
 			})
 		} else {
@@ -2226,13 +2234,13 @@ func getPreferredAbilityOneRelated(fsc string) []models.RelatedNSN {
 }
 
 func buildDemandSignals(snaps []models.DataSnapshot) models.DemandSignals {
-	if fpds, ok := findLiveFPDSSnapshot(snaps); ok {
-		return buildDemandSignalsFromLiveFPDS(fpds, snaps)
-	}
 	if partsBase, ok := findPartsBaseSnapshot(snaps); ok {
 		if demand, ok := buildDemandSignalsFromPartsBase(partsBase, snaps); ok {
 			return demand
 		}
+	}
+	if fpds, ok := findLiveFPDSSnapshot(snaps); ok {
+		return buildDemandSignalsFromLiveFPDS(fpds, snaps)
 	}
 
 	for _, s := range snaps {
@@ -2248,11 +2256,11 @@ func buildDemandSignals(snaps []models.DataSnapshot) models.DemandSignals {
 			note = strings.TrimSpace(firstStringFromAny(s.RawResponse["mandatory_source_note"]))
 		}
 		if note == "" {
-			note = "AbilityOne program context is available, but no live USAspending award metrics were returned for this NSN query."
+			note = "AbilityOne program context is available, but no live federal demand metrics were returned for this NSN query."
 		} else {
 			note = appendUniqueSentence(
 				note,
-				"Live USAspending award metrics were not returned for this NSN query, so quantitative demand fields are intentionally left unpopulated.",
+				"No live PartsBase or USAspending demand metrics were returned for this NSN query, so quantitative demand fields are intentionally left unpopulated.",
 			)
 		}
 		return models.DemandSignals{
@@ -2261,7 +2269,7 @@ func buildDemandSignals(snaps []models.DataSnapshot) models.DemandSignals {
 			TopAgencies:         nil,
 			RecentTrend:         "unknown",
 			ProgramAssociations: []string{program},
-			AwardPeriod:         "No live USAspending award metrics returned for this NSN",
+			AwardPeriod:         "No live federal demand metrics returned for this NSN",
 			DemandNote:          note,
 		}
 	}
@@ -2273,7 +2281,7 @@ func buildDemandSignals(snaps []models.DataSnapshot) models.DemandSignals {
 		RecentTrend:         "unknown",
 		ProgramAssociations: nil,
 		AwardPeriod:         "No live federal award metrics available for this NSN",
-		DemandNote:          "Demand & Market Signals is populated only from live USAspending award data. No qualifying live award records were returned.",
+		DemandNote:          "Demand & Market Signals are populated from live federal evidence layers (PartsBase and USAspending). No qualifying records were returned.",
 	}
 }
 
@@ -2381,8 +2389,16 @@ func buildDemandSignalsFromPartsBase(partsBase models.DataSnapshot, snaps []mode
 	}
 
 	programs := []string{"PartsBase GovData procurement signals"}
+	topAgencies := []string(nil)
+	if fpds, ok := findLiveFPDSSnapshot(snaps); ok {
+		topAgencies = toStringSlice(fpds.RawResponse["top_agencies"])
+		if len(topAgencies) == 0 {
+			topAgencies = nil
+		}
+		programs = appendUniqueString(programs, "Federal Awards (USAspending corroboration)")
+	}
 	demandNote := fmt.Sprintf(
-		"USAspending live award totals were not returned for this NSN query. PartsBase GovData supplied %d procurement signal(s) across %d supplier(s), and that evidence is included in demand and supplier analysis.",
+		"PartsBase GovData supplied %d procurement signal(s) across %d supplier(s) and is treated as the primary federal demand evidence layer for this run.",
 		signalCount,
 		maxInt(supplierCount, 1),
 	)
@@ -2390,6 +2406,20 @@ func buildDemandSignalsFromPartsBase(partsBase models.DataSnapshot, snaps []mode
 		demandNote = appendUniqueSentence(
 			demandNote,
 			fmt.Sprintf("Estimated line-value coverage from returned PartsBase signal rows is %s (informational, not a USAspending obligation total).", formatUSDCompact(estimatedValue)),
+		)
+	}
+	if fpds, ok := findLiveFPDSSnapshot(snaps); ok {
+		liveAwards := intFromAny(fpds.RawResponse["total_awards"])
+		if liveAwards > 0 {
+			demandNote = appendUniqueSentence(
+				demandNote,
+				fmt.Sprintf("USAspending corroboration is also available in this run (%d live award row(s)) and should be used to reconcile obligation totals.", liveAwards),
+			)
+		}
+	} else {
+		demandNote = appendUniqueSentence(
+			demandNote,
+			"USAspending corroboration was not available in this run, but PartsBase signal depth remains sufficient for baseline demand interpretation.",
 		)
 	}
 
@@ -2411,7 +2441,7 @@ func buildDemandSignalsFromPartsBase(partsBase models.DataSnapshot, snaps []mode
 	return models.DemandSignals{
 		TotalAwards:         signalCount,
 		TotalValueUSD:       estimatedValue,
-		TopAgencies:         nil,
+		TopAgencies:         topAgencies,
 		RecentTrend:         "observed",
 		ProgramAssociations: programs,
 		AwardPeriod:         awardPeriod,
@@ -2708,14 +2738,14 @@ func buildDynamicFullReport(entityID string, viability, risk float64, flags []mo
 		break
 	}
 
-	// Detect if we have real USAspending data for this run
+	// Detect if we have real USAspending data for corroboration in this run
 	liveNote := ""
 	hasLiveFPDS := false
 	for _, s := range snaps {
 		if s.SourceCode == "FPDS" {
 			if ds, ok := s.RawResponse["data_source"].(string); ok && ds == "live_usaspending" {
 				hasLiveFPDS = true
-				liveNote = " (LIVE from USAspending.gov public API)"
+				liveNote = " (USAspending corroboration available)"
 				break
 			}
 		}
@@ -2725,7 +2755,12 @@ func buildDynamicFullReport(entityID string, viability, risk float64, flags []mo
 		if demand.TotalValueUSD > 0 {
 			observedVolumeLine = fmt.Sprintf("Observed volume: %d PartsBase procurement signal(s) | estimated line-value ~$%.1fM", demand.TotalAwards, float64(demand.TotalValueUSD)/1000000)
 		} else {
-			observedVolumeLine = fmt.Sprintf("Observed volume: %d PartsBase procurement signal(s) (USAspending totals unavailable in this run)", demand.TotalAwards)
+			observedVolumeLine = fmt.Sprintf("Observed volume: %d PartsBase procurement signal(s)", demand.TotalAwards)
+		}
+		if hasLiveFPDS {
+			observedVolumeLine = appendUniqueSentence(observedVolumeLine, "USAspending corroboration available.")
+		} else {
+			observedVolumeLine = appendUniqueSentence(observedVolumeLine, "USAspending corroboration unavailable in this run.")
 		}
 	}
 
@@ -2866,20 +2901,23 @@ RISK FLAGS & IMPLICATIONS
 		b.WriteString("- No high-severity flags identified from current data sources.\n")
 	}
 
-	confidenceLine := fmt.Sprintf("This report incorporates live USAspending award aggregates%s and real GSA Advantage JWOD pricing where available. All numbers and agencies reflect the latest public data pull at generation time.", liveNote)
-	if !hasLiveFPDS {
-		if partsBaseSignals > 0 {
-			confidenceLine = fmt.Sprintf("This report incorporates %d PartsBase GovData procurement signal(s) as alternate government-market evidence because live USAspending award rows were unavailable in this run.", partsBaseSignals)
+	confidenceLine := "Confidence is constrained because no primary federal demand evidence (PartsBase or USAspending) was returned in this run."
+	if partsBaseSignals > 0 {
+		confidenceLine = fmt.Sprintf("This report uses %d PartsBase GovData procurement signal(s) as the primary federal evidence layer for demand/supplier synthesis.", partsBaseSignals)
+		if hasLiveFPDS {
+			confidenceLine = appendUniqueSentence(confidenceLine, "USAspending award rows are available in this run and are used as secondary corroboration.")
 		} else {
-			confidenceLine = "Live USAspending award rows were unavailable in this run, so confidence is constrained by missing federal-award baseline data."
+			confidenceLine = appendUniqueSentence(confidenceLine, "USAspending corroboration is unavailable in this run.")
 		}
+	} else if hasLiveFPDS {
+		confidenceLine = fmt.Sprintf("This report uses live USAspending award aggregates%s as the primary federal evidence layer because PartsBase data was unavailable in this run.", liveNote)
 	}
 
 	fmt.Fprintf(&b, `
 DATA GAPS & RECOMMENDED FOLLOW-UP
 Real-time capacity, sub-tier visibility, and exact current pricing beyond the GSA Advantage scrape are limited in public sources. For any material requirement, direct engagement with qualified sources is strongly advised.
 
-OVERALL CONFIDENCE: Medium (synthesis with live award + pricing feeds + catalog context)
+OVERALL CONFIDENCE: Medium (synthesis with prioritized federal evidence layers + pricing feeds + catalog context)
 %s
 
 SOURCES & METHODOLOGY
@@ -2907,6 +2945,7 @@ func generateRichAnalysis(entityID string, viability, risk float64, flags []mode
 	out := RichAnalysis{
 		Citations: []string{"WebFLIS (DLA)", "FPDS (USAspending)", "OFAC SDN (live)", "MCRL", "AbilityOne Program PSR"},
 	}
+	sourceEvidence := collectScoringEvidence(snaps)
 
 	// === Special case the exact 5 AbilityOne NSNs the analyst team uses for validation ===
 	switch entityID {
@@ -3360,9 +3399,15 @@ Synthesized from WebFLIS, award data, AbilityOne facility sustainment context, a
 			}
 		}
 
+		sourceDriverLine := "USAspending award aggregates and GSA Advantage pricing (when available) drive the view."
+		if sourceEvidence.HasPartsBase && sourceEvidence.HasLiveFPDS {
+			sourceDriverLine = "PartsBase GovData is the primary federal evidence layer, while USAspending award rows provide corroboration when available."
+		} else if sourceEvidence.HasPartsBase {
+			sourceDriverLine = "PartsBase GovData is the primary federal evidence layer for demand and supplier interpretation in this run."
+		}
 		out.MarketCommentary = fmt.Sprintf(
-			"Multi-source synthesis for FSC %s. %s Real USAspending award aggregates and GSA Advantage pricing (when available) drive the view. Concentration and demand character are primary score drivers.",
-			getFSC(entityID), suppliers.ContinuityAssessment)
+			"Multi-source synthesis for FSC %s. %s %s Concentration and demand character are primary score drivers.",
+			getFSC(entityID), suppliers.ContinuityAssessment, sourceDriverLine)
 
 		out.FullReport = buildDynamicFullReport(entityID, viability, risk, flags, suppliers, demand, snaps)
 
@@ -3640,13 +3685,17 @@ func buildExecutiveCardSummary(entityID string, result *models.InsightResult, ab
 			if result.DemandSignals.TotalValueUSD > 0 {
 				parts = append(parts, fmt.Sprintf("Estimated line-value coverage from PartsBase signals is %s (informational, not a USAspending obligation total).", formatUSDCompact(result.DemandSignals.TotalValueUSD)))
 			}
+			if result.SupplierData.TotalSuppliers > 0 {
+				signalsPerSupplier := float64(result.DemandSignals.TotalAwards) / float64(result.SupplierData.TotalSuppliers)
+				parts = append(parts, fmt.Sprintf("Interpretation: signal depth indicates recurring federal activity (~%.0f signals per observed supplier); use USAspending as corroboration when available, not as the baseline source.", signalsPerSupplier))
+			}
 		} else {
 			parts = append(parts, fmt.Sprintf("Observed demand baseline: %d awards and %s in obligations%s.", result.DemandSignals.TotalAwards, formatUSDCompact(result.DemandSignals.TotalValueUSD), windowText))
 		}
 	} else if evidence.HasPartsBase {
-		parts = append(parts, fmt.Sprintf("USAspending award totals were unavailable in this run, but PartsBase contributed %d government procurement signal(s) across %d supplier(s).", evidence.PartsBaseResultCount, evidence.PartsBaseSupplierCount))
+		parts = append(parts, fmt.Sprintf("PartsBase supplied %d government procurement signal(s) across %d supplier(s) and is treated as the primary federal evidence layer in this run.", evidence.PartsBaseResultCount, evidence.PartsBaseSupplierCount))
 	} else {
-		parts = append(parts, "No live USAspending award totals were returned in this run, so demand confidence is currently driven by non-award evidence layers.")
+		parts = append(parts, "No PartsBase or USAspending federal demand metrics were returned in this run, so demand confidence is currently constrained.")
 	}
 
 	if result.SupplierData.TotalSuppliers > 0 {
@@ -3698,17 +3747,18 @@ func buildCardAnalystRecommendation(existing string, result *models.InsightResul
 
 	if result.DemandSignals.TotalAwards > 0 || result.DemandSignals.TotalValueUSD > 0 {
 		if isPartsBaseDemandFallback(result.DemandSignals) {
-			recommendation = appendUniqueSentence(recommendation, fmt.Sprintf("Use the observed baseline of %d PartsBase government procurement signal(s) to anchor order-sizing assumptions while USAspending totals are unavailable.", result.DemandSignals.TotalAwards))
+			recommendation = appendUniqueSentence(recommendation, fmt.Sprintf("Use the observed baseline of %d PartsBase government procurement signal(s) as the primary federal evidence for order-sizing assumptions.", result.DemandSignals.TotalAwards))
 			if result.DemandSignals.TotalValueUSD > 0 {
 				recommendation = appendUniqueSentence(recommendation, fmt.Sprintf("Estimated line-value coverage from PartsBase signals is %s (informational, not a USAspending obligation total).", formatUSDCompact(result.DemandSignals.TotalValueUSD)))
 			}
+			recommendation = appendUniqueSentence(recommendation, "Treat this as recurring federal demand evidence; use USAspending rows as corroboration when available before finalizing obligation-sensitive commitments.")
 		} else {
 			recommendation = appendUniqueSentence(recommendation, fmt.Sprintf("Use the observed baseline of %d awards and %s to anchor order-sizing assumptions.", result.DemandSignals.TotalAwards, formatUSDCompact(result.DemandSignals.TotalValueUSD)))
 		}
 	} else if evidence.HasPartsBase {
-		recommendation = appendUniqueSentence(recommendation, fmt.Sprintf("USAspending totals are currently unavailable; use %d PartsBase GovData procurement signal(s) across %d supplier(s) as interim federal-market evidence.", evidence.PartsBaseResultCount, evidence.PartsBaseSupplierCount))
+		recommendation = appendUniqueSentence(recommendation, fmt.Sprintf("Use %d PartsBase GovData procurement signal(s) across %d supplier(s) as the primary federal-market evidence baseline for this run.", evidence.PartsBaseResultCount, evidence.PartsBaseSupplierCount))
 	} else if !evidence.HasLiveFPDS {
-		recommendation = appendUniqueSentence(recommendation, "Capture live USAspending award evidence before committing large or time-sensitive volume.")
+		recommendation = appendUniqueSentence(recommendation, "Capture PartsBase GovData evidence before committing large or time-sensitive volume.")
 	}
 
 	switch strings.ToLower(strings.TrimSpace(result.SupplierData.ConcentrationRisk)) {
@@ -3718,15 +3768,23 @@ func buildCardAnalystRecommendation(existing string, result *models.InsightResul
 		recommendation = appendUniqueSentence(recommendation, "Concentration is moderate; maintain dual-source validation and refresh producer capacity checks ahead of surge periods.")
 	}
 	if evidence.HasPartsBase {
-		recommendation = appendUniqueSentence(recommendation, fmt.Sprintf("Use %d PartsBase GovData signal(s) across %d supplier(s) to benchmark condition-code pricing before award.", evidence.PartsBaseResultCount, evidence.PartsBaseSupplierCount))
+		recommendation = appendUniqueSentence(recommendation, "Use PartsBase signal distributions by supplier and condition code to benchmark pricing bands before award.")
+		if len(result.TopCommercialSuppliers) > 0 || len(result.CommercialReferences) > 0 {
+			recommendation = appendUniqueSentence(recommendation, "Use ETS/commercial cross-reference breadth as fallback-manufacturer intelligence when concentration rises; this complements federal demand evidence rather than replacing it.")
+		}
 	}
 
 	if web.ResultCount > 0 {
-		recommendation = appendUniqueSentence(recommendation, fmt.Sprintf("Leverage %d external references from this run to validate lead-time and pricing assumptions.", web.ResultCount))
+		if len(web.ProcurementDomains) > 0 {
+			recommendation = appendUniqueSentence(recommendation, fmt.Sprintf("Leverage %d external references from this run to validate lead-time and pricing assumptions.", web.ResultCount))
+		}
 	}
 
 	if topFlag, ok := topPriorityFlag(result.Flags); ok && strings.TrimSpace(topFlag.Implication) != "" {
-		recommendation = appendUniqueSentence(recommendation, "Priority mitigation: "+truncateSentence(topFlag.Implication, 220))
+		mitigation := "Priority mitigation: " + truncateSentence(topFlag.Implication, 220)
+		if len(strings.TrimSpace(recommendation))+len(mitigation)+1 <= 950 {
+			recommendation = appendUniqueSentence(recommendation, mitigation)
+		}
 	}
 
 	return truncateSentence(recommendation, 950)
@@ -3734,10 +3792,11 @@ func buildCardAnalystRecommendation(existing string, result *models.InsightResul
 
 func enrichKeyInsightsForCards(existing []string, result *models.InsightResult, abilityOne abilityOneContext, ets etsSignal, web webSearchIntelSignal, evidence scoringEvidenceProfile) []string {
 	var highlights []string
+	partsBaseFallback := isPartsBaseDemandFallback(result.DemandSignals)
 
 	if result.DemandSignals.TotalAwards > 0 || result.DemandSignals.TotalValueUSD > 0 {
-		if isPartsBaseDemandFallback(result.DemandSignals) {
-			highlights = append(highlights, fmt.Sprintf("USAspending live totals were unavailable in this run; PartsBase GovData surfaced %d government procurement signal(s) and that evidence is included in demand analysis.", result.DemandSignals.TotalAwards))
+		if partsBaseFallback {
+			highlights = append(highlights, fmt.Sprintf("PartsBase GovData surfaced %d government procurement signal(s) and is treated as the primary federal demand evidence layer in this run.", result.DemandSignals.TotalAwards))
 			if result.DemandSignals.TotalValueUSD > 0 {
 				highlights = append(highlights, fmt.Sprintf("Estimated line-value coverage from PartsBase signal rows is %s (non-obligation estimate).", formatUSDCompact(result.DemandSignals.TotalValueUSD)))
 			}
@@ -3745,9 +3804,9 @@ func enrichKeyInsightsForCards(existing []string, result *models.InsightResult, 
 			highlights = append(highlights, fmt.Sprintf("Observed live federal demand includes %d award(s) totaling %s in obligations for this run.", result.DemandSignals.TotalAwards, formatUSDCompact(result.DemandSignals.TotalValueUSD)))
 		}
 	} else if evidence.HasPartsBase {
-		highlights = append(highlights, fmt.Sprintf("USAspending live totals were unavailable in this run, but PartsBase GovData returned %d procurement signal(s) across %d supplier(s).", evidence.PartsBaseResultCount, evidence.PartsBaseSupplierCount))
+		highlights = append(highlights, fmt.Sprintf("PartsBase GovData returned %d procurement signal(s) across %d supplier(s), supplying the primary federal demand baseline for this run.", evidence.PartsBaseResultCount, evidence.PartsBaseSupplierCount))
 	} else {
-		highlights = append(highlights, "No live USAspending award totals were returned in this run, so demand trends should be treated as lower confidence until refreshed.")
+		highlights = append(highlights, "No PartsBase or live USAspending federal demand totals were returned in this run, so demand trends should be treated as lower confidence until refreshed.")
 	}
 
 	if len(result.DemandSignals.TopAgencies) > 0 {
@@ -3762,6 +3821,14 @@ func enrichKeyInsightsForCards(existing []string, result *models.InsightResult, 
 			highlights = append(highlights, fmt.Sprintf("Supplier coverage shows %d observed suppliers with %s concentration risk.", result.SupplierData.TotalSuppliers, nonEmptyOr(result.SupplierData.ConcentrationRisk, "unknown")))
 		}
 	}
+	if partsBaseFallback && result.SupplierData.TotalSuppliers > 0 {
+		share := topSupplierShare(result.SupplierData)
+		if share > 0 {
+			highlights = append(highlights, fmt.Sprintf("Interpretation: federal demand evidence is strong, but %.1f%% top-supplier concentration means continuity still depends on validated secondary-source capacity.", share))
+		} else {
+			highlights = append(highlights, "Interpretation: PartsBase signal depth supports recurring-demand confidence, but continuity still depends on validating alternate suppliers.")
+		}
+	}
 
 	if abilityOne.ProducingNPA != "" {
 		status := nonEmptyOr(abilityOne.ProgramStatus, "Program context available")
@@ -3771,8 +3838,11 @@ func enrichKeyInsightsForCards(existing []string, result *models.InsightResult, 
 	if ets.MatchedRows > 0 {
 		highlights = append(highlights, fmt.Sprintf("ETS intelligence mapped %d cross-reference row(s), %d manufacturer(s), and %d SKU(s), expanding substitution and continuity visibility.", ets.MatchedRows, maxInt(ets.UniqueManufacturerCt, len(ets.Manufacturers)), ets.UniqueSKUCt))
 	}
-	if evidence.HasPartsBase {
-		highlights = append(highlights, fmt.Sprintf("PartsBase GovData contributed %d live procurement/pricing signal(s) across %d supplier(s).", evidence.PartsBaseResultCount, evidence.PartsBaseSupplierCount))
+	if evidence.HasPartsBase && ets.MatchedRows > 0 {
+		highlights = append(highlights, fmt.Sprintf("Cross-source synthesis: PartsBase confirms federal demand activity while ETS mapping breadth (%d manufacturers, %d SKUs) expands substitution options for continuity planning.", maxInt(ets.UniqueManufacturerCt, len(ets.Manufacturers)), ets.UniqueSKUCt))
+	}
+	if evidence.HasPartsBase && !partsBaseFallback {
+		highlights = append(highlights, fmt.Sprintf("PartsBase added %d procurement/pricing signal(s) across %d supplier(s) as a corroborating layer alongside USAspending awards.", evidence.PartsBaseResultCount, evidence.PartsBaseSupplierCount))
 	}
 
 	if web.ResultCount > 0 {
@@ -3780,12 +3850,16 @@ func enrichKeyInsightsForCards(existing []string, result *models.InsightResult, 
 		if domainCount == 0 {
 			domainCount = web.ResultCount
 		}
-		highlights = append(highlights, fmt.Sprintf("External web intelligence added %d references across %d domains, including %d procurement-oriented domains.", web.ResultCount, domainCount, len(web.ProcurementDomains)))
+		if len(web.ProcurementDomains) > 0 {
+			highlights = append(highlights, fmt.Sprintf("External web intelligence added %d references across %d domains, including %d procurement-oriented domains.", web.ResultCount, domainCount, len(web.ProcurementDomains)))
+		} else {
+			highlights = append(highlights, fmt.Sprintf("External web intelligence added %d references across %d domains, but none were procurement-oriented; treat this layer as contextual rather than decisive.", web.ResultCount, domainCount))
+		}
 	}
 
 	if len(result.TopCommercialSuppliers) > 0 {
 		top := result.TopCommercialSuppliers[0]
-		highlights = append(highlights, fmt.Sprintf("Commercial cross-reference leader: %s appears in %d mapped reference(s), supporting fallback market awareness.", nonEmptyOr(top.Name, "top supplier"), top.Count))
+		highlights = append(highlights, fmt.Sprintf("Commercial cross-reference leader: %s appears in %d mapped reference(s); use this as alternate-market intelligence, not as a proxy for federal award share.", nonEmptyOr(top.Name, "top supplier"), top.Count))
 	}
 
 	if topFlag, ok := topPriorityFlag(result.Flags); ok {
@@ -3797,11 +3871,12 @@ func enrichKeyInsightsForCards(existing []string, result *models.InsightResult, 
 	}
 
 	merged := make([]string, 0, len(highlights)+len(existing))
+	seenTopics := make(map[string]bool)
 	for _, highlight := range highlights {
-		merged = appendUniqueInsight(merged, highlight)
+		merged = appendInsightWithTopic(merged, seenTopics, highlight)
 	}
 	for _, current := range existing {
-		merged = appendUniqueInsight(merged, current)
+		merged = appendInsightWithTopic(merged, seenTopics, current)
 	}
 	if len(merged) > 9 {
 		merged = merged[:9]
@@ -3840,7 +3915,7 @@ func enrichSupplierNarrativesForCards(result *models.InsightResult, abilityOne a
 
 	if !evidence.HasLiveFPDS {
 		if evidence.HasPartsBase {
-			supplier.ContinuityAssessment = appendUniqueSentence(supplier.ContinuityAssessment, "Live recipient-award coverage is incomplete in this run, but PartsBase supplier signals are available; corroborate high-value commitments with refreshed USAspending pulls when possible.")
+			supplier.ContinuityAssessment = appendUniqueSentence(supplier.ContinuityAssessment, "PartsBase supplier signals remain available and are sufficient for continuity baseline decisions; refresh USAspending only as corroboration for obligation-level reconciliation.")
 		} else {
 			supplier.ContinuityAssessment = appendUniqueSentence(supplier.ContinuityAssessment, "Live recipient-award coverage is incomplete in this run, so corroborate any high-value supplier commitments with direct award-history pulls.")
 		}
@@ -3867,9 +3942,9 @@ func enrichDemandNarrativesForCards(result *models.InsightResult, abilityOne abi
 			demand.DemandNote = appendUniqueSentence(demand.DemandNote, "Highest-activity agencies in sample: "+summarizeStringList(demand.TopAgencies, 3)+".")
 		}
 	} else if evidence.HasPartsBase {
-		demand.DemandNote = appendUniqueSentence(demand.DemandNote, fmt.Sprintf("USAspending live totals were unavailable in this run; PartsBase provided %d procurement signal(s) across %d supplier(s).", evidence.PartsBaseResultCount, evidence.PartsBaseSupplierCount))
+		demand.DemandNote = appendUniqueSentence(demand.DemandNote, fmt.Sprintf("PartsBase provided %d procurement signal(s) across %d supplier(s) and is being used as the primary demand evidence layer.", evidence.PartsBaseResultCount, evidence.PartsBaseSupplierCount))
 	} else {
-		demand.DemandNote = appendUniqueSentence(demand.DemandNote, "No live USAspending award totals were returned; demand outlook should be treated as provisional until live award rows are available.")
+		demand.DemandNote = appendUniqueSentence(demand.DemandNote, "No PartsBase or live USAspending totals were returned; demand outlook should be treated as provisional until a federal evidence layer is available.")
 	}
 
 	if strings.TrimSpace(demand.YoYChange) != "" {
@@ -3894,9 +3969,9 @@ func enrichDemandNarrativesForCards(result *models.InsightResult, abilityOne abi
 	}
 	if !evidence.HasLiveFPDS {
 		if evidence.HasPartsBase {
-			demand.DemandNote = appendUniqueSentence(demand.DemandNote, "Demand confidence is moderate: PartsBase procurement signals are available, but a refreshed USAspending pull is still recommended for cross-source reconciliation.")
+			demand.DemandNote = appendUniqueSentence(demand.DemandNote, "Demand confidence remains actionable because PartsBase procurement signals are available; use USAspending refreshes as corroboration rather than baseline validation.")
 		} else {
-			demand.DemandNote = appendUniqueSentence(demand.DemandNote, "Demand confidence is currently limited by missing live award evidence; prioritize a refreshed FPDS pull before strategic volume moves.")
+			demand.DemandNote = appendUniqueSentence(demand.DemandNote, "Demand confidence is currently limited by missing federal evidence; prioritize a refreshed PartsBase or FPDS pull before strategic volume moves.")
 		}
 	}
 }
@@ -3920,17 +3995,17 @@ func buildFlagImplicationAddition(flag models.RiskFlag, result *models.InsightRe
 		return fmt.Sprintf("Current supplier concentration rating is %s; maintain at least two validated sources for continuity.", nonEmptyOr(result.SupplierData.ConcentrationRisk, "unknown"))
 	case "data_quality":
 		var missing []string
+		if !evidence.HasPartsBase {
+			missing = append(missing, "PartsBase GovData (primary federal layer)")
+		}
 		if !evidence.HasLiveFPDS {
-			missing = append(missing, "live USAspending awards")
+			missing = append(missing, "USAspending corroboration rows")
 		}
 		if !evidence.HasLiveGSA {
 			missing = append(missing, "live GSA pricing")
 		}
 		if !evidence.HasETS {
 			missing = append(missing, "ETS cross-reference rows")
-		}
-		if !evidence.HasPartsBase {
-			missing = append(missing, "PartsBase GovData")
 		}
 		if len(missing) > 0 {
 			return "Missing evidence layers in this run: " + strings.Join(missing, ", ") + "; rerun those extracts before high-value commitments."
@@ -4074,6 +4149,65 @@ func appendUniqueInsight(insights []string, insight string) []string {
 		}
 	}
 	return append(insights, insight)
+}
+
+func appendInsightWithTopic(insights []string, seenTopics map[string]bool, insight string) []string {
+	insight = strings.TrimSpace(insight)
+	if insight == "" {
+		return insights
+	}
+	for _, existing := range insights {
+		if strings.EqualFold(strings.TrimSpace(existing), insight) {
+			return insights
+		}
+	}
+	topic := insightTopicKey(insight)
+	if topic != "" {
+		if seenTopics[topic] {
+			return insights
+		}
+		seenTopics[topic] = true
+	}
+	return append(insights, insight)
+}
+
+func insightTopicKey(insight string) string {
+	s := strings.ToLower(strings.TrimSpace(insight))
+	switch {
+	case strings.Contains(s, "cross-source synthesis"):
+		return "cross_source_synthesis"
+	case strings.Contains(s, "usaspending") && strings.Contains(s, "partsbase"):
+		return "usaspending_partsbase_gap"
+	case strings.Contains(s, "partsbase") && strings.Contains(s, "line-value"):
+		return "partsbase_line_value"
+	case strings.Contains(s, "partsbase") && strings.Contains(s, "signal"):
+		return "partsbase_signal_depth"
+	case strings.Contains(s, "observed live federal demand"):
+		return "live_demand_baseline"
+	case strings.Contains(s, "supplier concentration"):
+		return "supplier_concentration"
+	case strings.Contains(s, "ets") && strings.Contains(s, "cross-reference"):
+		return "ets_cross_reference"
+	case strings.Contains(s, "ets commercial coverage"):
+		return "ets_cross_reference"
+	case strings.Contains(s, "external web intelligence"),
+		strings.Contains(s, "open-web intelligence"),
+		strings.Contains(s, "web-intel"),
+		strings.Contains(s, "top external signal"):
+		return "web_intel"
+	case strings.Contains(s, "commercial cross-reference leader"):
+		return "commercial_leader"
+	case strings.Contains(s, "primary risk driver"):
+		return "primary_risk"
+	case strings.Contains(s, "gsa pricing"):
+		return "gsa_gap"
+	case strings.Contains(s, "abilityone"):
+		return "abilityone_context"
+	case strings.Contains(s, "most active agencies"):
+		return "top_agencies"
+	default:
+		return ""
+	}
 }
 
 func dedupeTrimmedStrings(items []string) []string {
@@ -4388,12 +4522,20 @@ func extractTechnicalContext(snaps []models.DataSnapshot) technicalContext {
 
 func summarizeScoringDrivers(e scoringEvidenceProfile) string {
 	var drivers []string
-	if e.HasLiveFPDS {
-		drivers = append(drivers, fmt.Sprintf("live federal awards present (count=%d)", e.LiveAwardCount))
+	if e.HasPartsBase {
+		drivers = append(drivers, fmt.Sprintf("PartsBase GovData primary federal signal layer present (signals=%d, suppliers=%d)", e.PartsBaseResultCount, e.PartsBaseSupplierCount))
+		if e.HasLiveFPDS {
+			drivers = append(drivers, fmt.Sprintf("USAspending corroboration present (award count=%d)", e.LiveAwardCount))
+		} else {
+			drivers = append(drivers, "USAspending corroboration unavailable in this run")
+		}
+	} else if e.HasLiveFPDS {
+		drivers = append(drivers, fmt.Sprintf("live federal awards present via USAspending (count=%d)", e.LiveAwardCount))
+		drivers = append(drivers, "PartsBase GovData unavailable (reduced supplier/pricing-signal depth)")
 	} else if e.HasPrototypeFPDS {
 		drivers = append(drivers, "FPDS fallback/prototype evidence only (confidence penalty)")
 	} else {
-		drivers = append(drivers, "no FPDS award evidence returned")
+		drivers = append(drivers, "no primary federal demand evidence returned (PartsBase/USAspending missing)")
 	}
 	if e.HasLiveGSA {
 		drivers = append(drivers, fmt.Sprintf("live GSA pricing rows=%d", e.GSAPriceCount))
@@ -4402,9 +4544,6 @@ func summarizeScoringDrivers(e scoringEvidenceProfile) string {
 	}
 	if e.HasETS {
 		drivers = append(drivers, fmt.Sprintf("ETS cross-reference rows=%d", e.ETSMatchedRows))
-	}
-	if e.HasPartsBase {
-		drivers = append(drivers, fmt.Sprintf("PartsBase live pricing signals=%d (suppliers=%d)", e.PartsBaseResultCount, e.PartsBaseSupplierCount))
 	}
 	if e.HasWebSearchIntel {
 		drivers = append(drivers, fmt.Sprintf("external web intelligence references=%d", e.WebSearchResultCount))
@@ -4472,10 +4611,15 @@ func buildOverallPositionStatement(result *models.InsightResult, e scoringEviden
 	if ao.MandatoryNote != "" {
 		qualifiers = append(qualifiers, "mandatory-source or program-driven demand context is present")
 	}
-	if e.HasLiveFPDS {
-		qualifiers = append(qualifiers, "live award evidence supports demand interpretation")
-	} else if e.HasPartsBase {
-		qualifiers = append(qualifiers, "USAspending award rows were unavailable, but PartsBase GovData provides alternate procurement-signal evidence")
+	if e.HasPartsBase {
+		qualifiers = append(qualifiers, "PartsBase GovData provides the primary federal demand and supplier evidence layer")
+		if e.HasLiveFPDS {
+			qualifiers = append(qualifiers, "USAspending award rows provide secondary corroboration")
+		} else {
+			qualifiers = append(qualifiers, "USAspending corroboration is unavailable in this run")
+		}
+	} else if e.HasLiveFPDS {
+		qualifiers = append(qualifiers, "live award evidence supports demand interpretation, but PartsBase corroboration is unavailable")
 	} else {
 		qualifiers = append(qualifiers, "live award evidence is limited, increasing uncertainty")
 	}

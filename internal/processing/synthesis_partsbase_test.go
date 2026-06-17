@@ -143,9 +143,6 @@ func TestSynthesizeAddsPartsBaseCitationAndNarrative(t *testing.T) {
 	if !stringSliceContains(result.Citations, "PartsBase GovData API (live)") {
 		t.Fatalf("expected PartsBase citation, got: %#v", result.Citations)
 	}
-	if !strings.Contains(result.MarketCommentary, "PartsBase GovData contributed") {
-		t.Fatalf("expected market commentary to mention PartsBase contribution, got: %q", result.MarketCommentary)
-	}
 	if !insightsContainSubstring(result.KeyInsights, "PartsBase") {
 		t.Fatalf("expected key insights to include PartsBase reference, got: %#v", result.KeyInsights)
 	}
@@ -175,6 +172,21 @@ func TestSynthesizeUsesPartsBaseFallbackWhenUSASpendingUnavailable(t *testing.T)
 				"data_source": "prototype",
 			},
 			QualityScore: 0.4,
+		},
+		{
+			EntityID:   "7420014844559",
+			SourceCode: "ABILITYONE_ETS",
+			SnapshotAt: now,
+			RawResponse: map[string]any{
+				"matched_rows_count":            27,
+				"manufacturers":                 []string{"MONO MACHINES LLC", "SHARP", "CASIO", "TEXAS INSTRUMENTS"},
+				"manufacturer_reference_counts": map[string]int{"MONO MACHINES LLC": 47, "SHARP": 12, "CASIO": 6, "TEXAS INSTRUMENTS": 3},
+				"unique_manufacturer_count":     7,
+				"unique_sku_count":              27,
+				"unique_upc_count":              7,
+				"mapping_trend":                 "mature",
+			},
+			QualityScore: 0.9,
 		},
 		{
 			EntityID:   "7420014844559",
@@ -217,13 +229,22 @@ func TestSynthesizeUsesPartsBaseFallbackWhenUSASpendingUnavailable(t *testing.T)
 	if !insightsContainSubstring(result.KeyInsights, "PartsBase GovData surfaced 1855") {
 		t.Fatalf("expected key insights to include PartsBase demand baseline, got: %#v", result.KeyInsights)
 	}
+	if countInsightsContaining(result.KeyInsights, "1855") > 1 {
+		t.Fatalf("expected 1855 signal count to appear once in key insights, got: %#v", result.KeyInsights)
+	}
+	if strings.Count(result.AnalystRecommendation, "1855") > 1 {
+		t.Fatalf("expected analyst recommendation to avoid repeated 1855 count, got: %q", result.AnalystRecommendation)
+	}
+	if !insightsContainSubstring(result.KeyInsights, "Cross-source synthesis") {
+		t.Fatalf("expected cross-source interpretive insight, got: %#v", result.KeyInsights)
+	}
 	for _, insight := range result.KeyInsights {
 		if strings.Contains(insight, "No live USAspending award totals were returned in this run, so demand trends should be treated as lower confidence until refreshed.") {
 			t.Fatalf("found stale contradictory USAspending-only insight: %q", insight)
 		}
 	}
-	if !flagsContainSubstringWithSeverity(result.Flags, "USAspending award rows were not returned", "medium") {
-		t.Fatalf("expected medium-severity USAspending-missing flag with PartsBase mitigation, got: %#v", result.Flags)
+	if !flagsContainSubstringWithSeverity(result.Flags, "USAspending award rows were not returned", "low") {
+		t.Fatalf("expected low-severity USAspending-corroboration flag with PartsBase primary evidence, got: %#v", result.Flags)
 	}
 }
 
@@ -253,11 +274,53 @@ func TestCalculateRiskFromEvidenceDowngradesMissingUSASpendingWhenPartsBasePrese
 	}
 
 	_, flags := calculateRiskFromEvidence(snaps)
-	if !flagsContainSubstringWithSeverity(flags, "USAspending award rows were not returned", "medium") {
-		t.Fatalf("expected medium severity missing-USAspending flag when PartsBase evidence exists, got: %#v", flags)
+	if !flagsContainSubstringWithSeverity(flags, "USAspending award rows were not returned", "low") {
+		t.Fatalf("expected low severity missing-USAspending-corroboration flag when PartsBase evidence exists, got: %#v", flags)
 	}
 	if flagsContainSubstringWithSeverity(flags, "USAspending award rows were not returned", "high") {
 		t.Fatalf("did not expect high severity missing-USAspending flag when PartsBase evidence exists, got: %#v", flags)
+	}
+}
+
+func TestPartsBasePrimaryWeightingBeatsUSASpendingOnly(t *testing.T) {
+	t.Parallel()
+
+	partsBaseOnly := []models.DataSnapshot{
+		{
+			EntityID:   "7420014844559",
+			SourceCode: "PARTSBASE",
+			SnapshotAt: time.Now(),
+			RawResponse: map[string]any{
+				"result_count":   1855,
+				"supplier_count": 5,
+				"suppliers":      []string{"A", "B", "C", "D", "E"},
+				"price_signals":  []map[string]any{{"supplier": "A", "unit_price": 24.1}},
+			},
+		},
+	}
+	usaspendingOnly := []models.DataSnapshot{
+		{
+			EntityID:   "7420014844559",
+			SourceCode: "FPDS",
+			SnapshotAt: time.Now(),
+			RawResponse: map[string]any{
+				"data_source":    "live_usaspending",
+				"total_awards":   25,
+				"total_value_usd": 400000,
+			},
+		},
+	}
+
+	viabilityPartsBase := calculateViabilityFromEvidence(partsBaseOnly)
+	viabilityUSASpending := calculateViabilityFromEvidence(usaspendingOnly)
+	riskPartsBase, _ := calculateRiskFromEvidence(partsBaseOnly)
+	riskUSASpending, _ := calculateRiskFromEvidence(usaspendingOnly)
+
+	if viabilityPartsBase < viabilityUSASpending {
+		t.Fatalf("expected PartsBase-primary viability to be >= USAspending-only viability (partsbase=%f, usaspending=%f)", viabilityPartsBase, viabilityUSASpending)
+	}
+	if riskPartsBase > riskUSASpending {
+		t.Fatalf("expected PartsBase-primary risk to be <= USAspending-only risk (partsbase=%f, usaspending=%f)", riskPartsBase, riskUSASpending)
 	}
 }
 
@@ -277,6 +340,16 @@ func insightsContainSubstring(values []string, needle string) bool {
 		}
 	}
 	return false
+}
+
+func countInsightsContaining(values []string, needle string) int {
+	count := 0
+	for _, value := range values {
+		if strings.Contains(value, needle) {
+			count++
+		}
+	}
+	return count
 }
 
 func flagsContainSubstringWithSeverity(flags []models.RiskFlag, needle, severity string) bool {
