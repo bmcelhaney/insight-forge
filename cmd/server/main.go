@@ -128,21 +128,6 @@ func main() {
 		json.NewEncoder(w).Encode(result)
 	})
 
-	// Basic Excel export (placeholder for now - full version in next iteration)
-	r.Get("/api/export-excel/{nsn}", func(w http.ResponseWriter, r *http.Request) {
-		nsn := chi.URLParam(r, "nsn")
-		snaps, _ := extractorReg.FetchAll(r.Context(), nsn, nil, nil)
-		result, _ := processing.Synthesize(r.Context(), nsn, snaps)
-
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{
-			"note":   "Full multi-sheet Excel coming in next update",
-			"nsn":    nsn,
-			"result": result,
-			"snaps":  len(snaps),
-		})
-	})
-
 	// Debug endpoint for real award data (FPDS path)
 	r.Get("/debug/fpds/{nsn}", func(w http.ResponseWriter, r *http.Request) {
 		nsn := chi.URLParam(r, "nsn")

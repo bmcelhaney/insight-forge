@@ -53,5 +53,4 @@ See `DEPLOYMENT.md`. The only supported method is `./scripts/reset.sh`, which en
 ## Future Considerations
 
 - Possible move to containerized deployment (Azure or Fly.io dedicated app)
-- Richer Excel export (currently basic)
 - Additional live data sources as they become available

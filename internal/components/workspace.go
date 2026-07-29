@@ -206,11 +206,6 @@ func InsightCard(props WorkspaceProps) g.Node {
 					g.Text("Export JSON"),
 				),
 				Button(
-					Class("btn btn-accent btn-sm"),
-					ds.On("click", fmt.Sprintf(`window.location = '%s'`, props.path(fmt.Sprintf("/api/export-excel/%s", r.EntityID)))),
-					g.Text("Export Excel Bundle"),
-				),
-				Button(
 					Class("btn btn-ghost btn-sm"),
 					ds.On("click", fmt.Sprintf(`@set($nsn, '%s'); @post('%s', {nsn: $nsn})`, r.EntityID, props.path("/datastar/analyze"))),
 					g.Text("Re-run"),
