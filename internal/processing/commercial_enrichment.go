@@ -158,16 +158,18 @@ func enrichCommercialReferences(entityID string, refs []models.CommercialReferen
 
 		r.LinkShop = buildShopSearchURL(r.Manufacturer, r.SKU, r.UPC, r.Description)
 		if r.UPC != "" {
-			r.LinkUPC = "https://www.google.com/search?q=" + url.QueryEscape(r.UPC+" UPC")
+			// UPC product lookup (Google Shopping with bare UPC is typically product-specific).
+			r.LinkUPC = "https://www.google.com/search?tbm=shop&q=" + url.QueryEscape(r.UPC)
 		}
-		r.LinkGSA = buildGSASearchURL(r.SKU, r.UPC, digitsNSN)
+		r.LinkAmazon = buildAmazonSearchURL(r.SKU, r.UPC)
+		// Federal catalog: AbilityOne.com accepts dashed NSN and returns the product — GSA SPA deep-links are broken.
+		r.LinkGSA = buildFederalCatalogURL(r.SKU, r.UPC, digitsNSN)
 		r.LinkWebsite = manufacturerHomepage(r.Manufacturer)
 		if r.PriceURL == "" {
-			// Prefer GSA when price came from GSA; otherwise shop search for verification.
-			if strings.EqualFold(r.PriceSource, "GSA_ADVANTAGE") && r.LinkGSA != "" {
-				r.PriceURL = r.LinkGSA
-			} else if r.LinkShop != "" {
+			if r.LinkShop != "" {
 				r.PriceURL = r.LinkShop
+			} else if r.LinkGSA != "" {
+				r.PriceURL = r.LinkGSA
 			}
 		}
 
@@ -760,47 +762,64 @@ func buildPartsBaseHistoricalPricing(snaps []models.DataSnapshot) *models.PartsB
 	}
 }
 
+// buildShopSearchURL builds a Google Shopping URL pre-filled with the most
+// product-specific identifier available (UPC first, then exact SKU phrase).
 func buildShopSearchURL(manufacturer, sku, upc, description string) string {
-	parts := make([]string, 0, 4)
-	if manufacturer != "" {
-		parts = append(parts, manufacturer)
+	if u := normalizeUPCDigits(upc); u != "" {
+		// Bare UPC usually resolves to a single product card.
+		return "https://www.google.com/search?tbm=shop&q=" + url.QueryEscape(u)
 	}
+	sku = strings.TrimSpace(sku)
+	mfr := strings.TrimSpace(manufacturer)
 	if sku != "" {
-		parts = append(parts, sku)
-	}
-	if upc != "" {
-		parts = append(parts, upc)
-	}
-	if len(parts) == 0 && description != "" {
-		// Fall back to a short description fragment.
-		desc := description
-		if len(desc) > 80 {
-			desc = desc[:80]
+		// Quoted SKU forces exact-part matching; manufacturer disambiguates private-label collisions.
+		q := `"` + sku + `"`
+		if mfr != "" {
+			q += " " + mfr
 		}
-		parts = append(parts, desc)
+		return "https://www.google.com/search?tbm=shop&q=" + url.QueryEscape(q)
 	}
-	if len(parts) == 0 {
-		return ""
+	if mfr != "" && strings.TrimSpace(description) != "" {
+		desc := strings.TrimSpace(description)
+		if len(desc) > 60 {
+			desc = desc[:60]
+		}
+		return "https://www.google.com/search?tbm=shop&q=" + url.QueryEscape(mfr+" "+desc)
 	}
-	q := strings.Join(parts, " ")
-	// Google Shopping is a resilient discovery surface (search results, not brittle deep links).
-	return "https://www.google.com/search?tbm=shop&q=" + url.QueryEscape(q)
+	if mfr != "" {
+		return "https://www.google.com/search?tbm=shop&q=" + url.QueryEscape(mfr)
+	}
+	return ""
 }
 
-func buildGSASearchURL(sku, upc, nsn string) string {
-	term := ""
-	switch {
-	case sku != "":
-		term = sku
-	case upc != "":
-		term = upc
-	case nsn != "":
-		term = nsn
-	default:
-		return "https://www.gsaadvantage.gov/"
+// buildAmazonSearchURL prefills Amazon search with SKU or UPC so the analyst does not retype.
+func buildAmazonSearchURL(sku, upc string) string {
+	term := strings.TrimSpace(sku)
+	if term == "" {
+		term = normalizeUPCDigits(upc)
 	}
-	// Public search landing — works even when POST scrape fails.
-	return "https://www.gsaadvantage.gov/advantage/s/search.do?q=1:4" + url.QueryEscape(term) + "&q=1:5" + url.QueryEscape(term) + "&db=0&searchType=1"
+	if term == "" {
+		return ""
+	}
+	return "https://www.amazon.com/s?k=" + url.QueryEscape(term)
+}
+
+// buildFederalCatalogURL opens AbilityOne.com with the NSN (dashed) or SKU already in the query.
+// GSA Advantage SPA no longer supports stable product deep-links for unauthenticated clients.
+func buildFederalCatalogURL(sku, upc, nsn string) string {
+	d := digitsOnlyString(nsn)
+	if len(d) >= 13 {
+		d = d[len(d)-13:]
+		dashed := d[0:4] + "-" + d[4:6] + "-" + d[6:9] + "-" + d[9:13]
+		return "https://www.abilityone.com/search?q=" + url.QueryEscape(dashed)
+	}
+	if sku = strings.TrimSpace(sku); sku != "" {
+		return "https://www.abilityone.com/search?q=" + url.QueryEscape(sku)
+	}
+	if u := normalizeUPCDigits(upc); u != "" {
+		return "https://www.abilityone.com/search?q=" + url.QueryEscape(u)
+	}
+	return "https://www.abilityone.com/"
 }
 
 func manufacturerHomepage(name string) string {

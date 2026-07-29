@@ -1306,29 +1306,66 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
       return '';
     }
 
-    // Prefer server-provided resilient links; fall back to the same URL rules client-side.
+    function digitsOnly(value) {
+      return String(value || '').replace(/\D/g, '');
+    }
+
+    function formatDashedNSN(nsn) {
+      const d = digitsOnly(nsn);
+      if (d.length < 13) return d || '';
+      const n = d.slice(-13);
+      return n.slice(0, 4) + '-' + n.slice(4, 6) + '-' + n.slice(6, 9) + '-' + n.slice(9, 13);
+    }
+
+    // Prefer server-provided links; fall back to the same product-specific URL rules client-side.
     function buildCommercialLinks(c, nsn) {
       const mfr = (c.manufacturer || '').trim();
       const sku = (c.sku || '').trim();
-      const upc = (c.upc || '').trim();
+      const upc = digitsOnly(c.upc || '').replace(/^0+(\d{12,14})$/, '$1'); // keep full UPC, don't strip meaningful zeros badly
+      const upcClean = digitsOnly(c.upc || '');
       const desc = (c.description || '').trim();
-      const parts = [];
-      if (mfr) parts.push(mfr);
-      if (sku) parts.push(sku);
-      if (upc) parts.push(upc);
-      if (parts.length === 0 && desc) parts.push(desc.slice(0, 80));
-      const shopQ = parts.join(' ');
 
-      const shop = c.link_shop || c.linkShop || (shopQ ? ('https://www.google.com/search?tbm=shop&q=' + encodeURIComponent(shopQ)) : '');
-      const upcLink = c.link_upc || c.linkUpc || (upc ? ('https://www.google.com/search?q=' + encodeURIComponent(upc + ' UPC')) : '');
-      const gsaTerm = sku || upc || nsn || '';
-      const gsa = c.link_gsa || c.linkGsa || (gsaTerm
-        ? ('https://www.gsaadvantage.gov/advantage/s/search.do?q=1:4' + encodeURIComponent(gsaTerm) + '&searchType=1&db=0')
-        : 'https://www.gsaadvantage.gov/');
+      // Google Shopping: UPC alone is most product-specific; otherwise exact-quoted SKU + mfr.
+      let shopFallback = '';
+      if (upcClean.length >= 11) {
+        shopFallback = 'https://www.google.com/search?tbm=shop&q=' + encodeURIComponent(upcClean);
+      } else if (sku) {
+        const q = '"' + sku + '"' + (mfr ? (' ' + mfr) : '');
+        shopFallback = 'https://www.google.com/search?tbm=shop&q=' + encodeURIComponent(q);
+      } else if (mfr && desc) {
+        shopFallback = 'https://www.google.com/search?tbm=shop&q=' + encodeURIComponent(mfr + ' ' + desc.slice(0, 60));
+      }
+
+      const amazonFallback = (sku || upcClean)
+        ? ('https://www.amazon.com/s?k=' + encodeURIComponent(sku || upcClean))
+        : '';
+
+      // Federal catalog: AbilityOne.com with dashed NSN prefilled (GSA SPA has no stable product deep-links).
+      const dashed = formatDashedNSN(nsn);
+      let federalFallback = 'https://www.abilityone.com/';
+      if (dashed.length === 16) { // ####-##-###-####
+        federalFallback = 'https://www.abilityone.com/search?q=' + encodeURIComponent(dashed);
+      } else if (sku) {
+        federalFallback = 'https://www.abilityone.com/search?q=' + encodeURIComponent(sku);
+      } else if (upcClean) {
+        federalFallback = 'https://www.abilityone.com/search?q=' + encodeURIComponent(upcClean);
+      }
+
+      const shop = c.link_shop || c.linkShop || shopFallback;
+      const upcLink = c.link_upc || c.linkUpc || (upcClean.length >= 11
+        ? ('https://www.google.com/search?tbm=shop&q=' + encodeURIComponent(upcClean))
+        : '');
+      const amazon = c.link_amazon || c.linkAmazon || amazonFallback;
+      const federal = c.link_gsa || c.linkGsa || federalFallback;
       const website = c.link_website || c.linkWebsite || manufacturerHomepage(mfr);
       const priceUrl = c.price_url || c.priceUrl || '';
 
-      return { shop, upc: upcLink, gsa, website, priceUrl };
+      // Label shop/amazon by which key is embedded so analyst sees what's prefilled.
+      const shopLabel = upcClean.length >= 11 ? 'Shop (UPC)' : (sku ? 'Shop (SKU)' : 'Shop');
+      const amazonLabel = sku ? 'Amazon (SKU)' : (upcClean ? 'Amazon (UPC)' : 'Amazon');
+      const federalLabel = dashed.length === 16 ? 'AbilityOne (NSN)' : (sku ? 'AbilityOne (SKU)' : 'AbilityOne');
+
+      return { shop, shopLabel, upc: upcLink, amazon, amazonLabel, federal, federalLabel, website, priceUrl };
     }
 
     function appendCommercialLinkRow(parent, links) {
@@ -1336,7 +1373,7 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
       const row = document.createElement('div');
       row.className = 'flex flex-wrap gap-x-3 gap-y-1 mt-1';
       const add = (href, label, cls) => {
-        if (!href) return;
+        if (!href || !label) return;
         const a = document.createElement('a');
         a.href = href;
         a.target = '_blank';
@@ -1345,10 +1382,14 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
         a.textContent = label;
         row.appendChild(a);
       };
-      add(links.shop, 'Shop search', 'text-[11px] text-emerald-300 hover:text-emerald-200 underline');
-      add(links.upc, 'UPC search');
-      add(links.gsa, 'GSA search');
-      add(links.priceUrl && links.priceUrl !== links.shop && links.priceUrl !== links.gsa ? links.priceUrl : '', 'Price source');
+      add(links.shop, links.shopLabel || 'Shop (SKU)', 'text-[11px] text-emerald-300 hover:text-emerald-200 underline');
+      // Avoid duplicate UPC link when shop already uses UPC.
+      if (links.upc && links.upc !== links.shop) {
+        add(links.upc, 'Shop (UPC)');
+      }
+      add(links.amazon, links.amazonLabel || 'Amazon');
+      add(links.federal, links.federalLabel || 'AbilityOne (NSN)', 'text-[11px] text-amber-300 hover:text-amber-200 underline');
+      add(links.priceUrl && links.priceUrl !== links.shop && links.priceUrl !== links.federal && links.priceUrl !== links.amazon ? links.priceUrl : '', 'Price source');
       add(links.website, 'Manufacturer site', 'text-[11px] text-zinc-400 hover:text-zinc-200 underline');
       if (row.childNodes.length) parent.appendChild(row);
     }

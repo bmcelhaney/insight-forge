@@ -173,9 +173,10 @@ type CommercialReference struct {
 	PriceSource  string `json:"price_source,omitempty"`  // GSA_ADVANTAGE | PARTSBASE | etc.
 	PriceAsOf    string `json:"price_as_of,omitempty"`   // ISO date or capture time when known
 	PriceURL     string `json:"price_url,omitempty"`     // Best URL to view/verify the price
-	LinkShop     string `json:"link_shop,omitempty"`     // Resilient marketplace/search URL (rarely 404s)
-	LinkUPC      string `json:"link_upc,omitempty"`      // UPC-based search URL
-	LinkGSA      string `json:"link_gsa,omitempty"`      // GSA Advantage search URL
+	LinkShop     string `json:"link_shop,omitempty"`     // Google Shopping prefilled with exact UPC or SKU
+	LinkUPC      string `json:"link_upc,omitempty"`      // UPC product lookup
+	LinkAmazon   string `json:"link_amazon,omitempty"`   // Amazon search prefilled with SKU/UPC
+	LinkGSA      string `json:"link_gsa,omitempty"`      // Federal catalog (AbilityOne.com) prefilled with NSN/SKU
 	LinkWebsite  string `json:"link_website,omitempty"`  // Manufacturer homepage when known
 	Context      string `json:"context,omitempty"`       // Short note from source (e.g. "JWOD listing", "substitute")
 	DateAdded    string `json:"date_added,omitempty"`    // ETS mapping date when available
