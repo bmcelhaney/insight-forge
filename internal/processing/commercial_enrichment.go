@@ -820,8 +820,9 @@ func amazonASINFromSKU(sku string) (string, bool) {
 			return "", false
 		}
 	}
-	// Typical retail ASIN patterns (B0… / B00… / B0 + digit).
-	if upper[0] == 'B' && upper[1] >= '0' && upper[1] <= '9' {
+	// Retail ASINs are almost always B0……… (B00…/B0A…). Require B0 to avoid
+	// false positives from hex fragments in tracking URLs (e.g. …8b74bc4c7b…).
+	if upper[0] == 'B' && upper[1] == '0' {
 		return upper, true
 	}
 	return "", false

@@ -811,22 +811,20 @@ func extractASINFromOffersAndImages(offers []upcOffer, images []string) string {
 func scanASINToken(s string) string {
 	s = strings.ToUpper(s)
 	for i := 0; i+10 <= len(s); i++ {
-		if s[i] != 'B' {
+		if s[i] != 'B' || s[i+1] != '0' {
 			continue
 		}
-		// B0… ASIN
-		if i+1 < len(s) && s[i+1] >= '0' && s[i+1] <= '9' {
-			tok := s[i : i+10]
-			ok := true
-			for _, r := range tok {
-				if !((r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')) {
-					ok = false
-					break
-				}
+		tok := s[i : i+10]
+		ok := true
+		for _, r := range tok {
+			if !((r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')) {
+				ok = false
+				break
 			}
-			if ok {
-				return tok
-			}
+		}
+		// Prefer tokens next to URL path markers when scanning free text.
+		if ok {
+			return tok
 		}
 	}
 	return ""
