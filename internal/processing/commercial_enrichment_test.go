@@ -132,17 +132,17 @@ func TestExtractFiltersPartsBaseContractIDs(t *testing.T) {
 
 func TestProbeCommercialPricesFillsFromSearch(t *testing.T) {
 	clearCommercialPriceCache()
-	prev := gsaPriceSearch
+	prev := commercialPriceSearch
 	t.Cleanup(func() {
-		gsaPriceSearch = prev
+		commercialPriceSearch = prev
 		clearCommercialPriceCache()
 		os.Unsetenv("IF_COMMERCIAL_PRICE_PROBES")
 	})
 
 	var calls atomic.Int32
-	gsaPriceSearch = func(ctx context.Context, term string) ([]map[string]any, error) {
+	commercialPriceSearch = func(ctx context.Context, term string) ([]map[string]any, error) {
 		calls.Add(1)
-		return []map[string]any{{"price": "7.25", "mfr_part": term}}, nil
+		return []map[string]any{{"price": "7.25", "mfr_part": term, "price_source": "ABILITYONE_COM"}}, nil
 	}
 	os.Setenv("IF_COMMERCIAL_PRICE_PROBES", "5")
 
@@ -154,7 +154,7 @@ func TestProbeCommercialPricesFillsFromSearch(t *testing.T) {
 	if out[0].Price == "" || !strings.Contains(out[0].Price, "7.25") {
 		t.Fatalf("expected probed price, got %#v", out[0])
 	}
-	if out[0].PriceSource != "GSA_ADVANTAGE" {
+	if out[0].PriceSource != "ABILITYONE_COM" {
 		t.Fatalf("price source: %q", out[0].PriceSource)
 	}
 	if calls.Load() != 1 {
@@ -176,13 +176,13 @@ func TestProbeCommercialPricesFillsFromSearch(t *testing.T) {
 
 func TestProbeCommercialPricesDisabled(t *testing.T) {
 	clearCommercialPriceCache()
-	prev := gsaPriceSearch
+	prev := commercialPriceSearch
 	t.Cleanup(func() {
-		gsaPriceSearch = prev
+		commercialPriceSearch = prev
 		os.Unsetenv("IF_COMMERCIAL_PRICE_PROBES")
 	})
 	var calls atomic.Int32
-	gsaPriceSearch = func(ctx context.Context, term string) ([]map[string]any, error) {
+	commercialPriceSearch = func(ctx context.Context, term string) ([]map[string]any, error) {
 		calls.Add(1)
 		return []map[string]any{{"price": "1.00"}}, nil
 	}
@@ -195,5 +195,32 @@ func TestProbeCommercialPricesDisabled(t *testing.T) {
 	}
 	if calls.Load() != 0 {
 		t.Fatalf("expected 0 calls, got %d", calls.Load())
+	}
+}
+
+func TestNSNChannelPriceAppliedToETSRefs(t *testing.T) {
+	snaps := []models.DataSnapshot{{
+		SourceCode: "ABILITYONE_COMMERCE",
+		Value:      13.01,
+		RawResponse: map[string]any{
+			"best_price": 13.01,
+			"best_sku":   "7520-00-935-7136",
+			"best_name":  "U.S. Government Pen",
+			"search_url": "https://www.abilityone.com/search?q=7520-00-935-7136",
+			"price_as_of": "2026-07-29",
+		},
+	}}
+	refs := []models.CommercialReference{
+		{SKU: "BICCSM11BK", Manufacturer: "BIC", Source: "ABILITYONE_ETS"},
+	}
+	out := enrichCommercialReferences("7520009357136", refs, snaps)
+	if len(out) != 1 {
+		t.Fatalf("expected 1 ref, got %d", len(out))
+	}
+	if out[0].Price == "" || !strings.Contains(out[0].Price, "13.01") {
+		t.Fatalf("expected NSN channel price applied, got %q", out[0].Price)
+	}
+	if out[0].PriceSource != "ABILITYONE_COM" {
+		t.Fatalf("price source %q", out[0].PriceSource)
 	}
 }

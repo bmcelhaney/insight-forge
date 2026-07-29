@@ -1319,6 +1319,8 @@ func isLiveSnapshotForScoring(s models.DataSnapshot) bool {
 		return strings.TrimSpace(firstStringFromAny(s.RawResponse["data_source"])) == "live_usaspending"
 	case "GSA_ADVANTAGE":
 		return len(mapSliceFromAny(s.RawResponse["prices_found"])) > 0
+	case "ABILITYONE_COMMERCE":
+		return toFloatFromAny(s.RawResponse["best_price"]) > 0 || s.Value > 0
 	case "ABILITYONE_ETS":
 		return intFromAny(s.RawResponse["matched_rows_count"]) > 0
 	case "PARTSBASE":

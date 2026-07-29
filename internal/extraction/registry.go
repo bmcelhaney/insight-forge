@@ -54,6 +54,10 @@ func NewDefaultRegistry(samAPIKey string, partsBaseCfg PartsBaseConfig) *Registr
 	ets := NewAbilityOneETSExtractor(etsPath)
 	r.extractors[ets.SourceCode()] = ets
 
+	// Live AbilityOne.com catalog list prices (primary federal-channel price after GSA SPA break).
+	aoc := NewAbilityOneCommerceExtractor()
+	r.extractors[aoc.SourceCode()] = aoc
+
 	// Live web-search intelligence layer for deeper non-demo NSN insights.
 	wi := NewWebSearchIntelExtractor()
 	r.extractors[wi.SourceCode()] = wi

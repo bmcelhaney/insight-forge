@@ -17,8 +17,36 @@ import (
 
 const maxCommercialReferences = 200
 
-// gsaPriceSearch is injectable for tests. Default hits live GSA Advantage.
-var gsaPriceSearch = extraction.SearchGSAAdvantage
+// commercialPriceSearch is injectable for tests. Default prefers AbilityOne.com
+// (reliable JSON API), then falls back to GSA Advantage (often broken after SPA rewrite).
+var commercialPriceSearch = defaultCommercialPriceSearch
+
+func defaultCommercialPriceSearch(ctx context.Context, term string) ([]map[string]any, error) {
+	// 1) AbilityOne.com catalog (dashed NSN or SKU)
+	if hits, err := extraction.SearchAbilityOneCommerce(ctx, term); err == nil && len(hits) > 0 {
+		out := make([]map[string]any, 0, len(hits))
+		for _, h := range hits {
+			if h.Price <= 0 {
+				continue
+			}
+			out = append(out, map[string]any{
+				"price":        fmt.Sprintf("%.2f", h.Price),
+				"mfr_part":     h.SKU,
+				"sku":          h.SKU,
+				"manufacturer": h.Brand,
+				"description":  h.Name,
+				"upc":          h.UPC,
+				"price_source": "ABILITYONE_COM",
+				"source":       "ABILITYONE_COM",
+			})
+		}
+		if len(out) > 0 {
+			return out, nil
+		}
+	}
+	// 2) GSA Advantage — retained as degraded fallback (POST scrape frequently 405s).
+	return extraction.SearchGSAAdvantage(ctx, term)
+}
 
 type cachedCommercialPrice struct {
 	price  string
@@ -78,15 +106,32 @@ var manufacturerHomepages = []struct {
 }
 
 // enrichCommercialReferences attaches resilient discovery links, merges live
-// prices from GSA/PartsBase snapshots, sorts for analyst usefulness, and caps size.
+// prices from AbilityOne.com / GSA / PartsBase snapshots, sorts for usefulness, and caps size.
 func enrichCommercialReferences(entityID string, refs []models.CommercialReference, snaps []models.DataSnapshot) []models.CommercialReference {
+	priceIndex := buildCommercialPriceIndex(snaps)
+	nsnChannel := extractNSNChannelPrice(snaps, entityID)
+	now := time.Now().UTC().Format("2006-01-02")
+	digitsNSN := digitsOnlyString(entityID)
+
+	// Ensure at least one commercial row exists when we have an NSN channel price
+	// so analysts still see pricing even if ETS has no mappings.
+	if len(refs) == 0 && nsnChannel.price != "" {
+		refs = []models.CommercialReference{{
+			SKU:          nsnChannel.sku,
+			Manufacturer: nsnChannel.brand,
+			Description:  nsnChannel.name,
+			Source:       "ABILITYONE_COMMERCE",
+			Price:        nsnChannel.price,
+			PriceSource:  "ABILITYONE_COM",
+			PriceAsOf:    nsnChannel.asOf,
+			PriceURL:     nsnChannel.url,
+			Context:      "AbilityOne.com catalog list price for this NSN",
+		}}
+	}
+
 	if len(refs) == 0 {
 		return refs
 	}
-
-	priceIndex := buildCommercialPriceIndex(snaps)
-	now := time.Now().UTC().Format("2006-01-02")
-	digitsNSN := digitsOnlyString(entityID)
 
 	out := make([]models.CommercialReference, 0, len(refs))
 	for _, r := range refs {
@@ -108,10 +153,26 @@ func enrichCommercialReferences(entityID string, refs []models.CommercialReferen
 					r.PriceURL = p.url
 				}
 			}
-		} else if r.PriceSource == "" {
+		}
+		// Fallback: apply NSN-level AbilityOne.com channel price to unpriced ETS/commercial rows.
+		// This is the primary fix after GSA Advantage HTML scrape stopped working.
+		if r.Price == "" && nsnChannel.price != "" {
+			r.Price = nsnChannel.price
+			r.PriceSource = "ABILITYONE_COM"
+			r.PriceAsOf = nsnChannel.asOf
+			r.PriceURL = nsnChannel.url
+			if r.Context == "" {
+				r.Context = "AbilityOne.com NSN channel list price (same federal item)"
+			} else if !strings.Contains(strings.ToLower(r.Context), "abilityone.com") {
+				r.Context = r.Context + " | AbilityOne.com NSN channel list price"
+			}
+		}
+		if r.Price != "" && r.PriceSource == "" {
 			switch strings.ToUpper(r.Source) {
 			case "GSA_ADVANTAGE":
 				r.PriceSource = "GSA_ADVANTAGE"
+			case "ABILITYONE_COMMERCE":
+				r.PriceSource = "ABILITYONE_COM"
 			case "PARTSBASE":
 				r.PriceSource = "PARTSBASE"
 			default:
@@ -263,15 +324,20 @@ func probeCommercialPrices(ctx context.Context, refs []models.CommercialReferenc
 				return
 			}
 
-			prices, err := gsaPriceSearch(probeCtx, c.term)
+			prices, err := commercialPriceSearch(probeCtx, c.term)
 			if err != nil || len(prices) == 0 {
 				results <- result{idx: c.idx, ok: false}
 				return
 			}
 			price := ""
+			source := "ABILITYONE_COM"
+			priceURL := "https://www.abilityone.com/search?q=" + url.QueryEscape(c.term)
 			for _, p := range prices {
 				if v := firstNonEmptyString(p, "price"); v != "" {
 					price = normalizePriceString(v)
+					if ps := firstNonEmptyString(p, "price_source", "source"); ps != "" {
+						source = strings.ToUpper(ps)
+					}
 					break
 				}
 			}
@@ -279,11 +345,17 @@ func probeCommercialPrices(ctx context.Context, refs []models.CommercialReferenc
 				results <- result{idx: c.idx, ok: false}
 				return
 			}
+			if strings.Contains(source, "GSA") {
+				priceURL = "https://www.gsaadvantage.gov/advantage?theme=adv19&store=ADVANTAGE"
+				source = "GSA_ADVANTAGE"
+			} else {
+				source = "ABILITYONE_COM"
+			}
 			hit := cachedCommercialPrice{
 				price:  price,
-				source: "GSA_ADVANTAGE",
+				source: source,
 				asOf:   time.Now().UTC().Format("2006-01-02"),
-				url:    "https://www.gsaadvantage.gov/advantage/s/search.do?q=1:4" + url.QueryEscape(c.term) + "&searchType=1&db=0",
+				url:    priceURL,
 				expiry: time.Now().Add(24 * time.Hour),
 			}
 			setCachedCommercialPrice(c.key, hit)
@@ -465,6 +537,65 @@ func (idx commercialPriceIndex) lookup(r models.CommercialReference) (commercial
 	return commercialPriceHit{}, false
 }
 
+type nsnChannelPrice struct {
+	price string
+	sku   string
+	name  string
+	brand string
+	asOf  string
+	url   string
+}
+
+func extractNSNChannelPrice(snaps []models.DataSnapshot, entityID string) nsnChannelPrice {
+	digits := digitsOnlyString(entityID)
+	asOf := time.Now().UTC().Format("2006-01-02")
+	for _, s := range snaps {
+		if s.SourceCode != "ABILITYONE_COMMERCE" {
+			continue
+		}
+		price := firstStringFromAny(s.RawResponse["best_price"])
+		if price == "" {
+			if f := toFloatFromAny(s.RawResponse["best_price"]); f > 0 {
+				price = fmt.Sprintf("%.2f", f)
+			}
+		}
+		if price == "" && s.Value > 0 {
+			price = fmt.Sprintf("%.2f", s.Value)
+		}
+		if price == "" {
+			// Fall back to first priced commercial_reference on the snapshot.
+			for _, r := range mapSliceFromAny(s.RawResponse["commercial_references"]) {
+				if p := firstNonEmptyString(r, "price"); p != "" {
+					price = p
+					break
+				}
+			}
+		}
+		if strings.TrimSpace(price) == "" {
+			continue
+		}
+		return nsnChannelPrice{
+			price: normalizePriceString(price),
+			sku:   firstStringFromAny(s.RawResponse["best_sku"]),
+			name:  firstStringFromAny(s.RawResponse["best_name"]),
+			brand: firstStringFromAny(s.RawResponse["best_brand"]),
+			asOf:  nonEmptyOr(firstStringFromAny(s.RawResponse["price_as_of"]), asOf),
+			url:   nonEmptyOr(firstStringFromAny(s.RawResponse["search_url"]), abilityOneSearchURL(digits)),
+		}
+	}
+	return nsnChannelPrice{}
+}
+
+func abilityOneSearchURL(digitsOrTerm string) string {
+	term := strings.TrimSpace(digitsOrTerm)
+	d := digitsOnlyString(term)
+	if len(d) >= 13 {
+		d = d[len(d)-13:]
+		term = d[0:4] + "-" + d[4:6] + "-" + d[6:9] + "-" + d[9:13]
+	}
+	return "https://www.abilityone.com/search?q=" + url.QueryEscape(term)
+}
+
 func buildCommercialPriceIndex(snaps []models.DataSnapshot) commercialPriceIndex {
 	idx := commercialPriceIndex{
 		bySKU: make(map[string]commercialPriceHit),
@@ -474,6 +605,32 @@ func buildCommercialPriceIndex(snaps []models.DataSnapshot) commercialPriceIndex
 
 	for _, s := range snaps {
 		switch s.SourceCode {
+		case "ABILITYONE_COMMERCE":
+			searchURL := firstStringFromAny(s.RawResponse["search_url"])
+			for _, r := range mapSliceFromAny(s.RawResponse["commercial_references"]) {
+				price := firstNonEmptyString(r, "price")
+				if price == "" {
+					continue
+				}
+				hit := commercialPriceHit{
+					price:  normalizePriceString(price),
+					source: "ABILITYONE_COM",
+					asOf:   asOf,
+					url:    searchURL,
+				}
+				if sku := firstNonEmptyString(r, "sku", "mfr_part"); sku != "" {
+					idx.bySKU[strings.ToUpper(sku)] = hit
+					// Also index dashed/undashed NSN forms.
+					d := digitsOnlyString(sku)
+					if len(d) == 13 {
+						idx.bySKU[d] = hit
+						idx.bySKU[strings.ToUpper(d[0:4]+"-"+d[4:6]+"-"+d[6:9]+"-"+d[9:13])] = hit
+					}
+				}
+				if upc := normalizeUPCDigits(firstNonEmptyString(r, "upc")); upc != "" {
+					idx.byUPC[upc] = hit
+				}
+			}
 		case "GSA_ADVANTAGE":
 			gsaURL := firstStringFromAny(s.RawResponse["search_url"])
 			for _, p := range mapSliceFromAny(s.RawResponse["prices_found"]) {

@@ -909,8 +909,20 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
 
         const note = document.createElement('div');
         note.className = 'text-[10px] text-zinc-500 mb-2';
-        note.textContent = 'Shop search = indicative market pricing. GSA = federal channel when available. Links are search pages (stable), not manufacturer product deep-links.';
+        note.textContent = 'Prices: AbilityOne.com catalog list price is preferred (federal AbilityOne channel). GSA Advantage HTML scrape is currently degraded. Shop/UPC links open market search pages for commercial verification — not manufacturer deep-links.';
         commWrapper.appendChild(note);
+
+        // Surface NSN-level AbilityOne channel price if present on any ref
+        const channelPriced = commsAll.find(c => (c.price_source || c.priceSource || '') === 'ABILITYONE_COM' && c.price);
+        if (channelPriced) {
+          const banner = document.createElement('div');
+          banner.className = 'mb-3 text-xs text-emerald-200 bg-emerald-950/40 border border-emerald-800 rounded-xl px-3 py-2';
+          const p = String(channelPriced.price).startsWith('$') ? channelPriced.price : ('$' + channelPriced.price);
+          banner.innerHTML = `<strong>AbilityOne.com channel list price:</strong> ${p}` +
+            (channelPriced.price_as_of || channelPriced.priceAsOf ? ` <span class="text-emerald-400/80">· as of ${channelPriced.price_as_of || channelPriced.priceAsOf}</span>` : '') +
+            ` <span class="text-emerald-400/70">· applied to unpriced ETS/commercial rows for this NSN</span>`;
+          commWrapper.appendChild(banner);
+        }
 
         const filterRow = document.createElement('div');
         filterRow.className = 'flex flex-wrap gap-2 mb-3';
@@ -1161,6 +1173,7 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
     function sourceBadgeLabel(source) {
       const s = (source || '').toUpperCase();
       if (s === 'ABILITYONE_ETS') return 'ETS mapping';
+      if (s === 'ABILITYONE_COMMERCE') return 'AbilityOne.com';
       if (s === 'GSA_ADVANTAGE') return 'GSA Advantage';
       if (s === 'PARTSBASE') return 'PartsBase';
       if (s === 'ABILITYONE') return 'AbilityOne';

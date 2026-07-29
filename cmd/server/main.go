@@ -179,20 +179,31 @@ func main() {
 		etsMatched := 0
 		etsTruncated := false
 		etsDataset := ""
+		abilityOnePrice := ""
+		abilityOnePriceSKU := ""
 		for _, s := range snaps {
-			if s.SourceCode != "ABILITYONE_ETS" {
-				continue
+			if s.SourceCode == "ABILITYONE_ETS" {
+				if n, ok := s.RawResponse["matched_rows_count"].(int); ok {
+					etsMatched = n
+				} else if f, ok := s.RawResponse["matched_rows_count"].(float64); ok {
+					etsMatched = int(f)
+				}
+				if t, ok := s.RawResponse["references_truncated"].(bool); ok {
+					etsTruncated = t
+				}
+				if name, ok := s.RawResponse["dataset_name"].(string); ok {
+					etsDataset = name
+				}
 			}
-			if n, ok := s.RawResponse["matched_rows_count"].(int); ok {
-				etsMatched = n
-			} else if f, ok := s.RawResponse["matched_rows_count"].(float64); ok {
-				etsMatched = int(f)
-			}
-			if t, ok := s.RawResponse["references_truncated"].(bool); ok {
-				etsTruncated = t
-			}
-			if name, ok := s.RawResponse["dataset_name"].(string); ok {
-				etsDataset = name
+			if s.SourceCode == "ABILITYONE_COMMERCE" {
+				if p, ok := s.RawResponse["best_price"].(float64); ok && p > 0 {
+					abilityOnePrice = fmt.Sprintf("$%.2f", p)
+				} else if p, ok := s.RawResponse["best_price"].(string); ok && p != "" {
+					abilityOnePrice = p
+				}
+				if sku, ok := s.RawResponse["best_sku"].(string); ok {
+					abilityOnePriceSKU = sku
+				}
 			}
 		}
 
@@ -217,14 +228,17 @@ func main() {
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{
-			"nsn":               nsn,
-			"ets_dataset":       etsDataset,
-			"ets_matched_rows":  etsMatched,
-			"ets_truncated":     etsTruncated || len(result.CommercialReferences) >= 200,
-			"commercial_refs":   len(result.CommercialReferences),
-			"priced_count":      priced,
-			"sources":           sources,
-			"sample":            sample,
+			"nsn":                     nsn,
+			"ets_dataset":             etsDataset,
+			"ets_matched_rows":        etsMatched,
+			"ets_truncated":           etsTruncated || len(result.CommercialReferences) >= 200,
+			"abilityone_com_price":    abilityOnePrice,
+			"abilityone_com_sku":      abilityOnePriceSKU,
+			"commercial_refs":         len(result.CommercialReferences),
+			"priced_count":            priced,
+			"sources":                 sources,
+			"sample":                  sample,
+			"pricing_note":            "Primary live price source is AbilityOne.com catalog (dashed NSN). GSA Advantage HTML scrape is degraded after their SPA rewrite.",
 		})
 	})
 
