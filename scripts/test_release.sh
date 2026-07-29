@@ -31,6 +31,11 @@ chmod +x "$BINARY"
 
 # 2. Start server on the test port (isolated)
 echo "==> Starting isolated test server on :${PORT}..."
+# Gate only checks summary/report richness — disable outbound commercial/product
+# probes so the release gate does not burn UPCItemDB trial quota (or poison
+# negative caches) right before the production binary starts serving traffic.
+export IF_PRODUCT_LINK_RESOLVES="${IF_PRODUCT_LINK_RESOLVES:-0}"
+export IF_COMMERCIAL_PRICE_PROBES="${IF_COMMERCIAL_PRICE_PROBES:-0}"
 "$BINARY" --port "$PORT" > /tmp/insightforge-test.log 2>&1 &
 SERVER_PID=$!
 trap 'kill $SERVER_PID 2>/dev/null || true; rm -f "$BINARY"' EXIT

@@ -48,7 +48,7 @@ var (
 
 // enrichProductLinks resolves UPC/SKU to real product identity (title, ASIN) and
 // rewrites shop/Amazon/federal links to be as product-specific as possible.
-// Soft-fails always; bounded by IF_PRODUCT_LINK_RESOLVES (default 12).
+// Soft-fails always; bounded by IF_PRODUCT_LINK_RESOLVES (default 16).
 func enrichProductLinks(ctx context.Context, refs []models.CommercialReference, entityID string) []models.CommercialReference {
 	if len(refs) == 0 {
 		return refs
@@ -59,11 +59,17 @@ func enrichProductLinks(ctx context.Context, refs []models.CommercialReference, 
 		return applyDeterministicProductLinks(refs, entityID, nil)
 	}
 
+	// Independent budget so a spent parent analyze context cannot zero out deep-link work.
 	budget := productLinkResolveBudget()
-	probeCtx, cancel := context.WithTimeout(ctx, budget)
+	base := ctx
+	if base == nil {
+		base = context.Background()
+	}
+	probeCtx, cancel := context.WithTimeout(context.WithoutCancel(base), budget)
 	defer cancel()
 
-	// Rank candidates: has UPC first, then SKU+mfr, cap to limit.
+	// Rank candidates: has UPC first, then ASIN-as-SKU, then SKU+mfr, cap to limit.
+	// Deduplicate by cache key so we only network-resolve each UPC/SKU once.
 	type cand struct {
 		idx   int
 		score int
@@ -73,6 +79,7 @@ func enrichProductLinks(ctx context.Context, refs []models.CommercialReference, 
 		mfr   string
 	}
 	var cands []cand
+	seenKey := map[string]bool{}
 	for i, r := range refs {
 		upc := normalizeUPCDigits(r.UPC)
 		sku := strings.TrimSpace(r.SKU)
@@ -80,15 +87,27 @@ func enrichProductLinks(ctx context.Context, refs []models.CommercialReference, 
 			continue
 		}
 		key := productCacheKey(sku, upc)
+		if seenKey[key] {
+			// Still track first index only for network; expand step covers siblings.
+			continue
+		}
+		seenKey[key] = true
 		score := 0
 		if upc != "" {
 			score += 50
+		}
+		if _, ok := amazonASINFromSKU(sku); ok {
+			score += 40 // ASIN deep-link + price resolve is high value
 		}
 		if sku != "" {
 			score += 20
 		}
 		if strings.TrimSpace(r.Manufacturer) != "" {
 			score += 5
+		}
+		// Prefer unpriced tiles so we spend budget where price backfill helps most.
+		if strings.TrimSpace(r.Price) == "" {
+			score += 8
 		}
 		cands = append(cands, cand{idx: i, score: score, key: key, sku: sku, upc: upc, mfr: strings.TrimSpace(r.Manufacturer)})
 	}
@@ -108,8 +127,9 @@ func enrichProductLinks(ctx context.Context, refs []models.CommercialReference, 
 
 	resolved := make(map[int]*productIdentity, len(cands))
 	var mu sync.Mutex
+	// Serial-ish (2) to reduce UPCItemDB trial rate-limit storms after release gates.
+	sem := make(chan struct{}, 2)
 	var wg sync.WaitGroup
-	sem := make(chan struct{}, 4)
 	for _, c := range cands {
 		c := c
 		wg.Add(1)
@@ -141,13 +161,14 @@ func enrichProductLinks(ctx context.Context, refs []models.CommercialReference, 
 }
 
 // expandResolvedIdentities copies a resolved identity onto sibling refs that
-// share UPC or SKU but were not selected for a network resolve.
+// share UPC, SKU, model, or ASIN but were not selected for a network resolve.
 func expandResolvedIdentities(refs []models.CommercialReference, resolved map[int]*productIdentity) map[int]*productIdentity {
 	if resolved == nil {
 		resolved = map[int]*productIdentity{}
 	}
 	byUPC := map[string]*productIdentity{}
 	bySKU := map[string]*productIdentity{}
+	byASIN := map[string]*productIdentity{}
 	for i, id := range resolved {
 		if id == nil {
 			continue
@@ -155,12 +176,19 @@ func expandResolvedIdentities(refs []models.CommercialReference, resolved map[in
 		if u := normalizeUPCDigits(id.UPC); u != "" {
 			byUPC[u] = id
 		}
+		if a := strings.ToUpper(strings.TrimSpace(id.ASIN)); a != "" {
+			byASIN[a] = id
+			bySKU[a] = id
+		}
 		if i >= 0 && i < len(refs) {
 			if u := normalizeUPCDigits(refs[i].UPC); u != "" {
 				byUPC[u] = id
 			}
 			if s := strings.ToUpper(strings.TrimSpace(refs[i].SKU)); s != "" {
 				bySKU[s] = id
+				if a, ok := amazonASINFromSKU(s); ok {
+					byASIN[a] = id
+				}
 			}
 		}
 		if s := strings.ToUpper(strings.TrimSpace(id.Model)); s != "" {
@@ -183,17 +211,30 @@ func expandResolvedIdentities(refs []models.CommercialReference, resolved map[in
 				continue
 			}
 		}
-		if s := strings.ToUpper(strings.TrimSpace(r.SKU)); s != "" {
+		s := strings.ToUpper(strings.TrimSpace(r.SKU))
+		if s != "" {
 			if id := bySKU[s]; id != nil {
 				out[i] = id
 				continue
 			}
-			// Compact match: BICCSM11BK vs BIC CSM11BK
-			compact := compactAlnum(s)
-			for k, id := range bySKU {
-				if compact != "" && compactAlnum(k) == compact {
+			if a, ok := amazonASINFromSKU(s); ok {
+				if id := byASIN[a]; id != nil {
 					out[i] = id
-					break
+					continue
+				}
+			}
+			// Compact match: BICCSM11BK vs BIC CSM11BK / CSM11BK
+			compact := compactAlnum(s)
+			if compact != "" {
+				for k, id := range bySKU {
+					kc := compactAlnum(k)
+					if kc == compact || strings.HasSuffix(compact, kc) || strings.HasSuffix(kc, compact) {
+						// Avoid tiny false positives (e.g. "BK")
+						if len(kc) >= 5 && len(compact) >= 5 {
+							out[i] = id
+							break
+						}
+					}
 				}
 			}
 		}
@@ -405,34 +446,51 @@ func resolveProductIdentity(ctx context.Context, sku, upc, mfr string) (productI
 
 	var id productIdentity
 	var ok bool
+	var transient bool // rate-limit / 5xx — do not long-cache as "not found"
 
 	// Prefer UPC lookup (single definitive item).
 	if u := normalizeUPCDigits(upc); u != "" {
-		id, ok = upcitemdbLookup(ctx, u)
+		id, ok, transient = upcitemdbLookup(ctx, u)
+	}
+	// ASIN-as-SKU: search by ASIN to recover offers/title for price backfill.
+	if !ok && !transient {
+		if asin, isASIN := amazonASINFromSKU(sku); isASIN {
+			id, ok, transient = upcitemdbSearch(ctx, asin, sku)
+		}
 	}
 	// Fall back to text search by SKU (+ brand).
-	if !ok && strings.TrimSpace(sku) != "" {
-		q := strings.TrimSpace(sku)
-		if mfr != "" {
-			q = mfr + " " + q
+	if !ok && !transient && strings.TrimSpace(sku) != "" {
+		if _, isASIN := amazonASINFromSKU(sku); !isASIN {
+			q := strings.TrimSpace(sku)
+			if mfr != "" {
+				q = mfr + " " + q
+			}
+			id, ok, transient = upcitemdbSearch(ctx, q, sku)
 		}
-		id, ok = upcitemdbSearch(ctx, q, sku)
 	}
 
+	if transient {
+		// Short soft-negative only; never poison the cache for hours after a gate storm.
+		setCachedProductIDTTL(key, id, false, 45*time.Second)
+		return id, false
+	}
 	setCachedProductID(key, id, ok)
 	// Also cache under UPC if resolved.
 	if ok && id.UPC != "" {
 		setCachedProductID("upc:"+normalizeUPCDigits(id.UPC), id, true)
 	}
+	if ok && id.ASIN != "" {
+		setCachedProductID("sku:"+strings.ToUpper(id.ASIN), id, true)
+	}
 	return id, ok
 }
 
-func upcitemdbLookup(ctx context.Context, upc string) (productIdentity, bool) {
+func upcitemdbLookup(ctx context.Context, upc string) (id productIdentity, ok bool, transient bool) {
 	u := "https://api.upcitemdb.com/prod/trial/lookup?upc=" + url.QueryEscape(upc)
 	return upcitemdbFetch(ctx, u, "")
 }
 
-func upcitemdbSearch(ctx context.Context, query, preferSKU string) (productIdentity, bool) {
+func upcitemdbSearch(ctx context.Context, query, preferSKU string) (id productIdentity, ok bool, transient bool) {
 	u := "https://api.upcitemdb.com/prod/trial/search?s=" + url.QueryEscape(query)
 	return upcitemdbFetch(ctx, u, preferSKU)
 }
@@ -449,10 +507,10 @@ type upcOffer struct {
 	Link         string  `json:"link"`
 }
 
-func upcitemdbFetch(ctx context.Context, endpoint, preferSKU string) (productIdentity, bool) {
+func upcitemdbFetch(ctx context.Context, endpoint, preferSKU string) (id productIdentity, ok bool, transient bool) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
-		return productIdentity{}, false
+		return productIdentity{}, false, true
 	}
 	req.Header.Set("User-Agent", "InsightForge/1.0 (+https://github.com/bmcelhaney/insight-forge)")
 	req.Header.Set("Accept", "application/json")
@@ -460,12 +518,20 @@ func upcitemdbFetch(ctx context.Context, endpoint, preferSKU string) (productIde
 
 	resp, err := productHTTPClient.Do(req)
 	if err != nil {
-		return productIdentity{}, false
+		return productIdentity{}, false, true
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil || resp.StatusCode != 200 {
-		return productIdentity{}, false
+	if err != nil {
+		return productIdentity{}, false, true
+	}
+	// Trial API rate-limits aggressively; treat 429/5xx as transient (no long negative cache).
+	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
+		return productIdentity{}, false, true
+	}
+	if resp.StatusCode != 200 {
+		// Definitive client error / empty — soft-negative OK.
+		return productIdentity{}, false, false
 	}
 
 	var payload struct {
@@ -485,10 +551,10 @@ func upcitemdbFetch(ctx context.Context, endpoint, preferSKU string) (productIde
 		} `json:"items"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
-		return productIdentity{}, false
+		return productIdentity{}, false, true
 	}
 	if len(payload.Items) == 0 {
-		return productIdentity{}, false
+		return productIdentity{}, false, false
 	}
 
 	// Prefer item whose model/title contains our SKU, else first with ASIN, else first.
@@ -523,7 +589,7 @@ func upcitemdbFetch(ctx context.Context, endpoint, preferSKU string) (productIde
 		}
 	}
 	it := payload.Items[bestIdx]
-	id := productIdentity{
+	id = productIdentity{
 		Title: strings.TrimSpace(it.Title),
 		Brand: strings.TrimSpace(it.Brand),
 		Model: strings.TrimSpace(it.Model),
@@ -555,9 +621,9 @@ func upcitemdbFetch(ctx context.Context, endpoint, preferSKU string) (productIde
 	id.DeepLinkOK = id.ASIN != "" || id.UPC != "" || id.RetailURL != "" || id.OfferLink != ""
 
 	if id.Title == "" && id.ASIN == "" && id.UPC == "" && id.RetailURL == "" {
-		return productIdentity{}, false
+		return productIdentity{}, false, false
 	}
-	return id, true
+	return id, true, false
 }
 
 // pickBestMarketOffer chooses a displayable commercial offer price and optional product link.
@@ -823,12 +889,17 @@ func getCachedProductID(key string) (cachedProductIdentity, bool) {
 }
 
 func setCachedProductID(key string, id productIdentity, ok bool) {
-	if key == "" {
-		return
-	}
 	ttl := 24 * time.Hour
 	if !ok {
-		ttl = 2 * time.Hour // negative cache shorter
+		// Not-found only — keep short so a bad window during deploy gate does not stick.
+		ttl = 20 * time.Minute
+	}
+	setCachedProductIDTTL(key, id, ok, ttl)
+}
+
+func setCachedProductIDTTL(key string, id productIdentity, ok bool, ttl time.Duration) {
+	if key == "" || ttl <= 0 {
+		return
 	}
 	productIDCacheMu.Lock()
 	productIDCache[key] = cachedProductIdentity{id: id, expiry: time.Now().Add(ttl), ok: ok}
