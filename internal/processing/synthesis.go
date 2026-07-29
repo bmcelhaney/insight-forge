@@ -1254,6 +1254,13 @@ func collectScoringEvidence(snaps []models.DataSnapshot) scoringEvidenceProfile 
 			if strings.TrimSpace(firstStringFromAny(s.RawResponse["producing_npa"])) != "" {
 				e.HasAbilityOne = true
 			}
+		case "ABILITYONE_COMMERCE":
+			// Live AbilityOne.com list price counts as a live pricing signal.
+			if toFloatFromAny(s.RawResponse["best_price"]) > 0 || s.Value > 0 {
+				e.HasLiveGSA = true // reuses live-price bucket for scoring
+				e.GSAPriceCount = maxInt(e.GSAPriceCount, 1)
+				e.LiveSignalCount++
+			}
 		case "WEB_SEARCH_INTEL":
 			resultCount := intFromAny(s.RawResponse["result_count"])
 			if resultCount == 0 {
