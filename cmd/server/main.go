@@ -53,6 +53,19 @@ func main() {
 	}
 	extractorReg := extraction.NewDefaultRegistry(samAPIKey, partsBaseCfg)
 
+	// Surface PartsBase credential status without leaking secrets.
+	if cfg.PartsBaseEnabled && cfg.PartsBaseConfigured {
+		fmt.Printf("PartsBase: enabled (credentials loaded")
+		if len(cfg.PartsBaseEnvFilesLoaded) > 0 {
+			fmt.Printf(" from %s", strings.Join(cfg.PartsBaseEnvFilesLoaded, ", "))
+		}
+		fmt.Printf(")\n")
+	} else if cfg.PartsBaseEnabled {
+		fmt.Printf("PartsBase: enabled but credentials missing — extractor not registered. Place IF_PARTSBASE_* in .env.partsbase or the process environment.\n")
+	} else {
+		fmt.Printf("PartsBase: disabled\n")
+	}
+
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
@@ -77,12 +90,15 @@ func main() {
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{
-			"status":    "ok",
-			"service":   "insight-forge",
-			"commit":    commit,
-			"buildTime": buildTime,
-			"version":   "analyst-v2-gated",
-			"note":      "Award data prefers USAspending.gov (real, public). SAM.gov path is currently disabled.",
+			"status":                 "ok",
+			"service":                "insight-forge",
+			"commit":                 commit,
+			"buildTime":              buildTime,
+			"version":                "analyst-v2-gated",
+			"note":                   "Award data prefers USAspending.gov (real, public). SAM.gov path is currently disabled.",
+			"partsbase_enabled":      cfg.PartsBaseEnabled,
+			"partsbase_configured":   cfg.PartsBaseConfigured,
+			"partsbase_env_files":    cfg.PartsBaseEnvFilesLoaded,
 		})
 	})
 
