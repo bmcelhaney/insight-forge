@@ -152,9 +152,13 @@ func Synthesize(ctx context.Context, entityID string, snapshots []models.DataSna
 	}
 	// We do not inject special-case staged card metrics for specific NSNs.
 
-	// === Commercial SKUs / UPCs (ETS + live sources; synthetic WebFLIS excluded) ===
-	// AbilityOne.com NSN catalog price is separate — not used as default commercial pricing.
+	// === Pricing layers (kept separate by source) ===
+	// AbilityOne.com NSN catalog price — federal channel list, not commercial SKU.
 	result.AbilityOneChannelPrice = buildAbilityOneChannelPrice(snapshots, entityID)
+	// PartsBase historical federal/AbilityOne transaction unit prices.
+	result.PartsBaseHistoricalPricing = buildPartsBaseHistoricalPricing(snapshots)
+
+	// === Commercial SKUs / UPCs (ETS + GSA; WebFLIS + PartsBase excluded from this list) ===
 	commercialRefs := extractCommercialReferences(snapshots)
 	commercialRefs = enrichCommercialReferences(entityID, commercialRefs, snapshots)
 	// Bounded probes for top unpriced commercial/ETS rows (soft-fail, cached, env-gated).
@@ -251,8 +255,9 @@ func Synthesize(ctx context.Context, entityID string, snapshots []models.DataSna
 	return result, nil
 }
 
-// extractCommercialReferences pulls manufacturer SKUs, UPCs, and GTINs from high-signal
-// snapshots (ETS, GSA Advantage, curated AbilityOne; PartsBase only when product-like).
+// extractCommercialReferences pulls manufacturer SKUs, UPCs, and GTINs from commercial/
+// crosswalk sources only (ETS, GSA Advantage, curated AbilityOne).
+// PartsBase historical federal prices are exposed separately (partsbase_historical_pricing).
 // Synthetic WebFLIS commercial refs are intentionally excluded.
 func extractCommercialReferences(snaps []models.DataSnapshot) []models.CommercialReference {
 	var refs []models.CommercialReference
@@ -263,8 +268,12 @@ func extractCommercialReferences(snaps []models.DataSnapshot) []models.Commercia
 		if src == "WEBFLIS" {
 			continue
 		}
-		// AbilityOne.com NSN catalog is shown separately (abilityone_channel_price), not as a commercial row.
+		// AbilityOne.com NSN catalog is shown separately (abilityone_channel_price).
 		if src == "ABILITYONE_COMMERCE" {
+			continue
+		}
+		// PartsBase = historical federal/AbilityOne transactions — separate section.
+		if src == "PARTSBASE" {
 			continue
 		}
 
@@ -281,16 +290,6 @@ func extractCommercialReferences(snaps []models.DataSnapshot) []models.Commercia
 			ref.DateAdded = firstNonEmptyString(r, "date_added")
 			if ps := firstNonEmptyString(r, "price_source"); ps != "" {
 				ref.PriceSource = ps
-			}
-
-			// PartsBase often encodes contract IDs as "sku" — only keep product-like or UPC-backed rows.
-			if src == "PARTSBASE" {
-				if ref.UPC == "" && !looksLikeProductSKU(ref.SKU) {
-					continue
-				}
-				if ref.Context == "" {
-					ref.Context = "PartsBase federal procurement signal (not a retail listing)"
-				}
 			}
 
 			var contextParts []string

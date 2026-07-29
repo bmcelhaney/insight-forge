@@ -109,7 +109,7 @@ func TestLooksLikeProductSKU(t *testing.T) {
 	}
 }
 
-func TestExtractFiltersPartsBaseContractIDs(t *testing.T) {
+func TestExtractExcludesPartsBaseFromCommercialList(t *testing.T) {
 	snaps := []models.DataSnapshot{
 		{
 			SourceCode: "PARTSBASE",
@@ -118,15 +118,38 @@ func TestExtractFiltersPartsBaseContractIDs(t *testing.T) {
 					{"sku": "47QSEA18D000Y", "manufacturer": "Some Vendor", "price": "9.99"},
 					{"sku": "TG-100", "manufacturer": "Tough Guy", "price": "4.50"},
 				},
+				"price_signals": []map[string]any{
+					{"unit_price": 12.5, "supplier": "Vendor A", "award_date": "2024-06-01", "quantity": 10},
+					{"unit_price": 8.0, "supplier": "Vendor B", "award_date": "2025-01-15", "quantity": 5},
+				},
+			},
+		},
+		{
+			SourceCode: "ABILITYONE_ETS",
+			RawResponse: map[string]any{
+				"commercial_references": []map[string]any{
+					{"sku": "BICCSM11BK", "manufacturer": "BIC"},
+				},
 			},
 		},
 	}
 	refs := extractCommercialReferences(snaps)
-	if len(refs) != 1 {
-		t.Fatalf("expected only product-like PartsBase ref, got %d: %+v", len(refs), refs)
+	if len(refs) != 1 || refs[0].SKU != "BICCSM11BK" {
+		t.Fatalf("expected only ETS commercial ref, got %#v", refs)
 	}
-	if refs[0].SKU != "TG-100" {
-		t.Fatalf("got %q", refs[0].SKU)
+
+	pb := buildPartsBaseHistoricalPricing(snaps)
+	if pb == nil {
+		t.Fatal("expected PartsBase historical pricing summary")
+	}
+	if pb.SignalCount != 2 {
+		t.Fatalf("signal_count=%d", pb.SignalCount)
+	}
+	if pb.Source != "PARTSBASE" {
+		t.Fatalf("source %q", pb.Source)
+	}
+	if pb.MinUnitPrice == "" || pb.MaxUnitPrice == "" {
+		t.Fatalf("expected min/max prices, got min=%q max=%q", pb.MinUnitPrice, pb.MaxUnitPrice)
 	}
 }
 

@@ -77,6 +77,10 @@ type InsightResult struct {
 	// AbilityOne.com catalog list price for this NSN (federal channel). Shown separately
 	// from commercial/ETS row pricing — never used as a default fill on those rows.
 	AbilityOneChannelPrice *ChannelPrice `json:"abilityone_channel_price,omitempty"`
+
+	// PartsBase historical federal procurement / AbilityOne transaction prices.
+	// Captured for analyst use but kept separate from commercial/ETS market pricing.
+	PartsBaseHistoricalPricing *PartsBasePriceSummary `json:"partsbase_historical_pricing,omitempty"`
 }
 
 // ChannelPrice is a standalone NSN-level catalog price (not a commercial SKU quote).
@@ -89,6 +93,30 @@ type ChannelPrice struct {
 	AsOf   string `json:"as_of,omitempty"`
 	URL    string `json:"url,omitempty"`
 	Note   string `json:"note,omitempty"`
+}
+
+// PartsBasePriceSummary aggregates historical GovData procurement unit prices.
+type PartsBasePriceSummary struct {
+	SignalCount   int                       `json:"signal_count"`
+	SupplierCount int                       `json:"supplier_count"`
+	MinUnitPrice  string                    `json:"min_unit_price,omitempty"`
+	MaxUnitPrice  string                    `json:"max_unit_price,omitempty"`
+	MedianUnitPrice string                  `json:"median_unit_price,omitempty"`
+	LastUpdated   string                    `json:"last_updated,omitempty"`
+	Sample        []PartsBaseHistoricalPrice `json:"sample,omitempty"`
+	Note          string                    `json:"note,omitempty"`
+	Source        string                    `json:"source"` // PARTSBASE
+}
+
+// PartsBaseHistoricalPrice is one historical federal transaction/unit-price signal.
+type PartsBaseHistoricalPrice struct {
+	UnitPrice      string `json:"unit_price"`
+	Quantity       int    `json:"quantity,omitempty"`
+	Supplier       string `json:"supplier,omitempty"`
+	ContractNumber string `json:"contract_number,omitempty"`
+	AwardDate      string `json:"award_date,omitempty"`
+	ConditionCode  string `json:"condition_code,omitempty"`
+	Context        string `json:"context,omitempty"`
 }
 
 // RiskFlag represents a geopolitical, regulatory, concentration, or other concern.

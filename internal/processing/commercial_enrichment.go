@@ -106,9 +106,9 @@ var manufacturerHomepages = []struct {
 }
 
 // enrichCommercialReferences attaches resilient discovery links and merges
-// row-specific prices from GSA/PartsBase (and exact SKU matches only).
-// AbilityOne.com NSN channel price is NOT applied as a default to commercial rows —
-// that lives on InsightResult.AbilityOneChannelPrice instead.
+// row-specific prices from GSA (exact SKU/UPC matches only).
+// AbilityOne.com NSN channel price and PartsBase historical transaction prices
+// are NOT applied as defaults on commercial/ETS rows — they live on dedicated result fields.
 func enrichCommercialReferences(entityID string, refs []models.CommercialReference, snaps []models.DataSnapshot) []models.CommercialReference {
 	priceIndex := buildCommercialPriceIndex(snaps)
 	now := time.Now().UTC().Format("2006-01-02")
@@ -148,8 +148,6 @@ func enrichCommercialReferences(entityID string, refs []models.CommercialReferen
 			switch strings.ToUpper(r.Source) {
 			case "GSA_ADVANTAGE":
 				r.PriceSource = "GSA_ADVANTAGE"
-			case "PARTSBASE":
-				r.PriceSource = "PARTSBASE"
 			default:
 				r.PriceSource = r.Source
 			}
@@ -638,50 +636,128 @@ func buildCommercialPriceIndex(snaps []models.DataSnapshot) commercialPriceIndex
 					idx.byUPC[upc] = hit
 				}
 			}
-		case "PARTSBASE":
-			for _, r := range mapSliceFromAny(s.RawResponse["commercial_references"]) {
-				price := firstNonEmptyString(r, "price")
-				if price == "" {
-					continue
-				}
-				// PartsBase "sku" is often a contract number — index only when a real UPC exists,
-				// or when the sku looks product-like (has letters).
-				sku := firstNonEmptyString(r, "sku", "mfr_part")
-				upc := normalizeUPCDigits(firstNonEmptyString(r, "upc"))
-				hit := commercialPriceHit{
-					price:  normalizePriceString(price),
-					source: "PARTSBASE",
-					asOf:   asOf,
-				}
-				if upc != "" {
-					idx.byUPC[upc] = hit
-				}
-				if sku != "" && looksLikeProductSKU(sku) {
-					idx.bySKU[strings.ToUpper(sku)] = hit
-				}
-			}
-			for _, p := range mapSliceFromAny(s.RawResponse["price_signals"]) {
-				price := firstNonEmptyString(p, "unit_price", "price", "avg_price")
-				if price == "" {
-					if f := toFloatFromAny(p["unit_price"]); f > 0 {
-						price = fmt.Sprintf("%.2f", f)
-					}
-				}
-				if price == "" {
-					continue
-				}
-				hit := commercialPriceHit{
-					price:  normalizePriceString(price),
-					source: "PARTSBASE",
-					asOf:   asOf,
-				}
-				if upc := normalizeUPCDigits(firstNonEmptyString(p, "upc")); upc != "" {
-					idx.byUPC[upc] = hit
-				}
-			}
+		// PARTSBASE is intentionally NOT indexed into commercial/ETS row prices.
+		// Historical federal transaction prices are exposed as PartsBaseHistoricalPricing.
 		}
 	}
 	return idx
+}
+
+const maxPartsBasePriceSample = 25
+
+// buildPartsBaseHistoricalPricing extracts historical federal/AbilityOne transaction
+// unit prices from PartsBase GovData for a dedicated UI/API section.
+func buildPartsBaseHistoricalPricing(snaps []models.DataSnapshot) *models.PartsBasePriceSummary {
+	pb, ok := findPartsBaseSnapshot(snaps)
+	if !ok {
+		return nil
+	}
+	signals := mapSliceFromAny(pb.RawResponse["price_signals"])
+	if len(signals) == 0 {
+		// Fallback: commercial_references that carried unit prices.
+		for _, r := range mapSliceFromAny(pb.RawResponse["commercial_references"]) {
+			if firstNonEmptyString(r, "price") == "" {
+				continue
+			}
+			signals = append(signals, map[string]any{
+				"unit_price":      firstNonEmptyString(r, "price"),
+				"supplier":        firstNonEmptyString(r, "manufacturer", "supplier"),
+				"contract_number": firstNonEmptyString(r, "sku", "contract_number"),
+				"award_date":      firstNonEmptyString(r, "date_added", "award_date"),
+				"context":         firstNonEmptyString(r, "context"),
+			})
+		}
+	}
+	if len(signals) == 0 {
+		return nil
+	}
+
+	type priced struct {
+		price float64
+		row   models.PartsBaseHistoricalPrice
+	}
+	var rows []priced
+	suppliers := map[string]bool{}
+	for _, s := range signals {
+		unit := toFloatFromAny(s["unit_price"])
+		if unit <= 0 {
+			unit = toFloatFromAny(s["price"])
+		}
+		if unit <= 0 {
+			if p := firstNonEmptyString(s, "unit_price", "price"); p != "" {
+				unit = toFloatFromAny(strings.TrimPrefix(strings.TrimSpace(p), "$"))
+			}
+		}
+		if unit <= 0 {
+			continue
+		}
+		supplier := firstNonEmptyString(s, "supplier", "vendor", "manufacturer")
+		if supplier != "" {
+			suppliers[supplier] = true
+		}
+		qty := intFromAny(s["quantity"])
+		row := models.PartsBaseHistoricalPrice{
+			UnitPrice:      normalizePriceString(fmt.Sprintf("%.2f", unit)),
+			Quantity:       qty,
+			Supplier:       supplier,
+			ContractNumber: firstNonEmptyString(s, "contract_number", "contractNo", "contract"),
+			AwardDate:      firstNonEmptyString(s, "award_date", "AwardDate"),
+			ConditionCode:  firstNonEmptyString(s, "condition_code", "ConditionCode", "condition"),
+			Context:        firstNonEmptyString(s, "context"),
+		}
+		if row.Context == "" {
+			row.Context = "PartsBase historical federal procurement unit price"
+		}
+		rows = append(rows, priced{price: unit, row: row})
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+
+	sort.SliceStable(rows, func(i, j int) bool {
+		// Prefer more recent award dates, then higher price for visibility.
+		di, oki := parseAwardDate(rows[i].row.AwardDate)
+		dj, okj := parseAwardDate(rows[j].row.AwardDate)
+		if oki && okj && !di.Equal(dj) {
+			return di.After(dj)
+		}
+		if oki != okj {
+			return oki
+		}
+		return rows[i].price > rows[j].price
+	})
+
+	prices := make([]float64, len(rows))
+	for i, r := range rows {
+		prices[i] = r.price
+	}
+	sort.Float64s(prices)
+	minP, maxP := prices[0], prices[len(prices)-1]
+	median := prices[len(prices)/2]
+	if len(prices)%2 == 0 {
+		median = (prices[len(prices)/2-1] + prices[len(prices)/2]) / 2
+	}
+
+	sampleN := maxPartsBasePriceSample
+	if len(rows) < sampleN {
+		sampleN = len(rows)
+	}
+	sample := make([]models.PartsBaseHistoricalPrice, 0, sampleN)
+	for i := 0; i < sampleN; i++ {
+		sample = append(sample, rows[i].row)
+	}
+
+	return &models.PartsBasePriceSummary{
+		SignalCount:     len(rows),
+		SupplierCount:   len(suppliers),
+		MinUnitPrice:    normalizePriceString(fmt.Sprintf("%.2f", minP)),
+		MaxUnitPrice:    normalizePriceString(fmt.Sprintf("%.2f", maxP)),
+		MedianUnitPrice: normalizePriceString(fmt.Sprintf("%.2f", median)),
+		LastUpdated:     firstStringFromAny(pb.RawResponse["last_updated"]),
+		Sample:          sample,
+		Source:          "PARTSBASE",
+		Note:            "Historical federal procurement unit prices from PartsBase GovData (often AbilityOne/federal transactions). Not commercial retail/list prices.",
+	}
 }
 
 func buildShopSearchURL(manufacturer, sku, upc, description string) string {
