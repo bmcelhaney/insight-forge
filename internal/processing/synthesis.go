@@ -152,8 +152,9 @@ func Synthesize(ctx context.Context, entityID string, snapshots []models.DataSna
 	}
 	// We do not inject special-case staged card metrics for specific NSNs.
 
-	// === NEW: Extract and analyze commercial SKUs / UPCs ===
+	// === Commercial SKUs / UPCs (ETS + live sources; synthetic WebFLIS excluded) ===
 	commercialRefs := extractCommercialReferences(snapshots)
+	commercialRefs = enrichCommercialReferences(entityID, commercialRefs, snapshots)
 	result.CommercialReferences = commercialRefs
 
 	if len(commercialRefs) > 0 {
@@ -161,15 +162,22 @@ func Synthesize(ctx context.Context, entityID string, snapshots []models.DataSna
 		// Also feed key signals into the main report and insights for cohesion
 		appendCommercialInsights(&result, commercialRefs)
 
-		// NEW: Top commercial suppliers based on the SKU/UPC cross-references
+		// Top commercial suppliers based on the SKU/UPC cross-references
 		result.TopCommercialSuppliers = buildTopCommercialSuppliers(commercialRefs)
 	}
 
 	// Append commercial section to the full report so it shows up in the UI and exports
 	if len(result.CommercialReferences) > 0 {
 		commercialSection := "\n\nCOMMERCIAL EQUIVALENTS & CROSS-REFERENCES\n"
-		for _, r := range result.CommercialReferences {
+		for i, r := range result.CommercialReferences {
+			if i >= 40 {
+				commercialSection += fmt.Sprintf("... and %d more commercial/ETS references (see UI / JSON export)\n", len(result.CommercialReferences)-40)
+				break
+			}
 			line := "- "
+			if r.Source != "" {
+				line += "[" + r.Source + "] "
+			}
 			if r.Manufacturer != "" {
 				line += r.Manufacturer + " "
 			}
@@ -180,9 +188,22 @@ func Synthesize(ctx context.Context, entityID string, snapshots []models.DataSna
 				line += "UPC: " + r.UPC + " "
 			}
 			if r.Price != "" {
-				line += "Price: " + r.Price + " "
+				line += "Price: " + r.Price
+				if r.PriceSource != "" {
+					line += " (" + r.PriceSource + ")"
+				}
+				line += " "
 			}
-			if r.Context != "" {
+			if r.LinkShop != "" {
+				line += "Shop: " + r.LinkShop + " "
+			}
+			if r.Description != "" {
+				desc := r.Description
+				if len(desc) > 100 {
+					desc = desc[:97] + "..."
+				}
+				line += "— " + desc
+			} else if r.Context != "" {
 				line += "(" + r.Context + ")"
 			}
 			commercialSection += strings.TrimSpace(line) + "\n"
@@ -226,13 +247,19 @@ func Synthesize(ctx context.Context, entityID string, snapshots []models.DataSna
 	return result, nil
 }
 
-// extractCommercialReferences pulls manufacturer SKUs, UPCs, and GTINs from all snapshots
-// (primarily GSA Advantage and WebFLIS cross-reference data). This is the foundation for
-// extended SKU/UPC analysis.
+// extractCommercialReferences pulls manufacturer SKUs, UPCs, and GTINs from high-signal
+// snapshots (ETS, GSA Advantage, curated AbilityOne; PartsBase only when product-like).
+// Synthetic WebFLIS commercial refs are intentionally excluded.
 func extractCommercialReferences(snaps []models.DataSnapshot) []models.CommercialReference {
 	var refs []models.CommercialReference
 
 	for _, s := range snaps {
+		src := strings.ToUpper(strings.TrimSpace(s.SourceCode))
+		// WebFLIS prototype invents SKU/UPC noise — never surface as commercial equivalents.
+		if src == "WEBFLIS" {
+			continue
+		}
+
 		for _, r := range mapSliceFromAny(s.RawResponse["commercial_references"]) {
 			ref := models.CommercialReference{
 				Source: s.SourceCode,
@@ -242,43 +269,61 @@ func extractCommercialReferences(snaps []models.DataSnapshot) []models.Commercia
 			ref.GTIN = firstNonEmptyString(r, "gtin")
 			ref.Manufacturer = firstNonEmptyString(r, "manufacturer", "mfg_name", "mfr_name")
 			ref.Price = firstNonEmptyString(r, "price")
+			ref.Description = firstNonEmptyString(r, "description", "commercial_description", "abilityone_description")
+			ref.DateAdded = firstNonEmptyString(r, "date_added")
+			if ps := firstNonEmptyString(r, "price_source"); ps != "" {
+				ref.PriceSource = ps
+			}
+
+			// PartsBase often encodes contract IDs as "sku" — only keep product-like or UPC-backed rows.
+			if src == "PARTSBASE" {
+				if ref.UPC == "" && !looksLikeProductSKU(ref.SKU) {
+					continue
+				}
+				if ref.Context == "" {
+					ref.Context = "PartsBase federal procurement signal (not a retail listing)"
+				}
+			}
 
 			var contextParts []string
 			if ctx := firstNonEmptyString(r, "context"); ctx != "" {
 				contextParts = append(contextParts, ctx)
 			}
-			if s.SourceCode == "ABILITYONE_ETS" {
+			if src == "ABILITYONE_ETS" {
 				if desc := firstNonEmptyString(r, "abilityone_description"); desc != "" {
 					contextParts = append(contextParts, "AbilityOne: "+desc)
 				}
 				if desc := firstNonEmptyString(r, "commercial_description"); desc != "" {
 					contextParts = append(contextParts, "Commercial: "+desc)
+					if ref.Description == "" {
+						ref.Description = desc
+					}
 				}
 			}
 			if len(contextParts) > 0 {
 				ref.Context = strings.Join(contextParts, " | ")
 			}
 
-			if ref.SKU != "" || ref.UPC != "" || ref.GTIN != "" {
+			if ref.SKU != "" || ref.UPC != "" || ref.GTIN != "" || (src == "ABILITYONE_ETS" && (ref.Description != "" || ref.Manufacturer != "")) {
 				refs = append(refs, ref)
 			}
 		}
 
 		// AbilityOne curated data can also surface the underlying commercial design
-		if s.SourceCode == "ABILITYONE" {
+		if src == "ABILITYONE" {
 			if sku, ok := s.RawResponse["commercial_sku"].(string); ok && sku != "" {
 				refs = append(refs, models.CommercialReference{
-					SKU:        sku,
-					Source:     s.SourceCode,
-					Context:    "Underlying commercial design for AbilityOne item",
+					SKU:     sku,
+					Source:  s.SourceCode,
+					Context: "Underlying commercial design for AbilityOne item",
 				})
 			}
 		}
 	}
 
 	refs = dedupeCommercialReferences(refs)
-	if len(refs) > 75 {
-		refs = refs[:75]
+	if len(refs) > maxCommercialReferences {
+		refs = refs[:maxCommercialReferences]
 	}
 	return refs
 }
@@ -305,8 +350,23 @@ func mapSliceFromAny(v any) []map[string]any {
 func firstNonEmptyString(m map[string]any, keys ...string) string {
 	for _, key := range keys {
 		if v, ok := m[key]; ok {
-			if s, ok := v.(string); ok && strings.TrimSpace(s) != "" {
-				return strings.TrimSpace(s)
+			switch t := v.(type) {
+			case string:
+				if strings.TrimSpace(t) != "" {
+					return strings.TrimSpace(t)
+				}
+			case float64:
+				if t != 0 {
+					return strings.TrimSpace(fmt.Sprintf("%v", t))
+				}
+			case int:
+				if t != 0 {
+					return fmt.Sprintf("%d", t)
+				}
+			default:
+				if s := strings.TrimSpace(fmt.Sprintf("%v", v)); s != "" && s != "<nil>" {
+					return s
+				}
 			}
 		}
 	}
@@ -316,6 +376,7 @@ func firstNonEmptyString(m map[string]any, keys ...string) string {
 func dedupeCommercialReferences(refs []models.CommercialReference) []models.CommercialReference {
 	seen := make(map[string]bool)
 	out := make([]models.CommercialReference, 0, len(refs))
+	// Note: key prefers source+sku+upc+mfr so ETS and GSA can both contribute the same SKU with different prices.
 	for _, ref := range refs {
 		key := strings.Join([]string{
 			ref.Source,

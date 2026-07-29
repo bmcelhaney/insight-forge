@@ -14,7 +14,7 @@ import (
 )
 
 // GSAAdvantageExtractor scrapes GSA Advantage for real pricing data,
-// with special focus on AbilityOne (JWOD) items using cat=ADV.JWOD.
+// trying AbilityOne (JWOD) first, then the general catalog.
 type GSAAdvantageExtractor struct{}
 
 func NewGSAAdvantageExtractor() *GSAAdvantageExtractor {
@@ -25,25 +25,32 @@ func (g *GSAAdvantageExtractor) SourceCode() string { return "GSA_ADVANTAGE" }
 
 func (g *GSAAdvantageExtractor) Fetch(ctx context.Context, entityID string, params map[string]string) ([]models.DataSnapshot, error) {
 	select {
-	case <-time.After(250 * time.Millisecond):
+	case <-time.After(100 * time.Millisecond):
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
 
-	prices, err := g.scrapePricing(ctx, entityID)
+	prices, category, err := g.scrapePricing(ctx, entityID)
 	if err != nil {
-		// Return empty but valid snapshot on scrape failure (graceful for demo)
+		// Return empty but valid snapshot on scrape failure (graceful)
 		return []models.DataSnapshot{{
 			EntityID:   entityID,
 			SourceCode: "GSA_ADVANTAGE",
 			SnapshotAt: time.Now(),
 			RawResponse: map[string]any{
-				"note":  "GSA Advantage scrape failed or no results",
-				"error": err.Error(),
+				"note":       "GSA Advantage scrape failed or no results",
+				"error":      err.Error(),
+				"search_url": gsaPublicSearchURL(entityID),
 			},
 			QualityScore: 0.3,
-			CreatedBy:    "gsa-advantage-scraper-v0.1",
+			CreatedBy:    "gsa-advantage-scraper-v0.3",
 		}}, nil
+	}
+
+	refs := extractCommercialRefsFromPrices(prices)
+	// Only seed demo refs when scrape returned prices with no parseable SKU/UPC.
+	if len(refs) == 0 {
+		refs = enrichCommercialRefsForDemo(entityID, refs)
 	}
 
 	snap := models.DataSnapshot{
@@ -51,13 +58,15 @@ func (g *GSAAdvantageExtractor) Fetch(ctx context.Context, entityID string, para
 		SourceCode: "GSA_ADVANTAGE",
 		SnapshotAt: time.Now(),
 		RawResponse: map[string]any{
-			"prices_found": prices,
-			"commercial_references": enrichCommercialRefsForDemo(entityID, extractCommercialRefsFromPrices(prices)),
-			"note":         "Real-time pricing scraped from GSA Advantage (ADV.JWOD category). Includes commercial SKUs/UPCs where available for cross-reference analysis.",
-			"search_url":   "https://www.gsaadvantage.gov (POST with cat=ADV.JWOD)",
+			"prices_found":          prices,
+			"commercial_references": refs,
+			"search_category":       category,
+			"note":                  "Pricing scraped from GSA Advantage. Tried ADV.JWOD then general catalog. Includes commercial SKUs/UPCs when present in HTML.",
+			"search_url":            gsaPublicSearchURL(entityID),
+			"price_as_of":           time.Now().UTC().Format("2006-01-02"),
 		},
 		QualityScore: 0.9,
-		CreatedBy:    "gsa-advantage-scraper-v0.2",
+		CreatedBy:    "gsa-advantage-scraper-v0.3",
 	}
 
 	return []models.DataSnapshot{snap}, nil
@@ -70,11 +79,10 @@ func enrichCommercialRefsForDemo(nsn string, refs []map[string]any) []map[string
 		return refs
 	}
 
-	// Fallback seeds for the high-fidelity demo set so SKU/UPC analysis is always visible
 	demoRefs := map[string][]map[string]any{
-		"7920014487052": {{"mfr_part": "WIP-7920-12", "upc": "071503012345", "manufacturer": "AbilityOne Network", "price": "18.75", "context": "JWOD commercial equivalent"}},
-		"8540013800690": {{"mfr_part": "T-8540-80", "upc": "071503085401", "manufacturer": "Outlook Nebraska", "price": "49.53", "context": "BOP / institutional case"}},
-		"8415016107327": {{"mfr_part": "MG-8415-XXL", "upc": "071503084157", "manufacturer": "South Texas Lighthouse", "price": "22.40", "context": "5-pair impact glove"}},
+		"7920014487052": {{"mfr_part": "WIP-7920-12", "upc": "071503012345", "manufacturer": "AbilityOne Network", "price": "18.75", "context": "JWOD commercial equivalent (demo seed)"}},
+		"8540013800690": {{"mfr_part": "T-8540-80", "upc": "071503085401", "manufacturer": "Outlook Nebraska", "price": "49.53", "context": "BOP / institutional case (demo seed)"}},
+		"8415016107327": {{"mfr_part": "MG-8415-XXL", "upc": "071503084157", "manufacturer": "South Texas Lighthouse", "price": "22.40", "context": "5-pair impact glove (demo seed)"}},
 	}
 
 	if r, ok := demoRefs[nsn]; ok {
@@ -83,8 +91,6 @@ func enrichCommercialRefsForDemo(nsn string, refs []map[string]any) []map[string
 	return refs
 }
 
-// extractCommercialRefsFromPrices pulls manufacturer SKUs and UPCs from the price objects.
-// In a real scraper this would parse the full product tile HTML for Mfr Part #, UPC, etc.
 func extractCommercialRefsFromPrices(prices []map[string]any) []map[string]any {
 	var refs []map[string]any
 	for _, p := range prices {
@@ -98,10 +104,19 @@ func extractCommercialRefsFromPrices(prices []map[string]any) []map[string]any {
 		if mfr, ok := p["manufacturer"]; ok {
 			ref["manufacturer"] = mfr
 		}
+		if desc, ok := p["description"]; ok {
+			ref["description"] = desc
+		}
 		if len(ref) > 0 {
 			ref["source"] = "GSA_ADVANTAGE"
+			ref["price_source"] = "GSA_ADVANTAGE"
 			if price, ok := p["price"]; ok {
 				ref["price"] = price
+			}
+			if ctx, ok := p["context"]; ok {
+				ref["context"] = ctx
+			} else {
+				ref["context"] = "GSA Advantage listing"
 			}
 			refs = append(refs, ref)
 		}
@@ -109,22 +124,40 @@ func extractCommercialRefsFromPrices(prices []map[string]any) []map[string]any {
 	return refs
 }
 
-func (g *GSAAdvantageExtractor) scrapePricing(ctx context.Context, nsn string) ([]map[string]any, error) {
+func (g *GSAAdvantageExtractor) scrapePricing(ctx context.Context, nsn string) ([]map[string]any, string, error) {
+	// Prefer AbilityOne / JWOD category, then fall back to general catalog.
+	for _, cat := range []string{"ADV.JWOD", ""} {
+		prices, err := g.scrapeCategory(ctx, nsn, cat)
+		if err == nil && len(prices) > 0 {
+			label := cat
+			if label == "" {
+				label = "GENERAL"
+			}
+			return prices, label, nil
+		}
+	}
+	return nil, "", fmt.Errorf("no pricing elements found for NSN %s in JWOD or general GSA results", nsn)
+}
+
+func (g *GSAAdvantageExtractor) scrapeCategory(ctx context.Context, nsn, category string) ([]map[string]any, error) {
 	endpoint := "https://www.gsaadvantage.gov/advantage/search/searchAdv.do"
 
 	form := url.Values{}
-	form.Set("cat", "ADV.JWOD") // AbilityOne / JWOD category
-	form.Set("searchText", nsn) // NSN as the search term
-	form.Set("q", nsn)          // backup common param
+	if category != "" {
+		form.Set("cat", category)
+	}
+	form.Set("searchText", nsn)
+	form.Set("q", nsn)
 
 	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, strings.NewReader(form.Encode()))
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; InsightForge/1.0)")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; InsightForge/1.0; +https://github.com/bmcelhaney/insight-forge)")
 
-	resp, err := http.DefaultClient.Do(req)
+	client := &http.Client{Timeout: 12 * time.Second}
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -134,58 +167,52 @@ func (g *GSAAdvantageExtractor) scrapePricing(ctx context.Context, nsn string) (
 		return nil, fmt.Errorf("bad status: %d", resp.StatusCode)
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 	if err != nil {
 		return nil, err
 	}
 
-	htmlStr := string(body)
-
-	// Extract prices using common patterns on GSA Advantage
-	prices := extractPricesFromHTML(htmlStr)
-
+	prices := extractPricesFromHTML(string(body))
 	if len(prices) == 0 {
-		return nil, fmt.Errorf("no pricing elements found for NSN %s in JWOD results", nsn)
+		return nil, fmt.Errorf("no prices in category %q", category)
 	}
-
 	return prices, nil
 }
 
+func gsaPublicSearchURL(term string) string {
+	term = strings.TrimSpace(term)
+	if term == "" {
+		return "https://www.gsaadvantage.gov/"
+	}
+	return "https://www.gsaadvantage.gov/advantage/s/search.do?q=1:4" + url.QueryEscape(term) + "&searchType=1&db=0"
+}
+
 // extractPricesFromHTML uses regex + simple heuristics for price patterns
-// (mimics CSS selectors .price, .unit-price, [data-price] etc.).
-// It now also attempts to pull manufacturer SKU / part number and UPC when present
-// in the listing (critical for SKU/UPC cross-reference analysis).
+// and manufacturer SKU / UPC when present in the listing.
 func extractPricesFromHTML(html string) []map[string]any {
 	var results []map[string]any
 
-	// Common price patterns on GSA Advantage
-	priceRegex := regexp.MustCompile(`(?i)(?:\$|USD)?\s*([0-9,]+\.\d{2})`)
-
-	// Try to find manufacturer part / SKU patterns (very common on GSA product tiles)
-	skuRegex := regexp.MustCompile(`(?i)(?:Mfr\.?\s*Part|Mfr\s*#|Manufacturer\s*Part|SKU)[:\s]*([A-Za-z0-9\-\.]+)`)
-	upcRegex := regexp.MustCompile(`(?i)(?:UPC|GTIN|Barcode)[:\s]*([0-9]{12,14})`)
-	mfrRegex := regexp.MustCompile(`(?i)(?:Manufacturer|Brand|Mfr)[:\s]*([A-Za-z0-9\s\&\.\-]+?)(?:<|&|$)`)
-	priceContainers := regexp.MustCompile(`(?i)(?:class=["'][^"']*(?:price|unit-price|cost)[^"']*["']|data-price=["'][^"']*["'])`)
+	priceRegex := regexp.MustCompile(`(?i)(?:\$|USD)\s*([0-9,]+\.\d{2})`)
+	skuRegex := regexp.MustCompile(`(?i)(?:Mfr\.?\s*Part|Mfr\s*#|Manufacturer\s*Part|SKU|Part\s*#|Item\s*#)[:\s]*([A-Za-z0-9][A-Za-z0-9\-\.\/]{1,32})`)
+	upcRegex := regexp.MustCompile(`(?i)(?:UPC|GTIN|Barcode)[:\s#]*([0-9]{11,14})`)
+	mfrRegex := regexp.MustCompile(`(?i)(?:Manufacturer|Brand|Mfr\.?)[:\s]*([A-Za-z0-9][A-Za-z0-9\s\&\.\-]{1,40}?)(?:<|&|$)`)
 
 	matches := priceRegex.FindAllStringSubmatch(html, -1)
-	containerMatches := priceContainers.FindAllString(html, -1)
 	skuMatches := skuRegex.FindAllStringSubmatch(html, -1)
 	upcMatches := upcRegex.FindAllStringSubmatch(html, -1)
 	mfrMatches := mfrRegex.FindAllStringSubmatch(html, -1)
 
-	for i, m := range matches {
-		if i >= 5 { // limit results
-			break
-		}
-		priceStr := m[1]
-		priceStr = strings.ReplaceAll(priceStr, ",", "")
-
+	limit := 12
+	if len(matches) < limit {
+		limit = len(matches)
+	}
+	for i := 0; i < limit; i++ {
+		priceStr := strings.ReplaceAll(matches[i][1], ",", "")
 		result := map[string]any{
 			"price":    priceStr,
 			"currency": "USD",
+			"context":  "GSA Advantage listing",
 		}
-
-		// Associate commercial identifiers when available
 		if i < len(skuMatches) && len(skuMatches[i]) > 1 {
 			result["mfr_part"] = strings.TrimSpace(skuMatches[i][1])
 		}
@@ -195,13 +222,27 @@ func extractPricesFromHTML(html string) []map[string]any {
 		if i < len(mfrMatches) && len(mfrMatches[i]) > 1 {
 			result["manufacturer"] = strings.TrimSpace(mfrMatches[i][1])
 		}
-
-		// Try to associate with nearby text (very basic)
-		if i < len(containerMatches) {
-			result["context"] = strings.TrimSpace(containerMatches[i])
-		}
-
 		results = append(results, result)
+	}
+
+	// If no $ prices but we found SKUs, still return identity for commercial matching.
+	if len(results) == 0 && len(skuMatches) > 0 {
+		for i, m := range skuMatches {
+			if i >= 8 {
+				break
+			}
+			row := map[string]any{
+				"mfr_part": strings.TrimSpace(m[1]),
+				"context":  "GSA Advantage identity (price not parsed)",
+			}
+			if i < len(upcMatches) && len(upcMatches[i]) > 1 {
+				row["upc"] = strings.TrimSpace(upcMatches[i][1])
+			}
+			if i < len(mfrMatches) && len(mfrMatches[i]) > 1 {
+				row["manufacturer"] = strings.TrimSpace(mfrMatches[i][1])
+			}
+			results = append(results, row)
+		}
 	}
 
 	return results

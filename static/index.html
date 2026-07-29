@@ -856,26 +856,29 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
         relEl.appendChild(a);
       });
 
-      // Commercial SKUs/UPCs as one expanded reference box (full width)
+      // Commercial SKUs/UPCs — full list with resilient search links (no brittle manufacturer deep links)
       const comms = result.commercial_references || result.CommercialReferences || [];
       const commTops = result.top_commercial_suppliers || result.TopCommercialSuppliers || [];
       if (comms.length > 0) {
+        const COMM_DEFAULT_VISIBLE = 12;
         const commWrapper = document.createElement('div');
         commWrapper.style.cssText = 'grid-column: 1 / -1; margin-top: 8px;';
 
         const commHeader = document.createElement('div');
         commHeader.style.cssText = 'font-size:10px; color:#64748b; margin-bottom:6px; text-transform:uppercase; letter-spacing:0.5px;';
-        commHeader.textContent = 'Commercial Cross-References (SKUs / UPCs + Supplier Snapshot)';
+        commHeader.textContent = 'Commercial Equivalents & ETS Cross-References';
         commWrapper.appendChild(commHeader);
 
         const uniqueSuppliers = new Set();
         const uniqueSKUs = new Set();
         const uniqueUPCs = new Set();
+        let pricedCount = 0;
         comms.forEach(c => {
           const name = (c.manufacturer || '').trim();
           if (name) uniqueSuppliers.add(name);
           if (c.sku) uniqueSKUs.add(c.sku);
           if (c.upc) uniqueUPCs.add(c.upc);
+          if (c.price) pricedCount += 1;
         });
 
         const metrics = [
@@ -883,6 +886,7 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
           { label: 'Suppliers', value: uniqueSuppliers.size },
           { label: 'Unique SKUs', value: uniqueSKUs.size },
           { label: 'Unique UPCs', value: uniqueUPCs.size },
+          { label: 'With price', value: pricedCount },
         ];
         const metricRow = document.createElement('div');
         metricRow.className = 'flex flex-wrap gap-2 mb-3';
@@ -894,7 +898,12 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
         });
         commWrapper.appendChild(metricRow);
 
-        const supplierSummary = buildCommercialSupplierRollup(comms, commTops).slice(0, 5);
+        const note = document.createElement('div');
+        note.className = 'text-[10px] text-zinc-500 mb-3';
+        note.textContent = 'Links open shop/UPC/GSA search pages (stable) rather than manufacturer product URLs that often 404. Prices show source when available; otherwise use Shop search to verify current market pricing.';
+        commWrapper.appendChild(note);
+
+        const supplierSummary = buildCommercialSupplierRollup(comms, commTops).slice(0, 8);
         if (supplierSummary.length > 0) {
           const supplierBlock = document.createElement('div');
           supplierBlock.className = 'mb-3 bg-zinc-950 border border-zinc-700 rounded-2xl p-3';
@@ -912,33 +921,14 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
             line1.className = 'font-medium';
             line1.textContent = `${s.name} · ${s.count} ref${s.count === 1 ? '' : 's'}`;
             row.appendChild(line1);
-            const skuText = s.skus.length > 0 ? s.skus.join(', ') : '—';
+            const skuText = s.skus.length > 0 ? s.skus.slice(0, 8).join(', ') + (s.skus.length > 8 ? '…' : '') : '—';
             const line2 = document.createElement('div');
             line2.className = 'text-[11px] text-zinc-400';
             line2.textContent = `SKUs: ${skuText}` + (s.examplePrice ? ` | Example: ${s.examplePrice}` : '');
             row.appendChild(line2);
 
-            const supplierLinks = resolveSupplierLinks(s.name, s.skus && s.skus.length > 0 ? s.skus[0] : '');
-            if (supplierLinks && supplierLinks.website) {
-              const link = document.createElement('a');
-              link.href = supplierLinks.website.url;
-              link.target = '_blank';
-              link.rel = 'noopener noreferrer';
-              link.className = 'inline-block mt-0.5 text-[11px] text-sky-300 hover:text-sky-200 underline';
-              link.textContent = supplierLinks.website.label;
-              row.appendChild(link);
-            }
-
-            if (supplierLinks && supplierLinks.sku) {
-              const skuLink = document.createElement('a');
-              skuLink.href = supplierLinks.sku.url;
-              skuLink.target = '_blank';
-              skuLink.rel = 'noopener noreferrer';
-              skuLink.className = 'inline-block ml-2 mt-0.5 text-[11px] text-emerald-300 hover:text-emerald-200 underline';
-              skuLink.textContent = supplierLinks.sku.label;
-              row.appendChild(skuLink);
-            }
-
+            const links = buildCommercialLinks({ manufacturer: s.name, sku: (s.skus && s.skus[0]) || '' }, currentNSN);
+            appendCommercialLinkRow(row, links);
 
             supplierBlock.appendChild(row);
           });
@@ -948,57 +938,80 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
 
         const innerGrid = document.createElement('div');
         innerGrid.className = 'grid grid-cols-1 md:grid-cols-2 gap-3';
+        innerGrid.id = 'commercial-refs-grid';
 
-        comms.slice(0, 8).forEach(c => {
+        function renderCommercialCard(c) {
           const box = document.createElement('div');
-          box.className = 'block bg-amber-950/30 border border-amber-700 p-3 rounded-2xl text-sm';
+          box.className = 'block bg-amber-950/30 border border-amber-700 p-3 rounded-2xl text-sm commercial-ref-card';
 
+          const top = document.createElement('div');
+          top.className = 'flex items-center justify-between gap-2';
           const tag = document.createElement('div');
           tag.className = 'text-[10px] text-amber-300 uppercase';
-          tag.textContent = 'Commercial Equivalent';
-          box.appendChild(tag);
+          tag.textContent = sourceBadgeLabel(c.source);
+          top.appendChild(tag);
+          if (c.price) {
+            const priceEl = document.createElement('div');
+            priceEl.className = 'text-xs font-semibold text-emerald-300';
+            priceEl.textContent = String(c.price).startsWith('$') ? c.price : ('$' + c.price);
+            if (c.price_source || c.priceSource) {
+              priceEl.title = 'Source: ' + (c.price_source || c.priceSource) + (c.price_as_of || c.priceAsOf ? ' · ' + (c.price_as_of || c.priceAsOf) : '');
+            }
+            top.appendChild(priceEl);
+          }
+          box.appendChild(top);
 
           const main = document.createElement('div');
-          main.className = 'text-xs text-zinc-200 mt-0.5';
+          main.className = 'text-xs text-zinc-200 mt-1 font-medium';
           let summary = '';
           if (c.manufacturer) summary += c.manufacturer + ' ';
           if (c.sku) summary += `SKU ${c.sku} `;
           if (c.upc) summary += `(UPC ${c.upc}) `;
-          if (c.price) summary += `— ${c.price}`;
           main.textContent = summary.trim() || 'Commercial reference';
           box.appendChild(main);
 
-          if (c.context) {
+          const desc = c.description || '';
+          if (desc) {
+            const d = document.createElement('div');
+            d.className = 'text-[10px] text-zinc-400 mt-0.5';
+            d.textContent = desc.length > 160 ? desc.slice(0, 157) + '…' : desc;
+            box.appendChild(d);
+          } else if (c.context) {
             const context = document.createElement('div');
             context.className = 'text-[10px] text-zinc-400 mt-0.5';
-            context.textContent = c.context;
+            context.textContent = c.context.length > 160 ? c.context.slice(0, 157) + '…' : c.context;
             box.appendChild(context);
           }
 
-          const supplierLinks = resolveSupplierLinks(c.manufacturer, c.sku || '');
-          if (supplierLinks && supplierLinks.website) {
-            const link = document.createElement('a');
-            link.href = supplierLinks.website.url;
-            link.target = '_blank';
-            link.rel = 'noopener noreferrer';
-            link.className = 'inline-block mt-1 text-[11px] text-sky-300 hover:text-sky-200 underline';
-            link.textContent = supplierLinks.website.label;
-            box.appendChild(link);
-          }
-          if ((c.source || '').toUpperCase() === 'ABILITYONE_ETS' && supplierLinks && supplierLinks.sku) {
-            const skuLink = document.createElement('a');
-            skuLink.href = supplierLinks.sku.url;
-            skuLink.target = '_blank';
-            skuLink.rel = 'noopener noreferrer';
-            skuLink.className = 'inline-block ml-2 mt-1 text-[11px] text-emerald-300 hover:text-emerald-200 underline';
-            skuLink.textContent = 'Open ETS SKU on supplier site';
-            box.appendChild(skuLink);
+          if (c.price_source || c.priceSource) {
+            const ps = document.createElement('div');
+            ps.className = 'text-[10px] text-zinc-500 mt-0.5';
+            ps.textContent = 'Price source: ' + (c.price_source || c.priceSource) + (c.price_as_of || c.priceAsOf ? ' · ' + (c.price_as_of || c.priceAsOf) : '');
+            box.appendChild(ps);
           }
 
-          innerGrid.appendChild(box);
-        });
+          const links = buildCommercialLinks(c, currentNSN);
+          appendCommercialLinkRow(box, links);
+          return box;
+        }
 
+        const initial = comms.slice(0, COMM_DEFAULT_VISIBLE);
+        initial.forEach(c => innerGrid.appendChild(renderCommercialCard(c)));
         commWrapper.appendChild(innerGrid);
+
+        if (comms.length > COMM_DEFAULT_VISIBLE) {
+          const moreBtn = document.createElement('button');
+          moreBtn.type = 'button';
+          moreBtn.className = 'mt-3 px-4 py-2 text-xs rounded-xl border border-amber-700 text-amber-200 hover:bg-amber-950/50';
+          moreBtn.textContent = `Show all ${comms.length} commercial / ETS references`;
+          moreBtn.addEventListener('click', () => {
+            innerGrid.innerHTML = '';
+            comms.forEach(c => innerGrid.appendChild(renderCommercialCard(c)));
+            moreBtn.remove();
+          });
+          commWrapper.appendChild(moreBtn);
+        }
+
         relEl.appendChild(commWrapper);
       }
 
@@ -1034,138 +1047,113 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
         .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
     }
 
-    const SUPPLIER_LINK_CATALOG = [
-      { aliases: ['3m'], website: 'https://www.3m.com', skuSearch: 'https://www.3m.com/3M/en_US/p/search/?Ntt={sku}' },
-      { aliases: ['avery'], website: 'https://www.avery.com', skuSearch: 'https://www.avery.com/search?query={sku}' },
+    // Homepages only — never SKU deep-links (those 404 frequently).
+    const MANUFACTURER_HOMEPAGES = [
+      { aliases: ['3m'], website: 'https://www.3m.com' },
+      { aliases: ['avery'], website: 'https://www.avery.com' },
       { aliases: ['universal'], website: 'https://www.universaloffice.com' },
-      { aliases: ['sanford'], website: 'https://www.newellbrands.com/our-brands/sanford' },
-      { aliases: ['esselte pendaflex corp', 'pendaflex', 'esselte'], website: 'https://www.pendaflex.com' },
-      { aliases: ['kimberly clark', 'kimberly-clark'], website: 'https://www.kimberly-clark.com' },
-      { aliases: ['georgia pacific', 'georgia-pacific'], website: 'https://www.gp.com' },
+      { aliases: ['pendaflex', 'esselte'], website: 'https://www.pendaflex.com' },
+      { aliases: ['kimberly clark', 'kimberly-clark', 'kc'], website: 'https://www.kimberly-clark.com' },
+      { aliases: ['georgia pacific', 'georgia-pacific', 'gp'], website: 'https://www.gp.com' },
       { aliases: ['boardwalk'], website: 'https://www.boardwalkbrand.com' },
-      { aliases: ['pilot'], website: 'https://pilotpen.us', skuSearch: 'https://pilotpen.us/search?type=product&q={sku}' },
-      { aliases: ['smead'], website: 'https://www.smead.com', skuSearch: 'https://www.smead.com/search?query={sku}' },
-      { aliases: ['gojo'], website: 'https://www.gojo.com', skuSearch: 'https://www.gojo.com/en/Search?query={sku}' },
-      { aliases: ['bic'], website: 'https://us.bic.com', skuSearch: 'https://us.bic.com/en_us/catalogsearch/result/?q={sku}' },
-      { aliases: ['pentel'], website: 'https://www.pentel.com', skuSearch: 'https://www.pentel.com/search?q={sku}' },
-      { aliases: ['dixie'], website: 'https://www.dixie.com' },
-      { aliases: ['business source'], website: 'https://www.businesssourceproducts.com' },
-      { aliases: ['office depot'], website: 'https://www.officedepot.com', skuSearch: 'https://www.officedepot.com/a/search/?q={sku}' },
-      { aliases: ['sparco'], website: 'https://www.sparco.com' },
-      { aliases: ['rubbermaid'], website: 'https://www.rubbermaidcommercial.com', skuSearch: 'https://www.rubbermaidcommercial.com/search/?q={sku}' },
-      { aliases: ['innovera'], website: 'https://www.innovera.com' },
-      { aliases: ['quartet'], website: 'https://www.quartet.com' },
-      { aliases: ['staples'], website: 'https://www.staples.com', skuSearch: 'https://www.staples.com/search?query={sku}' },
-      { aliases: ['fellowes'], website: 'https://www.fellowes.com', skuSearch: 'https://www.fellowes.com/us/en/search?term={sku}' },
-      { aliases: ['jessup'], website: 'https://www.jessupmfg.com' },
-      { aliases: ['acco'], website: 'https://www.accobrands.com' },
-      { aliases: ['genuine joe'], website: 'https://www.genuinejoe.com' },
-      { aliases: ['unisan'], website: 'https://www.unisan.com' },
-      { aliases: ['wilson jones', 'wilson-jones'], website: 'https://www.wilsonjones.com' },
-      { aliases: ['tough guy'], website: 'https://www.grainger.com/brand/TOUGH-GUY' },
-      { aliases: ['brady'], website: 'https://www.bradyid.com', skuSearch: 'https://www.bradyid.com/search?text={sku}' },
-      { aliases: ['mse', 'elite image', 'elite imaging', 'west point products'], website: 'https://www.westpointproducts.com' },
-      { aliases: ['acme wescott', 'acme westcott', 'westcott', 'wescott'], website: 'https://www.acmeunited.com' },
-      { aliases: ['heritage'], website: 'https://www.heritage-bag.com' },
-      { aliases: ['proto'], website: 'https://www.protoindustrial.com' },
-      { aliases: ['dymo'], website: 'https://www.dymo.com', skuSearch: 'https://www.dymo.com/search?q={sku}' },
-      { aliases: ['stanley'], website: 'https://www.stanleytools.com', skuSearch: 'https://www.stanleytools.com/search?term={sku}' },
-      { aliases: ['zebra', 'uni-ball', 'uni ball', 'uniball'], website: 'https://www.zebrapen.com', skuSearch: 'https://www.zebrapen.com/search?q={sku}' },
-      { aliases: ['norton'], website: 'https://www.nortonabrasives.com', skuSearch: 'https://www.nortonabrasives.com/en-us/search?text={sku}' },
-      { aliases: ['pitt plastics'], website: 'https://www.pittplastics.com' },
-      { aliases: ['at-a-glance', 'at a glance'], website: 'https://www.ataglance.com', skuSearch: 'https://www.ataglance.com/search?q={sku}' },
-      { aliases: ['swingline'], website: 'https://www.swingline.com', skuSearch: 'https://www.swingline.com/search?q={sku}' },
-      { aliases: ['nupla'], website: 'https://www.nupla.com', skuSearch: 'https://www.nupla.com/search?q={sku}' },
-      { aliases: ['tops', 'oxford'], website: 'https://www.tops-products.com', skuSearch: 'https://www.tops-products.com/search?q={sku}' },
-      { aliases: ['solo'], website: 'https://www.solocup.com' },
-      { aliases: ['xerox'], website: 'https://www.xerox.com', skuSearch: 'https://www.xerox.com/search?text={sku}' },
-      { aliases: ['mastervision'], website: 'https://www.mastervisionproducts.com', skuSearch: 'https://www.mastervisionproducts.com/search?q={sku}' },
-      { aliases: ['tork'], website: 'https://www.torkusa.com', skuSearch: 'https://www.torkusa.com/search?q={sku}' },
-      { aliases: ['crown'], website: 'https://www.crownmats.com' },
-      { aliases: ['sealed air'], website: 'https://www.sealedair.com', skuSearch: 'https://www.sealedair.com/search?search={sku}' },
-      { aliases: ['kensington'], website: 'https://www.kensington.com', skuSearch: 'https://www.kensington.com/search?text={sku}' },
-      { aliases: ['inteplast group', 'inteplast'], website: 'https://www.inteplast.com' },
-      { aliases: ['c-line', 'cline'], website: 'https://www.c-lineproducts.com', skuSearch: 'https://www.c-lineproducts.com/search?type=product&q={sku}' },
-      { aliases: ['wooster'], website: 'https://www.woosterbrush.com', skuSearch: 'https://www.woosterbrush.com/search?q={sku}' },
-      { aliases: ['verbatim'], website: 'https://www.verbatim.com', skuSearch: 'https://www.verbatim.com/Search?text={sku}' },
-      { aliases: ['alliance rubber'], website: 'https://www.rubberband.com', skuSearch: 'https://www.rubberband.com/search?q={sku}' },
-      { aliases: ['jaguar plastics'], website: 'https://www.jaguarplastics.com' },
-      { aliases: ['berry plastics', 'berry'], website: 'https://www.berryglobal.com' },
-      { aliases: ['duracell'], website: 'https://www.duracell.com', skuSearch: 'https://www.duracell.com/search/?q={sku}' },
-      { aliases: ['purdy'], website: 'https://www.purdy.com', skuSearch: 'https://www.purdy.com/search?q={sku}' },
-      { aliases: ['lorell'], website: 'https://www.lorellfurniture.com' },
-      { aliases: ['stout'], website: 'https://www.stoutbags.com' },
-      { aliases: ['u-line', 'uline'], website: 'https://www.uline.com', skuSearch: 'https://www.uline.com/Keyword?keywords={sku}' },
-      { aliases: ['boise cascade', 'boise'], website: 'https://www.boisepaper.com' },
-      { aliases: ['samsill'], website: 'https://www.samsill.com', skuSearch: 'https://www.samsill.com/search?q={sku}' },
-      { aliases: ['fiskars manufacturing', 'fiskars'], website: 'https://www.fiskars.com', skuSearch: 'https://www.fiskars.com/en-us/search?query={sku}' },
-      { aliases: ['grainger approved'], website: 'https://www.grainger.com/brand/GRAINGER-APPROVED' },
-      { aliases: ['cardinal'], website: 'https://www.cardinalbrands.com' },
-      { aliases: ['iceberg'], website: 'https://www.icebergenterprises.com', skuSearch: 'https://www.icebergenterprises.com/search?q={sku}' },
-      { aliases: ['sharpie'], website: 'https://www.sharpie.com', skuSearch: 'https://www.sharpie.com/search?q={sku}' },
-      { aliases: ['nortrax'], website: 'https://www.nortrax.com' },
-      { aliases: ['nmc', 'incom manufacturing'], website: 'https://www.nmcnorthamerica.com', skuSearch: 'https://www.nmcnorthamerica.com/search?query={sku}' },
-      { aliases: ['kc', 'kimberly-clark', 'kimberly clark'], website: 'https://www.kimberly-clark.com' },
-      { aliases: ['nashua'], website: 'https://www.nashuatape.com', skuSearch: 'https://www.nashuatape.com/search?q={sku}' },
-      { aliases: ['mooreco'], website: 'https://www.moorecoinc.com' },
-      { aliases: ['hammermill'], website: 'https://www.hammermill.com', skuSearch: 'https://www.hammermill.com/search?q={sku}' },
-      { aliases: ['paper mate', 'papermate'], website: 'https://www.papermate.com', skuSearch: 'https://www.papermate.com/search?q={sku}' },
-      { aliases: ['logitech'], website: 'https://www.logitech.com', skuSearch: 'https://www.logitech.com/en-us/search?q={sku}' },
-      { aliases: ['energizer'], website: 'https://www.energizer.com', skuSearch: 'https://www.energizer.com/search?query={sku}' },
-      { aliases: ['hp'], website: 'https://www.hp.com', skuSearch: 'https://www.hp.com/us-en/search.html?q={sku}' },
-      { aliases: ['yale'], website: 'https://www.yalehome.com' },
-      { aliases: ['dewalt'], website: 'https://www.dewalt.com', skuSearch: 'https://www.dewalt.com/search?search={sku}' },
-      { aliases: ['integra'], website: 'https://www.integrapens.com' },
-      { aliases: ['ibm'], website: 'https://www.ibm.com' },
-      { aliases: ['dial'], website: 'https://www.dialsoap.com' },
-      { aliases: ['house of doolittle'], website: 'https://www.houseofdoolittle.com' },
-      { aliases: ['universal office products'], website: 'https://www.universaloffice.com' },
-      { aliases: ['dart'], website: 'https://www.dartcontainer.com' },
-      { aliases: ['condor'], website: 'https://www.grainger.com/brand/CONDOR' },
-      { aliases: ['gp'], website: 'https://www.gp.com' },
-      { aliases: ['pdq'], website: 'https://www.pdqonline.com' },
-      { aliases: ['webster'], website: 'https://www.websterchain.com' },
-      { aliases: ['clover'], website: 'https://clover-usa.com' },
-      { aliases: ['general supply'], website: 'https://general-supply.co.jp' },
-      { aliases: ['best'], website: 'https://www.bestglovesglobal.com' },
-      { aliases: ['cig'], website: 'https://www.cloverimaging.com' },
-      { aliases: ['windsoft'], website: 'https://windsoft.com', skuSearch: 'https://windsoft.com/search?q={sku}' },
-      { aliases: ['williams'], website: 'https://www.snapon.com' },
-      { aliases: ['master giant foot'], website: 'https://mastermfgco.com' },
-      { aliases: ['seymour-midwest', 'seymour midwest'], website: 'https://www.seymourmidwest.com', skuSearch: 'https://www.seymourmidwest.com/search?q={sku}' },
-      { aliases: ['shachihata'], website: 'https://www.shachihata.co.jp' },
-      { aliases: ['ipw'], website: 'https://www.ipwusa.com' },
-      { aliases: ['mount-it!', 'mount-it', 'mount it'], website: 'https://www.mount-it.com', skuSearch: 'https://www.mount-it.com/search?type=product&q={sku}' },
-      { aliases: ['amazonbasics'], website: 'https://www.amazon.com/amazonbasics' },
+      { aliases: ['pilot'], website: 'https://pilotpen.us' },
+      { aliases: ['smead'], website: 'https://www.smead.com' },
+      { aliases: ['gojo'], website: 'https://www.gojo.com' },
+      { aliases: ['bic'], website: 'https://us.bic.com' },
+      { aliases: ['pentel'], website: 'https://www.pentel.com' },
+      { aliases: ['office depot'], website: 'https://www.officedepot.com' },
+      { aliases: ['rubbermaid'], website: 'https://www.rubbermaidcommercial.com' },
+      { aliases: ['staples'], website: 'https://www.staples.com' },
+      { aliases: ['fellowes'], website: 'https://www.fellowes.com' },
+      { aliases: ['brady'], website: 'https://www.bradyid.com' },
+      { aliases: ['dymo'], website: 'https://www.dymo.com' },
+      { aliases: ['stanley'], website: 'https://www.stanleytools.com' },
+      { aliases: ['zebra', 'uni-ball', 'uniball'], website: 'https://www.zebrapen.com' },
+      { aliases: ['tork'], website: 'https://www.torkusa.com' },
+      { aliases: ['uline', 'u-line'], website: 'https://www.uline.com' },
+      { aliases: ['sharpie'], website: 'https://www.sharpie.com' },
+      { aliases: ['hammermill'], website: 'https://www.hammermill.com' },
+      { aliases: ['paper mate', 'papermate'], website: 'https://www.papermate.com' },
+      { aliases: ['hp'], website: 'https://www.hp.com' },
+      { aliases: ['dewalt'], website: 'https://www.dewalt.com' },
+      { aliases: ['duracell'], website: 'https://www.duracell.com' },
+      { aliases: ['energizer'], website: 'https://www.energizer.com' },
+      { aliases: ['grainger'], website: 'https://www.grainger.com' },
+      { aliases: ['tops', 'oxford'], website: 'https://www.tops-products.com' },
+      { aliases: ['swingline'], website: 'https://www.swingline.com' },
+      { aliases: ['c-line', 'cline'], website: 'https://www.c-lineproducts.com' },
+      { aliases: ['windsoft'], website: 'https://windsoft.com' },
     ];
 
     function normalizeSupplierName(value) {
       return (value || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
     }
 
-    function resolveSupplierLinks(name, sku) {
-      const supplier = (name || '').trim();
-      if (!supplier || normalizeSupplierName(supplier).includes('unknown')) return null;
+    function sourceBadgeLabel(source) {
+      const s = (source || '').toUpperCase();
+      if (s === 'ABILITYONE_ETS') return 'ETS mapping';
+      if (s === 'GSA_ADVANTAGE') return 'GSA Advantage';
+      if (s === 'PARTSBASE') return 'PartsBase';
+      if (s === 'ABILITYONE') return 'AbilityOne';
+      return s || 'Commercial';
+    }
 
-      const normalized = normalizeSupplierName(supplier);
-      for (const entry of SUPPLIER_LINK_CATALOG) {
-        const matched = (entry.aliases || []).some(alias => normalized.includes(normalizeSupplierName(alias)));
-        if (!matched) continue;
-
-        const links = {
-          website: { url: entry.website, label: 'Supplier website' },
-          sku: null,
-        };
-        const skuValue = (sku || '').trim();
-        if (entry.skuSearch && skuValue) {
-          links.sku = {
-            url: entry.skuSearch.replace('{sku}', encodeURIComponent(skuValue)),
-            label: 'Open SKU on supplier site',
-          };
+    function manufacturerHomepage(name) {
+      const normalized = normalizeSupplierName(name);
+      if (!normalized || normalized.includes('unknown')) return '';
+      for (const entry of MANUFACTURER_HOMEPAGES) {
+        if ((entry.aliases || []).some(a => normalized.includes(normalizeSupplierName(a)))) {
+          return entry.website;
         }
-        return links;
       }
-      return null;
+      return '';
+    }
+
+    // Prefer server-provided resilient links; fall back to the same URL rules client-side.
+    function buildCommercialLinks(c, nsn) {
+      const mfr = (c.manufacturer || '').trim();
+      const sku = (c.sku || '').trim();
+      const upc = (c.upc || '').trim();
+      const desc = (c.description || '').trim();
+      const parts = [];
+      if (mfr) parts.push(mfr);
+      if (sku) parts.push(sku);
+      if (upc) parts.push(upc);
+      if (parts.length === 0 && desc) parts.push(desc.slice(0, 80));
+      const shopQ = parts.join(' ');
+
+      const shop = c.link_shop || c.linkShop || (shopQ ? ('https://www.google.com/search?tbm=shop&q=' + encodeURIComponent(shopQ)) : '');
+      const upcLink = c.link_upc || c.linkUpc || (upc ? ('https://www.google.com/search?q=' + encodeURIComponent(upc + ' UPC')) : '');
+      const gsaTerm = sku || upc || nsn || '';
+      const gsa = c.link_gsa || c.linkGsa || (gsaTerm
+        ? ('https://www.gsaadvantage.gov/advantage/s/search.do?q=1:4' + encodeURIComponent(gsaTerm) + '&searchType=1&db=0')
+        : 'https://www.gsaadvantage.gov/');
+      const website = c.link_website || c.linkWebsite || manufacturerHomepage(mfr);
+      const priceUrl = c.price_url || c.priceUrl || '';
+
+      return { shop, upc: upcLink, gsa, website, priceUrl };
+    }
+
+    function appendCommercialLinkRow(parent, links) {
+      if (!links) return;
+      const row = document.createElement('div');
+      row.className = 'flex flex-wrap gap-x-3 gap-y-1 mt-1';
+      const add = (href, label, cls) => {
+        if (!href) return;
+        const a = document.createElement('a');
+        a.href = href;
+        a.target = '_blank';
+        a.rel = 'noopener noreferrer';
+        a.className = cls || 'text-[11px] text-sky-300 hover:text-sky-200 underline';
+        a.textContent = label;
+        row.appendChild(a);
+      };
+      add(links.shop, 'Shop search', 'text-[11px] text-emerald-300 hover:text-emerald-200 underline');
+      add(links.upc, 'UPC search');
+      add(links.gsa, 'GSA search');
+      add(links.priceUrl && links.priceUrl !== links.shop && links.priceUrl !== links.gsa ? links.priceUrl : '', 'Price source');
+      add(links.website, 'Manufacturer site', 'text-[11px] text-zinc-400 hover:text-zinc-200 underline');
+      if (row.childNodes.length) parent.appendChild(row);
     }
 
     function deriveRecommendation(result, sourcing, supply) {

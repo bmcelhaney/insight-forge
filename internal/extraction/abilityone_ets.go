@@ -14,6 +14,8 @@ import (
 	"github.com/xuri/excelize/v2"
 )
 
+
+
 const defaultAbilityOneETSPath = "./docs/20260701 AbilityOne ETS File.xlsx"
 
 type abilityOneETSRow struct {
@@ -106,9 +108,30 @@ func (e *AbilityOneETSExtractor) Fetch(ctx context.Context, entityID string, par
 	recentAdditions12m := 0
 	recentAdditions24m := 0
 	now := time.Now()
-	references := make([]map[string]any, 0, len(matches))
+	// Prefer newest mappings first so truncation keeps the most relevant commercial equivalents.
+	sortedMatches := make([]abilityOneETSRow, len(matches))
+	copy(sortedMatches, matches)
+	sort.SliceStable(sortedMatches, func(i, j int) bool {
+		ti, oki := parseETSDate(sortedMatches[i].DateAdded)
+		tj, okj := parseETSDate(sortedMatches[j].DateAdded)
+		if oki && okj && !ti.Equal(tj) {
+			return ti.After(tj)
+		}
+		if oki != okj {
+			return oki
+		}
+		// Prefer rows with UPC, then non-empty commercial description.
+		upi := sortedMatches[i].CommercialUPC != ""
+		upj := sortedMatches[j].CommercialUPC != ""
+		if upi != upj {
+			return upi
+		}
+		return strings.TrimSpace(sortedMatches[i].CommercialDescription) > strings.TrimSpace(sortedMatches[j].CommercialDescription)
+	})
 
-	for _, row := range matches {
+	references := make([]map[string]any, 0, len(sortedMatches))
+
+	for _, row := range sortedMatches {
 		key := row.uniqueKey()
 		if seenRows[key] {
 			continue
@@ -128,8 +151,9 @@ func (e *AbilityOneETSExtractor) Fetch(ctx context.Context, entityID string, par
 		if row.SKU != "" {
 			uniqueSKUs[row.SKU] = true
 		}
-		if row.CommercialUPC != "" {
-			uniqueUPCs[row.CommercialUPC] = true
+		normalizedUPC := normalizeCommercialUPC(row.CommercialUPC)
+		if normalizedUPC != "" {
+			uniqueUPCs[normalizedUPC] = true
 		}
 		if parsed, ok := parseETSDate(row.DateAdded); ok {
 			if !hasEarliest || parsed.Before(earliestDate) {
@@ -155,17 +179,21 @@ func (e *AbilityOneETSExtractor) Fetch(ctx context.Context, entityID string, par
 		if row.SKU != "" {
 			ref["sku"] = row.SKU
 		}
-		if row.CommercialUPC != "" {
-			ref["upc"] = row.CommercialUPC
+		if normalizedUPC != "" {
+			ref["upc"] = normalizedUPC
 		}
 		if row.Manufacturer != "" {
 			ref["manufacturer"] = row.Manufacturer
 		}
 		if row.CommercialDescription != "" {
 			ref["commercial_description"] = row.CommercialDescription
+			ref["description"] = row.CommercialDescription
 		}
 		if row.AbilityOneDescription != "" {
 			ref["abilityone_description"] = row.AbilityOneDescription
+			if ref["description"] == nil || ref["description"] == "" {
+				ref["description"] = row.AbilityOneDescription
+			}
 		}
 		if row.DateAdded != "" {
 			ref["date_added"] = row.DateAdded
@@ -177,14 +205,17 @@ func (e *AbilityOneETSExtractor) Fetch(ctx context.Context, entityID string, par
 			ref["nsn_plus_7"] = row.NSNPlus7
 		}
 
-		if row.SKU != "" || row.CommercialUPC != "" {
+		// Include description-only ETS rows when they still map the commercial design to the NSN.
+		if row.SKU != "" || normalizedUPC != "" || row.CommercialDescription != "" || row.Manufacturer != "" {
 			references = append(references, ref)
 		}
 	}
 
-	// Keep payloads bounded for UI responsiveness.
-	if len(references) > 75 {
-		references = references[:75]
+	// Keep payloads bounded but high enough for ETS-heavy NSNs (p90 ≈ 35, max ≈ 300).
+	truncated := false
+	if len(references) > 200 {
+		references = references[:200]
+		truncated = true
 	}
 	earliestDateText := ""
 	latestDateText := ""
@@ -219,10 +250,12 @@ func (e *AbilityOneETSExtractor) Fetch(ctx context.Context, entityID string, par
 			"abilityone_descriptions": topValuesByCount(abilityDescCounts, 12),
 			"commercial_descriptions": topValuesByCount(commercialDescCounts, 12),
 			"commercial_references":   references,
+			"references_returned":     len(references),
+			"references_truncated":    truncated,
 			"note":                    "AbilityOne ETS cross-reference data matched by NSN/NIIN and merged into commercial reference evidence.",
 		},
 		QualityScore: 0.98,
-		CreatedBy:    "abilityone-ets-extractor-v0.2",
+		CreatedBy:    "abilityone-ets-extractor-v0.3",
 	}
 
 	return []models.DataSnapshot{snap}, nil
@@ -264,7 +297,7 @@ func (e *AbilityOneETSExtractor) load() {
 		row := abilityOneETSRow{
 			SKU:                   strings.TrimSpace(column(cols, 0)),
 			DateAdded:             strings.TrimSpace(column(cols, 1)),
-			CommercialUPC:         digitsOnly(column(cols, 2)),
+			CommercialUPC:         normalizeCommercialUPC(column(cols, 2)),
 			CommercialDescription: strings.TrimSpace(column(cols, 3)),
 			Manufacturer:          strings.TrimSpace(column(cols, 4)),
 			AbilityOneNSN:         strings.TrimSpace(column(cols, 5)),
@@ -406,6 +439,25 @@ func formatNSN13(nsn13 string) string {
 		return nsn13
 	}
 	return fmt.Sprintf("%s-%s-%s", nsn13[:4], nsn13[4:6], nsn13[6:])
+}
+
+// normalizeCommercialUPC strips non-digits and pads common short barcode forms to GTIN-12 when possible.
+func normalizeCommercialUPC(raw string) string {
+	d := digitsOnly(raw)
+	if d == "" {
+		return ""
+	}
+	switch len(d) {
+	case 11:
+		return "0" + d
+	case 12, 13, 14:
+		return d
+	default:
+		if len(d) > 14 {
+			return d[len(d)-14:]
+		}
+		return d
+	}
 }
 
 func digitsOnly(s string) string {

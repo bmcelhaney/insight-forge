@@ -119,13 +119,22 @@ type RelatedNSN struct {
 // associated with the federal NSN. These enable cross-channel analysis (federal vs commercial pricing,
 // substitution opportunities, and supply risk signals from the commercial side).
 type CommercialReference struct {
-	SKU         string `json:"sku"`                   // Manufacturer / commercial part number
-	UPC         string `json:"upc,omitempty"`         // Universal Product Code (12 digits) or GTIN-12
-	GTIN        string `json:"gtin,omitempty"`        // Longer GTIN if available
+	SKU          string `json:"sku"`                     // Manufacturer / commercial part number
+	UPC          string `json:"upc,omitempty"`           // Universal Product Code (12 digits) or GTIN-12
+	GTIN         string `json:"gtin,omitempty"`          // Longer GTIN if available
 	Manufacturer string `json:"manufacturer,omitempty"`
-	Source      string `json:"source"`                // e.g. "GSA_ADVANTAGE", "WEBFLIS", "ABILITYONE"
-	Price       string `json:"price,omitempty"`       // Observed commercial/federal channel price
-	Context     string `json:"context,omitempty"`     // Short note from source (e.g. "JWOD listing", "substitute")
+	Description  string `json:"description,omitempty"`   // Commercial or AbilityOne product description
+	Source       string `json:"source"`                  // e.g. "ABILITYONE_ETS", "GSA_ADVANTAGE"
+	Price        string `json:"price,omitempty"`         // Observed commercial/federal channel price
+	PriceSource  string `json:"price_source,omitempty"`  // GSA_ADVANTAGE | PARTSBASE | etc.
+	PriceAsOf    string `json:"price_as_of,omitempty"`   // ISO date or capture time when known
+	PriceURL     string `json:"price_url,omitempty"`     // Best URL to view/verify the price
+	LinkShop     string `json:"link_shop,omitempty"`     // Resilient marketplace/search URL (rarely 404s)
+	LinkUPC      string `json:"link_upc,omitempty"`      // UPC-based search URL
+	LinkGSA      string `json:"link_gsa,omitempty"`      // GSA Advantage search URL
+	LinkWebsite  string `json:"link_website,omitempty"`  // Manufacturer homepage when known
+	Context      string `json:"context,omitempty"`       // Short note from source (e.g. "JWOD listing", "substitute")
+	DateAdded    string `json:"date_added,omitempty"`    // ETS mapping date when available
 }
 
 // CommercialSupplier represents an aggregated commercial supplier derived from SKU/UPC data.
