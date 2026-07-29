@@ -73,6 +73,22 @@ type InsightResult struct {
 
 	// Top commercial suppliers derived from SKU and UPC cross-references found for this NSN.
 	TopCommercialSuppliers []CommercialSupplier `json:"top_commercial_suppliers,omitempty"`
+
+	// AbilityOne.com catalog list price for this NSN (federal channel). Shown separately
+	// from commercial/ETS row pricing — never used as a default fill on those rows.
+	AbilityOneChannelPrice *ChannelPrice `json:"abilityone_channel_price,omitempty"`
+}
+
+// ChannelPrice is a standalone NSN-level catalog price (not a commercial SKU quote).
+type ChannelPrice struct {
+	Price  string `json:"price"`
+	SKU    string `json:"sku,omitempty"`
+	Name   string `json:"name,omitempty"`
+	Brand  string `json:"brand,omitempty"`
+	Source string `json:"source"` // e.g. ABILITYONE_COM
+	AsOf   string `json:"as_of,omitempty"`
+	URL    string `json:"url,omitempty"`
+	Note   string `json:"note,omitempty"`
 }
 
 // RiskFlag represents a geopolitical, regulatory, concentration, or other concern.

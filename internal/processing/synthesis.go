@@ -153,9 +153,11 @@ func Synthesize(ctx context.Context, entityID string, snapshots []models.DataSna
 	// We do not inject special-case staged card metrics for specific NSNs.
 
 	// === Commercial SKUs / UPCs (ETS + live sources; synthetic WebFLIS excluded) ===
+	// AbilityOne.com NSN catalog price is separate — not used as default commercial pricing.
+	result.AbilityOneChannelPrice = buildAbilityOneChannelPrice(snapshots, entityID)
 	commercialRefs := extractCommercialReferences(snapshots)
 	commercialRefs = enrichCommercialReferences(entityID, commercialRefs, snapshots)
-	// Bounded GSA probes for top unpriced refs (soft-fail, cached, env-gated).
+	// Bounded probes for top unpriced commercial/ETS rows (soft-fail, cached, env-gated).
 	commercialRefs = probeCommercialPrices(ctx, commercialRefs)
 	result.CommercialReferences = commercialRefs
 
@@ -259,6 +261,10 @@ func extractCommercialReferences(snaps []models.DataSnapshot) []models.Commercia
 		src := strings.ToUpper(strings.TrimSpace(s.SourceCode))
 		// WebFLIS prototype invents SKU/UPC noise — never surface as commercial equivalents.
 		if src == "WEBFLIS" {
+			continue
+		}
+		// AbilityOne.com NSN catalog is shown separately (abilityone_channel_price), not as a commercial row.
+		if src == "ABILITYONE_COMMERCE" {
 			continue
 		}
 

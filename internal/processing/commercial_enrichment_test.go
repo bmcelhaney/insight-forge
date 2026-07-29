@@ -198,15 +198,15 @@ func TestProbeCommercialPricesDisabled(t *testing.T) {
 	}
 }
 
-func TestNSNChannelPriceAppliedToETSRefs(t *testing.T) {
+func TestNSNChannelPriceNotAppliedToETSRefs(t *testing.T) {
 	snaps := []models.DataSnapshot{{
 		SourceCode: "ABILITYONE_COMMERCE",
 		Value:      13.01,
 		RawResponse: map[string]any{
-			"best_price": 13.01,
-			"best_sku":   "7520-00-935-7136",
-			"best_name":  "U.S. Government Pen",
-			"search_url": "https://www.abilityone.com/search?q=7520-00-935-7136",
+			"best_price":  13.01,
+			"best_sku":    "7520-00-935-7136",
+			"best_name":   "U.S. Government Pen",
+			"search_url":  "https://www.abilityone.com/search?q=7520-00-935-7136",
 			"price_as_of": "2026-07-29",
 		},
 	}}
@@ -217,10 +217,15 @@ func TestNSNChannelPriceAppliedToETSRefs(t *testing.T) {
 	if len(out) != 1 {
 		t.Fatalf("expected 1 ref, got %d", len(out))
 	}
-	if out[0].Price == "" || !strings.Contains(out[0].Price, "13.01") {
-		t.Fatalf("expected NSN channel price applied, got %q", out[0].Price)
+	if out[0].Price != "" {
+		t.Fatalf("AbilityOne channel price must not fill commercial rows, got %q", out[0].Price)
 	}
-	if out[0].PriceSource != "ABILITYONE_COM" {
-		t.Fatalf("price source %q", out[0].PriceSource)
+
+	ch := buildAbilityOneChannelPrice(snaps, "7520009357136")
+	if ch == nil || !strings.Contains(ch.Price, "13.01") {
+		t.Fatalf("expected standalone channel price, got %#v", ch)
+	}
+	if ch.Source != "ABILITYONE_COM" {
+		t.Fatalf("source %q", ch.Source)
 	}
 }

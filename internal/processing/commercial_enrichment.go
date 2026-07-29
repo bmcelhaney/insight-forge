@@ -105,29 +105,14 @@ var manufacturerHomepages = []struct {
 	{[]string{"c-line", "cline"}, "https://www.c-lineproducts.com"},
 }
 
-// enrichCommercialReferences attaches resilient discovery links, merges live
-// prices from AbilityOne.com / GSA / PartsBase snapshots, sorts for usefulness, and caps size.
+// enrichCommercialReferences attaches resilient discovery links and merges
+// row-specific prices from GSA/PartsBase (and exact SKU matches only).
+// AbilityOne.com NSN channel price is NOT applied as a default to commercial rows —
+// that lives on InsightResult.AbilityOneChannelPrice instead.
 func enrichCommercialReferences(entityID string, refs []models.CommercialReference, snaps []models.DataSnapshot) []models.CommercialReference {
 	priceIndex := buildCommercialPriceIndex(snaps)
-	nsnChannel := extractNSNChannelPrice(snaps, entityID)
 	now := time.Now().UTC().Format("2006-01-02")
 	digitsNSN := digitsOnlyString(entityID)
-
-	// Ensure at least one commercial row exists when we have an NSN channel price
-	// so analysts still see pricing even if ETS has no mappings.
-	if len(refs) == 0 && nsnChannel.price != "" {
-		refs = []models.CommercialReference{{
-			SKU:          nsnChannel.sku,
-			Manufacturer: nsnChannel.brand,
-			Description:  nsnChannel.name,
-			Source:       "ABILITYONE_COMMERCE",
-			Price:        nsnChannel.price,
-			PriceSource:  "ABILITYONE_COM",
-			PriceAsOf:    nsnChannel.asOf,
-			PriceURL:     nsnChannel.url,
-			Context:      "AbilityOne.com catalog list price for this NSN",
-		}}
-	}
 
 	if len(refs) == 0 {
 		return refs
@@ -135,6 +120,10 @@ func enrichCommercialReferences(entityID string, refs []models.CommercialReferen
 
 	out := make([]models.CommercialReference, 0, len(refs))
 	for _, r := range refs {
+		// Keep AbilityOne.com NSN catalog hits out of the commercial/ETS row list.
+		if strings.EqualFold(r.Source, "ABILITYONE_COMMERCE") {
+			continue
+		}
 		r.SKU = strings.TrimSpace(r.SKU)
 		r.UPC = normalizeUPCDigits(r.UPC)
 		r.GTIN = strings.TrimSpace(r.GTIN)
@@ -143,9 +132,10 @@ func enrichCommercialReferences(entityID string, refs []models.CommercialReferen
 		r.Source = strings.TrimSpace(r.Source)
 		r.Price = strings.TrimSpace(r.Price)
 
-		// Merge live prices when the ref itself has none.
+		// Merge live prices only when this row has a specific match (SKU/UPC),
+		// never the NSN-level AbilityOne.com channel default.
 		if r.Price == "" {
-			if p, ok := priceIndex.lookup(r); ok {
+			if p, ok := priceIndex.lookup(r); ok && !strings.EqualFold(p.source, "ABILITYONE_COM") {
 				r.Price = p.price
 				r.PriceSource = p.source
 				r.PriceAsOf = p.asOf
@@ -154,25 +144,10 @@ func enrichCommercialReferences(entityID string, refs []models.CommercialReferen
 				}
 			}
 		}
-		// Fallback: apply NSN-level AbilityOne.com channel price to unpriced ETS/commercial rows.
-		// This is the primary fix after GSA Advantage HTML scrape stopped working.
-		if r.Price == "" && nsnChannel.price != "" {
-			r.Price = nsnChannel.price
-			r.PriceSource = "ABILITYONE_COM"
-			r.PriceAsOf = nsnChannel.asOf
-			r.PriceURL = nsnChannel.url
-			if r.Context == "" {
-				r.Context = "AbilityOne.com NSN channel list price (same federal item)"
-			} else if !strings.Contains(strings.ToLower(r.Context), "abilityone.com") {
-				r.Context = r.Context + " | AbilityOne.com NSN channel list price"
-			}
-		}
 		if r.Price != "" && r.PriceSource == "" {
 			switch strings.ToUpper(r.Source) {
 			case "GSA_ADVANTAGE":
 				r.PriceSource = "GSA_ADVANTAGE"
-			case "ABILITYONE_COMMERCE":
-				r.PriceSource = "ABILITYONE_COM"
 			case "PARTSBASE":
 				r.PriceSource = "PARTSBASE"
 			default:
@@ -586,6 +561,24 @@ func extractNSNChannelPrice(snaps []models.DataSnapshot, entityID string) nsnCha
 	return nsnChannelPrice{}
 }
 
+// buildAbilityOneChannelPrice returns the standalone NSN catalog price for the result payload.
+func buildAbilityOneChannelPrice(snaps []models.DataSnapshot, entityID string) *models.ChannelPrice {
+	ch := extractNSNChannelPrice(snaps, entityID)
+	if ch.price == "" {
+		return nil
+	}
+	return &models.ChannelPrice{
+		Price:  ch.price,
+		SKU:    ch.sku,
+		Name:   ch.name,
+		Brand:  ch.brand,
+		Source: "ABILITYONE_COM",
+		AsOf:   ch.asOf,
+		URL:    ch.url,
+		Note:   "AbilityOne.com catalog list price for this NSN (federal channel). Not a commercial SKU quote.",
+	}
+}
+
 func abilityOneSearchURL(digitsOrTerm string) string {
 	term := strings.TrimSpace(digitsOrTerm)
 	d := digitsOnlyString(term)
@@ -605,32 +598,8 @@ func buildCommercialPriceIndex(snaps []models.DataSnapshot) commercialPriceIndex
 
 	for _, s := range snaps {
 		switch s.SourceCode {
-		case "ABILITYONE_COMMERCE":
-			searchURL := firstStringFromAny(s.RawResponse["search_url"])
-			for _, r := range mapSliceFromAny(s.RawResponse["commercial_references"]) {
-				price := firstNonEmptyString(r, "price")
-				if price == "" {
-					continue
-				}
-				hit := commercialPriceHit{
-					price:  normalizePriceString(price),
-					source: "ABILITYONE_COM",
-					asOf:   asOf,
-					url:    searchURL,
-				}
-				if sku := firstNonEmptyString(r, "sku", "mfr_part"); sku != "" {
-					idx.bySKU[strings.ToUpper(sku)] = hit
-					// Also index dashed/undashed NSN forms.
-					d := digitsOnlyString(sku)
-					if len(d) == 13 {
-						idx.bySKU[d] = hit
-						idx.bySKU[strings.ToUpper(d[0:4]+"-"+d[4:6]+"-"+d[6:9]+"-"+d[9:13])] = hit
-					}
-				}
-				if upc := normalizeUPCDigits(firstNonEmptyString(r, "upc")); upc != "" {
-					idx.byUPC[upc] = hit
-				}
-			}
+		// ABILITYONE_COMMERCE is intentionally NOT indexed into commercial row prices.
+		// It is exposed separately as AbilityOneChannelPrice on the result.
 		case "GSA_ADVANTAGE":
 			gsaURL := firstStringFromAny(s.RawResponse["search_url"])
 			for _, p := range mapSliceFromAny(s.RawResponse["prices_found"]) {

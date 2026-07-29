@@ -856,6 +856,49 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
         relEl.appendChild(a);
       });
 
+      // AbilityOne.com NSN channel price — standalone card (not a commercial/ETS row price)
+      const aoChannel = result.abilityone_channel_price || result.AbilityOneChannelPrice || null;
+      if (aoChannel && (aoChannel.price || aoChannel.Price)) {
+        const aoWrap = document.createElement('div');
+        aoWrap.style.cssText = 'grid-column: 1 / -1; margin-top: 8px;';
+        const aoHeader = document.createElement('div');
+        aoHeader.style.cssText = 'font-size:10px; color:#64748b; margin-bottom:6px; text-transform:uppercase; letter-spacing:0.5px;';
+        aoHeader.textContent = 'AbilityOne.com Channel Price (NSN catalog)';
+        aoWrap.appendChild(aoHeader);
+
+        const card = document.createElement('div');
+        card.className = 'bg-emerald-950/30 border border-emerald-800 rounded-2xl p-4';
+        const priceRaw = aoChannel.price || aoChannel.Price || '';
+        const priceTxt = String(priceRaw).startsWith('$') ? priceRaw : ('$' + priceRaw);
+        const name = aoChannel.name || aoChannel.Name || '';
+        const brand = aoChannel.brand || aoChannel.Brand || '';
+        const sku = aoChannel.sku || aoChannel.SKU || '';
+        const asOf = aoChannel.as_of || aoChannel.AsOf || '';
+        const url = aoChannel.url || aoChannel.URL || '';
+        const noteTxt = aoChannel.note || aoChannel.Note || 'Federal AbilityOne channel list price for this NSN. Not a commercial SKU market quote.';
+
+        card.innerHTML = `
+          <div class="flex flex-wrap items-baseline justify-between gap-2">
+            <div class="text-2xl font-semibold text-emerald-300 tabular-nums">${priceTxt}</div>
+            <div class="text-[10px] uppercase tracking-wide text-emerald-500/80">ABILITYONE.COM</div>
+          </div>
+          <div class="text-xs text-zinc-200 mt-1">${[brand, name].filter(Boolean).join(' · ') || 'Catalog list price'}</div>
+          <div class="text-[11px] text-zinc-400 mt-0.5">${sku ? 'NSN/SKU: ' + sku : ''}${asOf ? (sku ? ' · ' : '') + 'as of ' + asOf : ''}</div>
+          <div class="text-[10px] text-zinc-500 mt-2">${noteTxt}</div>
+        `;
+        if (url) {
+          const a = document.createElement('a');
+          a.href = url;
+          a.target = '_blank';
+          a.rel = 'noopener noreferrer';
+          a.className = 'inline-block mt-2 text-[11px] text-emerald-300 hover:text-emerald-200 underline';
+          a.textContent = 'View on AbilityOne.com';
+          card.appendChild(a);
+        }
+        aoWrap.appendChild(card);
+        relEl.appendChild(aoWrap);
+      }
+
       // Commercial SKUs/UPCs — full list with resilient search links (no brittle manufacturer deep links)
       const commsAll = result.commercial_references || result.CommercialReferences || [];
       const commTops = result.top_commercial_suppliers || result.TopCommercialSuppliers || [];
@@ -909,20 +952,8 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
 
         const note = document.createElement('div');
         note.className = 'text-[10px] text-zinc-500 mb-2';
-        note.textContent = 'Prices: AbilityOne.com catalog list price is preferred (federal AbilityOne channel). GSA Advantage HTML scrape is currently degraded. Shop/UPC links open market search pages for commercial verification — not manufacturer deep-links.';
+        note.textContent = 'Row prices are SKU/UPC-specific only (PartsBase/GSA when matched). AbilityOne.com NSN catalog price is shown separately above — not used as a default on these rows.';
         commWrapper.appendChild(note);
-
-        // Surface NSN-level AbilityOne channel price if present on any ref
-        const channelPriced = commsAll.find(c => (c.price_source || c.priceSource || '') === 'ABILITYONE_COM' && c.price);
-        if (channelPriced) {
-          const banner = document.createElement('div');
-          banner.className = 'mb-3 text-xs text-emerald-200 bg-emerald-950/40 border border-emerald-800 rounded-xl px-3 py-2';
-          const p = String(channelPriced.price).startsWith('$') ? channelPriced.price : ('$' + channelPriced.price);
-          banner.innerHTML = `<strong>AbilityOne.com channel list price:</strong> ${p}` +
-            (channelPriced.price_as_of || channelPriced.priceAsOf ? ` <span class="text-emerald-400/80">· as of ${channelPriced.price_as_of || channelPriced.priceAsOf}</span>` : '') +
-            ` <span class="text-emerald-400/70">· applied to unpriced ETS/commercial rows for this NSN</span>`;
-          commWrapper.appendChild(banner);
-        }
 
         const filterRow = document.createElement('div');
         filterRow.className = 'flex flex-wrap gap-2 mb-3';
