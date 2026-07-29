@@ -1071,7 +1071,12 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
           if (c.price_source || c.priceSource) {
             const ps = document.createElement('div');
             ps.className = 'text-[10px] text-zinc-500 mt-0.5';
-            ps.textContent = 'Price source: ' + (c.price_source || c.priceSource) + (c.price_as_of || c.priceAsOf ? ' · ' + (c.price_as_of || c.priceAsOf) : '');
+            let src = c.price_source || c.priceSource || '';
+            // Friendly label for market offers pulled via deep-link resolution
+            if (String(src).toUpperCase().startsWith('MARKET')) {
+              src = src.replace(/^MARKET:?/i, 'Market offer').replace(/_/g, ' ');
+            }
+            ps.textContent = 'Price source: ' + src + (c.price_as_of || c.priceAsOf ? ' · ' + (c.price_as_of || c.priceAsOf) : '');
             box.appendChild(ps);
           }
 

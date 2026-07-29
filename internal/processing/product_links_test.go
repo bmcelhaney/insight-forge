@@ -30,10 +30,14 @@ func TestApplyDeterministicProductLinksAmazonASIN(t *testing.T) {
 	}
 	resolved := map[int]*productIdentity{
 		0: {
-			Title: "BIC Clic Stic Retractable Ball Pen Medium Point Black 12-Pack",
-			Brand: "BIC",
-			UPC:   "070330904330",
-			ASIN:  "B00006IE7Z",
+			Title:         "BIC Clic Stic Retractable Ball Pen Medium Point Black 12-Pack",
+			Brand:         "BIC",
+			UPC:           "070330904330",
+			ASIN:          "B00006IE7Z",
+			OfferPrice:    8.49,
+			OfferMerchant: "Staples",
+			OfferCurrency: "USD",
+			DeepLinkOK:    true,
 		},
 	}
 	out := applyDeterministicProductLinks(refs, "7520009357136", resolved)
@@ -51,6 +55,33 @@ func TestApplyDeterministicProductLinksAmazonASIN(t *testing.T) {
 	}
 	if !strings.Contains(out[0].LinkUPC, "upcitemdb.com/upc/070330904330") {
 		t.Fatalf("upc identity link %q", out[0].LinkUPC)
+	}
+	if out[0].Price == "" || !strings.Contains(out[0].Price, "8.49") {
+		t.Fatalf("expected market offer price on tile, got %q", out[0].Price)
+	}
+	if !strings.Contains(out[0].PriceSource, "STAPLES") && !strings.Contains(out[0].PriceSource, "MARKET") {
+		t.Fatalf("price source %q", out[0].PriceSource)
+	}
+}
+
+func TestPickBestMarketOfferPrefersUSD(t *testing.T) {
+	offers := []upcOffer{
+		{Merchant: "Newegg Canada", Currency: "CAD", Price: 28.44, Condition: "New"},
+		{Merchant: "Staples", Currency: "", Price: 8.49, Condition: "New"},
+		{Merchant: "Random", Currency: "USD", Price: 0.24, Condition: "New"},
+	}
+	p, m, c, ok := pickBestMarketOffer(offers)
+	if !ok {
+		t.Fatal("expected offer")
+	}
+	if p != 8.49 {
+		t.Fatalf("price %v", p)
+	}
+	if !strings.Contains(strings.ToLower(m), "staple") {
+		t.Fatalf("merchant %q", m)
+	}
+	if c != "USD" {
+		t.Fatalf("currency %q", c)
 	}
 }
 

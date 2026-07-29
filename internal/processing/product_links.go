@@ -3,6 +3,7 @@ package processing
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -11,18 +12,24 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/bmcelhaney/insight-forge/internal/models"
 )
 
-// productIdentity is a resolved commercial product key used for accurate deep links.
+// productIdentity is a resolved commercial product key used for accurate deep links
+// and optional market offer pricing pulled back onto the commercial tile.
 type productIdentity struct {
-	Title string
-	Brand string
-	Model string
-	UPC   string
-	ASIN  string
-	EAN   string
+	Title         string
+	Brand         string
+	Model         string
+	UPC           string
+	ASIN          string
+	EAN           string
+	OfferPrice    float64 // best USD (or unlabelled) offer price
+	OfferMerchant string
+	OfferCurrency string
+	DeepLinkOK    bool // true when we have a direct product URL (Amazon /dp or UPC dossier)
 }
 
 type cachedProductIdentity struct {
@@ -174,31 +181,64 @@ func applyDeterministicProductLinks(refs []models.CommercialReference, entityID 
 		} else if a, ok := amazonASINFromSKU(sku); ok {
 			asin = a
 		}
+		deepOK := false
 		if asin != "" {
 			r.LinkAmazon = "https://www.amazon.com/dp/" + asin
+			deepOK = true
 		} else {
-			r.LinkAmazon = buildAmazonSearchURL(sku, upc)
+			// Do not invent a weak Amazon search when we have a better deep link elsewhere.
+			r.LinkAmazon = ""
 		}
 
-		// --- Shop: prefer title+brand (product-like), else UPC, else quoted SKU ---
+		// --- Shop: only when we have a strong product title/UPC; skip weak bare-SKU searches ---
 		r.LinkShop = buildPreciseShopURL(mfr, sku, upc, title)
+		// If we have an Amazon product page, prefer it as the primary commercial deep link
+		// and keep shop only when title-based (product-like).
+		if deepOK && title == "" && upc == "" {
+			r.LinkShop = ""
+		}
 
 		// --- UPC identity page (human-readable product dossier) ---
 		if upc != "" {
 			r.LinkUPC = "https://www.upcitemdb.com/upc/" + upc
+			deepOK = true
 		}
 
 		// --- Federal: AbilityOne.com with dashed NSN (or SKU) ---
 		r.LinkGSA = buildFederalCatalogURL(sku, upc, digitsNSN)
 
 		r.LinkWebsite = manufacturerHomepage(mfr)
+
+		// Pull market offer price onto the tile only when a successful deep link exists.
+		// Never overwrite AbilityOne.com / PartsBase-specific sources (those are other sections).
+		if deepOK && strings.TrimSpace(r.Price) == "" && id != nil && id.OfferPrice > 0 {
+			r.Price = normalizePriceString(fmt.Sprintf("%.2f", id.OfferPrice))
+			src := "MARKET_OFFER"
+			if id.OfferMerchant != "" {
+				src = "MARKET:" + sanitizeMerchantTag(id.OfferMerchant)
+			}
+			r.PriceSource = src
+			r.PriceAsOf = time.Now().UTC().Format("2006-01-02")
+			if id.OfferMerchant != "" {
+				note := "Market offer via " + id.OfferMerchant + " (resolved with product deep link)"
+				if r.Context == "" {
+					r.Context = note
+				} else if !strings.Contains(strings.ToLower(r.Context), "market offer") {
+					r.Context = r.Context + " | " + note
+				}
+			}
+		}
+
 		if r.PriceURL == "" {
 			if r.LinkAmazon != "" && strings.Contains(r.LinkAmazon, "/dp/") {
 				r.PriceURL = r.LinkAmazon
+			} else if r.LinkUPC != "" {
+				r.PriceURL = r.LinkUPC
 			} else if r.LinkShop != "" {
 				r.PriceURL = r.LinkShop
 			}
 		}
+		_ = deepOK
 	}
 	return refs
 }
@@ -285,6 +325,17 @@ func upcitemdbSearch(ctx context.Context, query, preferSKU string) (productIdent
 	return upcitemdbFetch(ctx, u, preferSKU)
 }
 
+type upcOffer struct {
+	Merchant     string  `json:"merchant"`
+	Domain       string  `json:"domain"`
+	Title        string  `json:"title"`
+	Currency     string  `json:"currency"`
+	Price        float64 `json:"price"`
+	ListPrice    string  `json:"list_price"`
+	Condition    string  `json:"condition"`
+	Availability string  `json:"availability"`
+}
+
 func upcitemdbFetch(ctx context.Context, endpoint, preferSKU string) (productIdentity, bool) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
@@ -307,12 +358,16 @@ func upcitemdbFetch(ctx context.Context, endpoint, preferSKU string) (productIde
 	var payload struct {
 		Code  string `json:"code"`
 		Items []struct {
-			Title string `json:"title"`
-			Brand string `json:"brand"`
-			Model string `json:"model"`
-			UPC   string `json:"upc"`
-			EAN   string `json:"ean"`
-			ASIN  string `json:"asin"`
+			Title                string     `json:"title"`
+			Brand                string     `json:"brand"`
+			Model                string     `json:"model"`
+			UPC                  string     `json:"upc"`
+			EAN                  string     `json:"ean"`
+			ASIN                 string     `json:"asin"`
+			Currency             string     `json:"currency"`
+			LowestRecordedPrice  float64    `json:"lowest_recorded_price"`
+			HighestRecordedPrice float64    `json:"highest_recorded_price"`
+			Offers               []upcOffer `json:"offers"`
 		} `json:"items"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
@@ -345,6 +400,9 @@ func upcitemdbFetch(ctx context.Context, endpoint, preferSKU string) (productIde
 		if it.Title != "" {
 			score += 1
 		}
+		if len(it.Offers) > 0 {
+			score += 3
+		}
 		if score > bestScore {
 			bestScore = score
 			bestIdx = i
@@ -365,10 +423,130 @@ func upcitemdbFetch(ctx context.Context, endpoint, preferSKU string) (productIde
 			id.UPC = id.EAN[1:]
 		}
 	}
+	id.DeepLinkOK = id.ASIN != "" || id.UPC != ""
+
+	// Select a usable market offer price (prefer USD / unlabelled US merchants).
+	if price, merchant, currency, ok := pickBestMarketOffer(it.Offers); ok {
+		id.OfferPrice = price
+		id.OfferMerchant = merchant
+		id.OfferCurrency = currency
+	}
+
 	if id.Title == "" && id.ASIN == "" && id.UPC == "" {
 		return productIdentity{}, false
 	}
 	return id, true
+}
+
+// pickBestMarketOffer chooses a displayable commercial offer price.
+// Prefers USD (or blank currency), known US office retailers, New condition, and sane price bands.
+func pickBestMarketOffer(offers []upcOffer) (price float64, merchant, currency string, ok bool) {
+	type cand struct {
+		price    float64
+		merchant string
+		currency string
+		score    int
+	}
+	var cands []cand
+	for _, o := range offers {
+		if o.Price <= 0 || o.Price > 50000 {
+			continue
+		}
+		// Skip absurd pennies / noise often present in "lowest_recorded".
+		if o.Price < 0.5 {
+			continue
+		}
+		cur := strings.ToUpper(strings.TrimSpace(o.Currency))
+		// Prefer USD / blank; deprioritize CAD/EUR but still allow if nothing else.
+		score := 0
+		switch cur {
+		case "", "USD", "US$":
+			score += 50
+			cur = "USD"
+		case "CAD":
+			score += 5
+		default:
+			score += 10
+		}
+		merch := strings.TrimSpace(o.Merchant)
+		if merch == "" {
+			merch = strings.TrimSpace(o.Domain)
+		}
+		ml := strings.ToLower(merch + " " + o.Domain)
+		switch {
+		case strings.Contains(ml, "amazon"):
+			score += 40
+		case strings.Contains(ml, "staples"):
+			score += 35
+		case strings.Contains(ml, "office depot"), strings.Contains(ml, "officedepot"):
+			score += 35
+		case strings.Contains(ml, "walmart"):
+			score += 30
+		case strings.Contains(ml, "target"):
+			score += 25
+		case strings.Contains(ml, "grainger"):
+			score += 25
+		case strings.Contains(ml, "uline"):
+			score += 25
+		case strings.Contains(ml, "sam"):
+			score += 20
+		}
+		if strings.EqualFold(strings.TrimSpace(o.Condition), "New") || o.Condition == "" {
+			score += 10
+		}
+		// Prefer mid-range prices slightly (avoid extreme outliers among peers).
+		cands = append(cands, cand{price: o.Price, merchant: merch, currency: cur, score: score})
+	}
+	if len(cands) == 0 {
+		return 0, "", "", false
+	}
+	// Among top score band, pick lowest price.
+	bestScore := cands[0].score
+	for _, c := range cands {
+		if c.score > bestScore {
+			bestScore = c.score
+		}
+	}
+	bestPrice := 0.0
+	bestMerch := ""
+	bestCur := ""
+	for _, c := range cands {
+		if c.score < bestScore-15 {
+			continue
+		}
+		if bestPrice == 0 || c.price < bestPrice {
+			bestPrice = c.price
+			bestMerch = c.merchant
+			bestCur = c.currency
+		}
+	}
+	if bestPrice <= 0 {
+		return 0, "", "", false
+	}
+	return bestPrice, bestMerch, bestCur, true
+}
+
+func sanitizeMerchantTag(merchant string) string {
+	merchant = strings.TrimSpace(merchant)
+	if merchant == "" {
+		return "OFFER"
+	}
+	var b strings.Builder
+	for _, r := range strings.ToUpper(merchant) {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			b.WriteRune(r)
+		} else if r == ' ' || r == '-' || r == '_' || r == '.' {
+			b.WriteByte('_')
+		}
+	}
+	s := strings.Trim(b.String(), "_")
+	if len(s) > 24 {
+		s = s[:24]
+	}
+	if s == "" {
+		return "OFFER"
+	}
+	return s
 }
 
 func compactAlnum(s string) string {
