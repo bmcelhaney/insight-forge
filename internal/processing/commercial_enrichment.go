@@ -793,7 +793,11 @@ func buildShopSearchURL(manufacturer, sku, upc, description string) string {
 }
 
 // buildAmazonSearchURL prefills Amazon search with SKU or UPC so the analyst does not retype.
+// When the identifier is already an Amazon ASIN, deep-links the product page.
 func buildAmazonSearchURL(sku, upc string) string {
+	if asin, ok := amazonASINFromSKU(sku); ok {
+		return "https://www.amazon.com/dp/" + asin
+	}
 	term := strings.TrimSpace(sku)
 	if term == "" {
 		term = normalizeUPCDigits(upc)
@@ -802,6 +806,46 @@ func buildAmazonSearchURL(sku, upc string) string {
 		return ""
 	}
 	return "https://www.amazon.com/s?k=" + url.QueryEscape(term)
+}
+
+// amazonASINFromSKU returns true when the identifier looks like an Amazon ASIN.
+func amazonASINFromSKU(sku string) (string, bool) {
+	s := strings.TrimSpace(sku)
+	if len(s) != 10 {
+		return "", false
+	}
+	upper := strings.ToUpper(s)
+	for _, r := range upper {
+		if !((r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')) {
+			return "", false
+		}
+	}
+	// Typical retail ASIN patterns (B0… / B00… / B0 + digit).
+	if upper[0] == 'B' && upper[1] >= '0' && upper[1] <= '9' {
+		return upper, true
+	}
+	return "", false
+}
+
+// looksLikeCatalogCodeDescription detects terse ETS descriptions like "PEN,CLIC STIC,RET,MED,BK".
+func looksLikeCatalogCodeDescription(s string) bool {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return true
+	}
+	if strings.Count(s, ",") >= 2 && len(s) < 60 {
+		return true
+	}
+	letters, upper := 0, 0
+	for _, r := range s {
+		if (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') {
+			letters++
+			if r >= 'A' && r <= 'Z' {
+				upper++
+			}
+		}
+	}
+	return letters > 0 && float64(upper)/float64(letters) > 0.85 && len(s) < 80
 }
 
 // buildFederalCatalogURL opens AbilityOne.com with the NSN (dashed) or SKU already in the query.
