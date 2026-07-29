@@ -163,6 +163,8 @@ func Synthesize(ctx context.Context, entityID string, snapshots []models.DataSna
 	commercialRefs = enrichCommercialReferences(entityID, commercialRefs, snapshots)
 	// Bounded probes for top unpriced commercial/ETS rows (soft-fail, cached, env-gated).
 	commercialRefs = probeCommercialPrices(ctx, commercialRefs)
+	// Resolve UPC/SKU → product title + Amazon ASIN for accurate deep links (soft-fail).
+	commercialRefs = enrichProductLinks(ctx, commercialRefs, entityID)
 	result.CommercialReferences = commercialRefs
 
 	if len(commercialRefs) > 0 {

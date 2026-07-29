@@ -1317,55 +1317,59 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
       return n.slice(0, 4) + '-' + n.slice(4, 6) + '-' + n.slice(6, 9) + '-' + n.slice(9, 13);
     }
 
-    // Prefer server-provided links; fall back to the same product-specific URL rules client-side.
+    // Prefer server-resolved product deep links; fall back to prefilled search URLs.
     function buildCommercialLinks(c, nsn) {
       const mfr = (c.manufacturer || '').trim();
       const sku = (c.sku || '').trim();
-      const upc = digitsOnly(c.upc || '').replace(/^0+(\d{12,14})$/, '$1'); // keep full UPC, don't strip meaningful zeros badly
       const upcClean = digitsOnly(c.upc || '');
       const desc = (c.description || '').trim();
+      const dashed = formatDashedNSN(nsn);
 
-      // Google Shopping: UPC alone is most product-specific; otherwise exact-quoted SKU + mfr.
+      // Shop fallback: product title (if known) > UPC > quoted SKU+mfr
       let shopFallback = '';
-      if (upcClean.length >= 11) {
+      if (desc) {
+        let q = desc.slice(0, 90);
+        if (mfr && !q.toLowerCase().includes(mfr.toLowerCase())) q = mfr + ' ' + q;
+        if (sku && !q.includes(sku)) q += ' "' + sku + '"';
+        shopFallback = 'https://www.google.com/search?tbm=shop&q=' + encodeURIComponent(q);
+      } else if (upcClean.length >= 11) {
         shopFallback = 'https://www.google.com/search?tbm=shop&q=' + encodeURIComponent(upcClean);
       } else if (sku) {
-        const q = '"' + sku + '"' + (mfr ? (' ' + mfr) : '');
-        shopFallback = 'https://www.google.com/search?tbm=shop&q=' + encodeURIComponent(q);
-      } else if (mfr && desc) {
-        shopFallback = 'https://www.google.com/search?tbm=shop&q=' + encodeURIComponent(mfr + ' ' + desc.slice(0, 60));
+        shopFallback = 'https://www.google.com/search?tbm=shop&q=' + encodeURIComponent('"' + sku + '"' + (mfr ? (' ' + mfr) : ''));
       }
 
+      const serverAmazon = c.link_amazon || c.linkAmazon || '';
+      const amazonIsProduct = /amazon\.com\/(?:dp|gp\/product)\//i.test(serverAmazon);
       const amazonFallback = (sku || upcClean)
         ? ('https://www.amazon.com/s?k=' + encodeURIComponent(sku || upcClean))
         : '';
+      const amazon = amazonIsProduct ? serverAmazon : (serverAmazon || amazonFallback);
 
-      // Federal catalog: AbilityOne.com with dashed NSN prefilled (GSA SPA has no stable product deep-links).
-      const dashed = formatDashedNSN(nsn);
       let federalFallback = 'https://www.abilityone.com/';
-      if (dashed.length === 16) { // ####-##-###-####
+      if (dashed.length === 16) {
         federalFallback = 'https://www.abilityone.com/search?q=' + encodeURIComponent(dashed);
       } else if (sku) {
         federalFallback = 'https://www.abilityone.com/search?q=' + encodeURIComponent(sku);
-      } else if (upcClean) {
-        federalFallback = 'https://www.abilityone.com/search?q=' + encodeURIComponent(upcClean);
       }
 
       const shop = c.link_shop || c.linkShop || shopFallback;
-      const upcLink = c.link_upc || c.linkUpc || (upcClean.length >= 11
-        ? ('https://www.google.com/search?tbm=shop&q=' + encodeURIComponent(upcClean))
+      const upcIdentity = c.link_upc || c.linkUpc || (upcClean.length >= 11
+        ? ('https://www.upcitemdb.com/upc/' + upcClean)
         : '');
-      const amazon = c.link_amazon || c.linkAmazon || amazonFallback;
       const federal = c.link_gsa || c.linkGsa || federalFallback;
       const website = c.link_website || c.linkWebsite || manufacturerHomepage(mfr);
-      const priceUrl = c.price_url || c.priceUrl || '';
 
-      // Label shop/amazon by which key is embedded so analyst sees what's prefilled.
-      const shopLabel = upcClean.length >= 11 ? 'Shop (UPC)' : (sku ? 'Shop (SKU)' : 'Shop');
-      const amazonLabel = sku ? 'Amazon (SKU)' : (upcClean ? 'Amazon (UPC)' : 'Amazon');
-      const federalLabel = dashed.length === 16 ? 'AbilityOne (NSN)' : (sku ? 'AbilityOne (SKU)' : 'AbilityOne');
-
-      return { shop, shopLabel, upc: upcLink, amazon, amazonLabel, federal, federalLabel, website, priceUrl };
+      return {
+        shop,
+        shopLabel: desc ? 'Shop product' : (upcClean.length >= 11 ? 'Shop (UPC)' : (sku ? 'Shop (SKU)' : 'Shop')),
+        upc: upcIdentity,
+        amazon,
+        amazonLabel: amazonIsProduct ? 'Amazon product' : (sku ? 'Amazon (SKU)' : 'Amazon'),
+        federal,
+        federalLabel: dashed.length === 16 ? 'AbilityOne (NSN)' : 'AbilityOne',
+        website,
+        priceUrl: c.price_url || c.priceUrl || '',
+      };
     }
 
     function appendCommercialLinkRow(parent, links) {
@@ -1380,16 +1384,18 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
         a.rel = 'noopener noreferrer';
         a.className = cls || 'text-[11px] text-sky-300 hover:text-sky-200 underline';
         a.textContent = label;
+        a.title = href; // hover shows full URL so analyst can verify prefill
         row.appendChild(a);
       };
-      add(links.shop, links.shopLabel || 'Shop (SKU)', 'text-[11px] text-emerald-300 hover:text-emerald-200 underline');
-      // Avoid duplicate UPC link when shop already uses UPC.
-      if (links.upc && links.upc !== links.shop) {
-        add(links.upc, 'Shop (UPC)');
+      // Prioritize direct product pages first.
+      add(links.amazon, links.amazonLabel || 'Amazon', /\/dp\//.test(links.amazon || '')
+        ? 'text-[11px] text-orange-300 hover:text-orange-200 underline font-medium'
+        : 'text-[11px] text-sky-300 hover:text-sky-200 underline');
+      add(links.shop, links.shopLabel || 'Shop product', 'text-[11px] text-emerald-300 hover:text-emerald-200 underline');
+      if (links.upc && links.upc !== links.shop && /upcitemdb\.com\/upc\//i.test(links.upc)) {
+        add(links.upc, 'UPC identity');
       }
-      add(links.amazon, links.amazonLabel || 'Amazon');
       add(links.federal, links.federalLabel || 'AbilityOne (NSN)', 'text-[11px] text-amber-300 hover:text-amber-200 underline');
-      add(links.priceUrl && links.priceUrl !== links.shop && links.priceUrl !== links.federal && links.priceUrl !== links.amazon ? links.priceUrl : '', 'Price source');
       add(links.website, 'Manufacturer site', 'text-[11px] text-zinc-400 hover:text-zinc-200 underline');
       if (row.childNodes.length) parent.appendChild(row);
     }
