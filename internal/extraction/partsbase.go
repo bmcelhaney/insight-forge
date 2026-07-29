@@ -350,9 +350,15 @@ func (p *PartsBaseExtractor) fetchGovData(ctx context.Context, requestURL, acces
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 4*1024*1024))
+	// Some high-volume NSNs return multi‑MB GovData payloads (observed ~7MB+).
+	// A low cap truncates JSON mid-stream and surfaces as "unexpected end of JSON input".
+	const maxGovDataBytes = 32 * 1024 * 1024
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxGovDataBytes+1))
 	if err != nil {
 		return nil, err
+	}
+	if len(body) > maxGovDataBytes {
+		return nil, fmt.Errorf("partsbase response exceeds %dMB limit", maxGovDataBytes/(1024*1024))
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -366,7 +372,7 @@ func (p *PartsBaseExtractor) fetchGovData(ctx context.Context, requestURL, acces
 
 	var decoded any
 	if err := json.Unmarshal(body, &decoded); err != nil {
-		return nil, fmt.Errorf("decode partsbase response: %w", err)
+		return nil, fmt.Errorf("decode partsbase response (%d bytes): %w", len(body), err)
 	}
 
 	if m, ok := decoded.(map[string]any); ok {
