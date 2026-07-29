@@ -1,7 +1,10 @@
 package processing
 
 import (
+	"context"
+	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -124,5 +127,73 @@ func TestExtractFiltersPartsBaseContractIDs(t *testing.T) {
 	}
 	if refs[0].SKU != "TG-100" {
 		t.Fatalf("got %q", refs[0].SKU)
+	}
+}
+
+func TestProbeCommercialPricesFillsFromSearch(t *testing.T) {
+	clearCommercialPriceCache()
+	prev := gsaPriceSearch
+	t.Cleanup(func() {
+		gsaPriceSearch = prev
+		clearCommercialPriceCache()
+		os.Unsetenv("IF_COMMERCIAL_PRICE_PROBES")
+	})
+
+	var calls atomic.Int32
+	gsaPriceSearch = func(ctx context.Context, term string) ([]map[string]any, error) {
+		calls.Add(1)
+		return []map[string]any{{"price": "7.25", "mfr_part": term}}, nil
+	}
+	os.Setenv("IF_COMMERCIAL_PRICE_PROBES", "5")
+
+	refs := []models.CommercialReference{
+		{SKU: "ABC-100", Manufacturer: "Acme", Source: "ABILITYONE_ETS"},
+		{SKU: "ALREADY", Price: "$1.00", Source: "GSA_ADVANTAGE"},
+	}
+	out := probeCommercialPrices(context.Background(), refs)
+	if out[0].Price == "" || !strings.Contains(out[0].Price, "7.25") {
+		t.Fatalf("expected probed price, got %#v", out[0])
+	}
+	if out[0].PriceSource != "GSA_ADVANTAGE" {
+		t.Fatalf("price source: %q", out[0].PriceSource)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("expected 1 search call, got %d", calls.Load())
+	}
+
+	// Cache hit should avoid a second network call.
+	calls.Store(0)
+	out2 := probeCommercialPrices(context.Background(), []models.CommercialReference{
+		{SKU: "ABC-100", Manufacturer: "Acme", Source: "ABILITYONE_ETS"},
+	})
+	if out2[0].Price == "" {
+		t.Fatal("expected cached price")
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("expected cache hit (0 calls), got %d", calls.Load())
+	}
+}
+
+func TestProbeCommercialPricesDisabled(t *testing.T) {
+	clearCommercialPriceCache()
+	prev := gsaPriceSearch
+	t.Cleanup(func() {
+		gsaPriceSearch = prev
+		os.Unsetenv("IF_COMMERCIAL_PRICE_PROBES")
+	})
+	var calls atomic.Int32
+	gsaPriceSearch = func(ctx context.Context, term string) ([]map[string]any, error) {
+		calls.Add(1)
+		return []map[string]any{{"price": "1.00"}}, nil
+	}
+	os.Setenv("IF_COMMERCIAL_PRICE_PROBES", "0")
+	out := probeCommercialPrices(context.Background(), []models.CommercialReference{
+		{SKU: "ABC-100", Source: "ABILITYONE_ETS"},
+	})
+	if out[0].Price != "" {
+		t.Fatalf("expected no probe when disabled, got %q", out[0].Price)
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("expected 0 calls, got %d", calls.Load())
 	}
 }

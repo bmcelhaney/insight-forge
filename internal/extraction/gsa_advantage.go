@@ -124,10 +124,25 @@ func extractCommercialRefsFromPrices(prices []map[string]any) []map[string]any {
 	return refs
 }
 
+// SearchGSAAdvantage searches GSA Advantage by free-text term (NSN, SKU, or UPC).
+// Tries AbilityOne JWOD first, then the general catalog. Soft-fail friendly for probes.
+func SearchGSAAdvantage(ctx context.Context, term string) ([]map[string]any, error) {
+	term = strings.TrimSpace(term)
+	if term == "" {
+		return nil, fmt.Errorf("empty search term")
+	}
+	prices, _, err := searchGSAAdvantage(ctx, term, 6*time.Second)
+	return prices, err
+}
+
 func (g *GSAAdvantageExtractor) scrapePricing(ctx context.Context, nsn string) ([]map[string]any, string, error) {
+	return searchGSAAdvantage(ctx, nsn, 12*time.Second)
+}
+
+func searchGSAAdvantage(ctx context.Context, term string, perRequestTimeout time.Duration) ([]map[string]any, string, error) {
 	// Prefer AbilityOne / JWOD category, then fall back to general catalog.
 	for _, cat := range []string{"ADV.JWOD", ""} {
-		prices, err := g.scrapeCategory(ctx, nsn, cat)
+		prices, err := scrapeGSACategory(ctx, term, cat, perRequestTimeout)
 		if err == nil && len(prices) > 0 {
 			label := cat
 			if label == "" {
@@ -136,18 +151,22 @@ func (g *GSAAdvantageExtractor) scrapePricing(ctx context.Context, nsn string) (
 			return prices, label, nil
 		}
 	}
-	return nil, "", fmt.Errorf("no pricing elements found for NSN %s in JWOD or general GSA results", nsn)
+	return nil, "", fmt.Errorf("no pricing elements found for %q in JWOD or general GSA results", term)
 }
 
 func (g *GSAAdvantageExtractor) scrapeCategory(ctx context.Context, nsn, category string) ([]map[string]any, error) {
+	return scrapeGSACategory(ctx, nsn, category, 12*time.Second)
+}
+
+func scrapeGSACategory(ctx context.Context, term, category string, perRequestTimeout time.Duration) ([]map[string]any, error) {
 	endpoint := "https://www.gsaadvantage.gov/advantage/search/searchAdv.do"
 
 	form := url.Values{}
 	if category != "" {
 		form.Set("cat", category)
 	}
-	form.Set("searchText", nsn)
-	form.Set("q", nsn)
+	form.Set("searchText", term)
+	form.Set("q", term)
 
 	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, strings.NewReader(form.Encode()))
 	if err != nil {
@@ -156,7 +175,10 @@ func (g *GSAAdvantageExtractor) scrapeCategory(ctx context.Context, nsn, categor
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; InsightForge/1.0; +https://github.com/bmcelhaney/insight-forge)")
 
-	client := &http.Client{Timeout: 12 * time.Second}
+	if perRequestTimeout <= 0 {
+		perRequestTimeout = 12 * time.Second
+	}
+	client := &http.Client{Timeout: perRequestTimeout}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err

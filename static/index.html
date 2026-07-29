@@ -857,10 +857,12 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
       });
 
       // Commercial SKUs/UPCs — full list with resilient search links (no brittle manufacturer deep links)
-      const comms = result.commercial_references || result.CommercialReferences || [];
+      const commsAll = result.commercial_references || result.CommercialReferences || [];
       const commTops = result.top_commercial_suppliers || result.TopCommercialSuppliers || [];
-      if (comms.length > 0) {
+      if (commsAll.length > 0) {
         const COMM_DEFAULT_VISIBLE = 12;
+        let commercialFilter = 'all';
+        let commercialExpanded = false;
         const commWrapper = document.createElement('div');
         commWrapper.style.cssText = 'grid-column: 1 / -1; margin-top: 8px;';
 
@@ -869,11 +871,18 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
         commHeader.textContent = 'Commercial Equivalents & ETS Cross-References';
         commWrapper.appendChild(commHeader);
 
+        if (commsAll.length >= 200) {
+          const trunc = document.createElement('div');
+          trunc.className = 'mb-3 text-[11px] text-amber-200 bg-amber-950/40 border border-amber-800 rounded-xl px-3 py-2';
+          trunc.textContent = 'Showing top 200 commercial / ETS mappings (list truncated for response size). Prefer newest mappings and priced rows.';
+          commWrapper.appendChild(trunc);
+        }
+
         const uniqueSuppliers = new Set();
         const uniqueSKUs = new Set();
         const uniqueUPCs = new Set();
         let pricedCount = 0;
-        comms.forEach(c => {
+        commsAll.forEach(c => {
           const name = (c.manufacturer || '').trim();
           if (name) uniqueSuppliers.add(name);
           if (c.sku) uniqueSKUs.add(c.sku);
@@ -882,7 +891,7 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
         });
 
         const metrics = [
-          { label: 'Total refs', value: comms.length },
+          { label: 'Total refs', value: commsAll.length },
           { label: 'Suppliers', value: uniqueSuppliers.size },
           { label: 'Unique SKUs', value: uniqueSKUs.size },
           { label: 'Unique UPCs', value: uniqueUPCs.size },
@@ -899,11 +908,31 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
         commWrapper.appendChild(metricRow);
 
         const note = document.createElement('div');
-        note.className = 'text-[10px] text-zinc-500 mb-3';
-        note.textContent = 'Links open shop/UPC/GSA search pages (stable) rather than manufacturer product URLs that often 404. Prices show source when available; otherwise use Shop search to verify current market pricing.';
+        note.className = 'text-[10px] text-zinc-500 mb-2';
+        note.textContent = 'Shop search = indicative market pricing. GSA = federal channel when available. Links are search pages (stable), not manufacturer product deep-links.';
         commWrapper.appendChild(note);
 
-        const supplierSummary = buildCommercialSupplierRollup(comms, commTops).slice(0, 8);
+        const filterRow = document.createElement('div');
+        filterRow.className = 'flex flex-wrap gap-2 mb-3';
+        const filterDefs = [
+          { id: 'all', label: 'All' },
+          { id: 'ets', label: 'ETS' },
+          { id: 'gsa', label: 'GSA' },
+          { id: 'priced', label: 'Priced' },
+        ];
+        const filterButtons = {};
+        filterDefs.forEach(f => {
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'text-[11px] px-2.5 py-1 rounded-full border border-zinc-700 text-zinc-300 hover:border-amber-600';
+          btn.textContent = f.label;
+          btn.dataset.filter = f.id;
+          filterButtons[f.id] = btn;
+          filterRow.appendChild(btn);
+        });
+        commWrapper.appendChild(filterRow);
+
+        const supplierSummary = buildCommercialSupplierRollup(commsAll, commTops).slice(0, 8);
         if (supplierSummary.length > 0) {
           const supplierBlock = document.createElement('div');
           supplierBlock.className = 'mb-3 bg-zinc-950 border border-zinc-700 rounded-2xl p-3';
@@ -939,6 +968,19 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
         const innerGrid = document.createElement('div');
         innerGrid.className = 'grid grid-cols-1 md:grid-cols-2 gap-3';
         innerGrid.id = 'commercial-refs-grid';
+        const moreBtnHost = document.createElement('div');
+
+        function matchesCommercialFilter(c, filter) {
+          const src = (c.source || '').toUpperCase();
+          if (filter === 'ets') return src === 'ABILITYONE_ETS';
+          if (filter === 'gsa') return src === 'GSA_ADVANTAGE' || (c.price_source || c.priceSource || '') === 'GSA_ADVANTAGE';
+          if (filter === 'priced') return !!(c.price);
+          return true;
+        }
+
+        function filteredComms() {
+          return commsAll.filter(c => matchesCommercialFilter(c, commercialFilter));
+        }
 
         function renderCommercialCard(c) {
           const box = document.createElement('div');
@@ -995,23 +1037,50 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
           return box;
         }
 
-        const initial = comms.slice(0, COMM_DEFAULT_VISIBLE);
-        initial.forEach(c => innerGrid.appendChild(renderCommercialCard(c)));
-        commWrapper.appendChild(innerGrid);
-
-        if (comms.length > COMM_DEFAULT_VISIBLE) {
-          const moreBtn = document.createElement('button');
-          moreBtn.type = 'button';
-          moreBtn.className = 'mt-3 px-4 py-2 text-xs rounded-xl border border-amber-700 text-amber-200 hover:bg-amber-950/50';
-          moreBtn.textContent = `Show all ${comms.length} commercial / ETS references`;
-          moreBtn.addEventListener('click', () => {
-            innerGrid.innerHTML = '';
-            comms.forEach(c => innerGrid.appendChild(renderCommercialCard(c)));
-            moreBtn.remove();
+        function paintCommercialGrid() {
+          const list = filteredComms();
+          innerGrid.innerHTML = '';
+          moreBtnHost.innerHTML = '';
+          Object.keys(filterButtons).forEach(id => {
+            const btn = filterButtons[id];
+            const active = id === commercialFilter;
+            btn.className = active
+              ? 'text-[11px] px-2.5 py-1 rounded-full border border-amber-500 bg-amber-950/50 text-amber-100'
+              : 'text-[11px] px-2.5 py-1 rounded-full border border-zinc-700 text-zinc-300 hover:border-amber-600';
           });
-          commWrapper.appendChild(moreBtn);
+          if (list.length === 0) {
+            const empty = document.createElement('div');
+            empty.className = 'text-xs text-zinc-500';
+            empty.textContent = 'No commercial references match this filter.';
+            innerGrid.appendChild(empty);
+            return;
+          }
+          const visible = commercialExpanded ? list : list.slice(0, COMM_DEFAULT_VISIBLE);
+          visible.forEach(c => innerGrid.appendChild(renderCommercialCard(c)));
+          if (!commercialExpanded && list.length > COMM_DEFAULT_VISIBLE) {
+            const moreBtn = document.createElement('button');
+            moreBtn.type = 'button';
+            moreBtn.className = 'mt-3 px-4 py-2 text-xs rounded-xl border border-amber-700 text-amber-200 hover:bg-amber-950/50';
+            moreBtn.textContent = `Show all ${list.length} commercial / ETS references`;
+            moreBtn.addEventListener('click', () => {
+              commercialExpanded = true;
+              paintCommercialGrid();
+            });
+            moreBtnHost.appendChild(moreBtn);
+          }
         }
 
+        filterDefs.forEach(f => {
+          filterButtons[f.id].addEventListener('click', () => {
+            commercialFilter = f.id;
+            commercialExpanded = false;
+            paintCommercialGrid();
+          });
+        });
+
+        commWrapper.appendChild(innerGrid);
+        commWrapper.appendChild(moreBtnHost);
+        paintCommercialGrid();
         relEl.appendChild(commWrapper);
       }
 

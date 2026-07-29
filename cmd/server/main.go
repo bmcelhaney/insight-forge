@@ -170,6 +170,64 @@ func main() {
 		})
 	})
 
+	// Debug commercial / ETS coverage and pricing enrichment
+	r.Get("/debug/commercial/{nsn}", func(w http.ResponseWriter, r *http.Request) {
+		nsn := chi.URLParam(r, "nsn")
+		snaps, _ := extractorReg.FetchAll(r.Context(), nsn, nil, nil)
+		result, _ := processing.Synthesize(r.Context(), nsn, snaps)
+
+		etsMatched := 0
+		etsTruncated := false
+		etsDataset := ""
+		for _, s := range snaps {
+			if s.SourceCode != "ABILITYONE_ETS" {
+				continue
+			}
+			if n, ok := s.RawResponse["matched_rows_count"].(int); ok {
+				etsMatched = n
+			} else if f, ok := s.RawResponse["matched_rows_count"].(float64); ok {
+				etsMatched = int(f)
+			}
+			if t, ok := s.RawResponse["references_truncated"].(bool); ok {
+				etsTruncated = t
+			}
+			if name, ok := s.RawResponse["dataset_name"].(string); ok {
+				etsDataset = name
+			}
+		}
+
+		sources := map[string]int{}
+		priced := 0
+		for _, c := range result.CommercialReferences {
+			src := c.Source
+			if src == "" {
+				src = "UNKNOWN"
+			}
+			sources[src]++
+			if strings.TrimSpace(c.Price) != "" {
+				priced++
+			}
+		}
+
+		sampleN := 5
+		if len(result.CommercialReferences) < sampleN {
+			sampleN = len(result.CommercialReferences)
+		}
+		sample := result.CommercialReferences[:sampleN]
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"nsn":               nsn,
+			"ets_dataset":       etsDataset,
+			"ets_matched_rows":  etsMatched,
+			"ets_truncated":     etsTruncated || len(result.CommercialReferences) >= 200,
+			"commercial_refs":   len(result.CommercialReferences),
+			"priced_count":      priced,
+			"sources":           sources,
+			"sample":            sample,
+		})
+	})
+
 	addr := ":" + strconv.Itoa(cfg.Port)
 	fmt.Printf("\n")
 	fmt.Printf("========================================\n")

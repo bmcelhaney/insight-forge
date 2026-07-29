@@ -1,16 +1,37 @@
 package processing
 
 import (
+	"context"
 	"fmt"
 	"net/url"
+	"os"
 	"sort"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/bmcelhaney/insight-forge/internal/extraction"
 	"github.com/bmcelhaney/insight-forge/internal/models"
 )
 
 const maxCommercialReferences = 200
+
+// gsaPriceSearch is injectable for tests. Default hits live GSA Advantage.
+var gsaPriceSearch = extraction.SearchGSAAdvantage
+
+type cachedCommercialPrice struct {
+	price  string
+	source string
+	asOf   string
+	url    string
+	expiry time.Time
+}
+
+var (
+	commercialPriceCacheMu sync.RWMutex
+	commercialPriceCache   = map[string]cachedCommercialPrice{}
+)
 
 // manufacturerHomepages maps normalized alias → homepage. Used only for stable
 // company-home links (not SKU deep links, which frequently 404).
@@ -134,6 +155,257 @@ func enrichCommercialReferences(entityID string, refs []models.CommercialReferen
 		out = out[:maxCommercialReferences]
 	}
 	return out
+}
+
+// probeCommercialPrices best-effort fills prices for top unpriced commercial refs via GSA.
+// Soft-fails always; respects IF_COMMERCIAL_PRICE_PROBES (default 10, 0 disables) and
+// IF_COMMERCIAL_PRICE_PROBE_MS (default 2500 overall budget).
+func probeCommercialPrices(ctx context.Context, refs []models.CommercialReference) []models.CommercialReference {
+	if len(refs) == 0 {
+		return refs
+	}
+	k := commercialPriceProbeLimit()
+	if k <= 0 {
+		return refs
+	}
+	budget := commercialPriceProbeBudget()
+	if budget <= 0 {
+		return refs
+	}
+	if deadline, ok := ctx.Deadline(); ok {
+		remaining := time.Until(deadline)
+		if remaining > 0 && remaining < budget {
+			budget = remaining
+		}
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, budget)
+	defer cancel()
+
+	// Candidate indices: unpriced, with UPC or SKU.
+	type cand struct {
+		idx   int
+		score int
+		term  string
+		key   string
+	}
+	var cands []cand
+	for i, r := range refs {
+		if strings.TrimSpace(r.Price) != "" {
+			continue
+		}
+		term, key := commercialProbeTerm(r)
+		if term == "" {
+			continue
+		}
+		// Prefer cache hits immediately without consuming probe budget slots.
+		if hit, ok := getCachedCommercialPrice(key); ok {
+			refs[i].Price = hit.price
+			refs[i].PriceSource = hit.source
+			refs[i].PriceAsOf = hit.asOf
+			if hit.url != "" {
+				refs[i].PriceURL = hit.url
+			} else if refs[i].LinkGSA != "" {
+				refs[i].PriceURL = refs[i].LinkGSA
+			}
+			continue
+		}
+		score := 0
+		if r.UPC != "" {
+			score += 50
+		}
+		if strings.EqualFold(r.Source, "ABILITYONE_ETS") {
+			score += 20
+		}
+		if r.SKU != "" {
+			score += 10
+		}
+		cands = append(cands, cand{idx: i, score: score, term: term, key: key})
+	}
+	if len(cands) == 0 {
+		return refs
+	}
+	sort.SliceStable(cands, func(i, j int) bool {
+		if cands[i].score != cands[j].score {
+			return cands[i].score > cands[j].score
+		}
+		return cands[i].idx < cands[j].idx
+	})
+	if len(cands) > k {
+		cands = cands[:k]
+	}
+
+	type result struct {
+		idx  int
+		key  string
+		term string
+		hit  cachedCommercialPrice
+		ok   bool
+	}
+	results := make(chan result, len(cands))
+	sem := make(chan struct{}, 4)
+	var wg sync.WaitGroup
+	for _, c := range cands {
+		c := c
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			select {
+			case <-probeCtx.Done():
+				results <- result{idx: c.idx, ok: false}
+				return
+			case sem <- struct{}{}:
+			}
+			defer func() { <-sem }()
+
+			// Re-check cache (another worker may have filled it).
+			if hit, ok := getCachedCommercialPrice(c.key); ok {
+				results <- result{idx: c.idx, key: c.key, hit: hit, ok: true}
+				return
+			}
+
+			prices, err := gsaPriceSearch(probeCtx, c.term)
+			if err != nil || len(prices) == 0 {
+				results <- result{idx: c.idx, ok: false}
+				return
+			}
+			price := ""
+			for _, p := range prices {
+				if v := firstNonEmptyString(p, "price"); v != "" {
+					price = normalizePriceString(v)
+					break
+				}
+			}
+			if price == "" {
+				results <- result{idx: c.idx, ok: false}
+				return
+			}
+			hit := cachedCommercialPrice{
+				price:  price,
+				source: "GSA_ADVANTAGE",
+				asOf:   time.Now().UTC().Format("2006-01-02"),
+				url:    "https://www.gsaadvantage.gov/advantage/s/search.do?q=1:4" + url.QueryEscape(c.term) + "&searchType=1&db=0",
+				expiry: time.Now().Add(24 * time.Hour),
+			}
+			setCachedCommercialPrice(c.key, hit)
+			results <- result{idx: c.idx, key: c.key, term: c.term, hit: hit, ok: true}
+		}()
+	}
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
+	for res := range results {
+		if !res.ok {
+			continue
+		}
+		i := res.idx
+		if i < 0 || i >= len(refs) {
+			continue
+		}
+		if strings.TrimSpace(refs[i].Price) != "" {
+			continue
+		}
+		refs[i].Price = res.hit.price
+		refs[i].PriceSource = res.hit.source
+		refs[i].PriceAsOf = res.hit.asOf
+		if res.hit.url != "" {
+			refs[i].PriceURL = res.hit.url
+		} else if refs[i].LinkGSA != "" {
+			refs[i].PriceURL = refs[i].LinkGSA
+		}
+	}
+
+	// Re-sort so newly priced rows bubble up.
+	sort.SliceStable(refs, func(i, j int) bool {
+		si, sj := commercialRefScore(refs[i]), commercialRefScore(refs[j])
+		if si != sj {
+			return si > sj
+		}
+		if refs[i].Manufacturer != refs[j].Manufacturer {
+			return refs[i].Manufacturer < refs[j].Manufacturer
+		}
+		return refs[i].SKU < refs[j].SKU
+	})
+	return refs
+}
+
+func commercialProbeTerm(r models.CommercialReference) (term, cacheKey string) {
+	if upc := normalizeUPCDigits(r.UPC); upc != "" {
+		return upc, "upc:" + upc
+	}
+	sku := strings.TrimSpace(r.SKU)
+	if sku != "" && looksLikeProductSKU(sku) {
+		return sku, "sku:" + strings.ToUpper(sku)
+	}
+	return "", ""
+}
+
+func commercialPriceProbeLimit() int {
+	raw := strings.TrimSpace(os.Getenv("IF_COMMERCIAL_PRICE_PROBES"))
+	if raw == "" {
+		return 10
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 0 {
+		return 10
+	}
+	if n > 25 {
+		return 25
+	}
+	return n
+}
+
+func commercialPriceProbeBudget() time.Duration {
+	raw := strings.TrimSpace(os.Getenv("IF_COMMERCIAL_PRICE_PROBE_MS"))
+	if raw == "" {
+		return 2500 * time.Millisecond
+	}
+	ms, err := strconv.Atoi(raw)
+	if err != nil || ms < 0 {
+		return 2500 * time.Millisecond
+	}
+	if ms == 0 {
+		return 0
+	}
+	if ms > 15000 {
+		ms = 15000
+	}
+	return time.Duration(ms) * time.Millisecond
+}
+
+func getCachedCommercialPrice(key string) (cachedCommercialPrice, bool) {
+	if key == "" {
+		return cachedCommercialPrice{}, false
+	}
+	commercialPriceCacheMu.RLock()
+	hit, ok := commercialPriceCache[key]
+	commercialPriceCacheMu.RUnlock()
+	if !ok {
+		return cachedCommercialPrice{}, false
+	}
+	if time.Now().After(hit.expiry) {
+		commercialPriceCacheMu.Lock()
+		delete(commercialPriceCache, key)
+		commercialPriceCacheMu.Unlock()
+		return cachedCommercialPrice{}, false
+	}
+	return hit, true
+}
+
+func setCachedCommercialPrice(key string, hit cachedCommercialPrice) {
+	if key == "" {
+		return
+	}
+	commercialPriceCacheMu.Lock()
+	commercialPriceCache[key] = hit
+	commercialPriceCacheMu.Unlock()
+}
+
+func clearCommercialPriceCache() {
+	commercialPriceCacheMu.Lock()
+	commercialPriceCache = map[string]cachedCommercialPrice{}
+	commercialPriceCacheMu.Unlock()
 }
 
 func commercialRefScore(r models.CommercialReference) int {

@@ -155,6 +155,8 @@ func Synthesize(ctx context.Context, entityID string, snapshots []models.DataSna
 	// === Commercial SKUs / UPCs (ETS + live sources; synthetic WebFLIS excluded) ===
 	commercialRefs := extractCommercialReferences(snapshots)
 	commercialRefs = enrichCommercialReferences(entityID, commercialRefs, snapshots)
+	// Bounded GSA probes for top unpriced refs (soft-fail, cached, env-gated).
+	commercialRefs = probeCommercialPrices(ctx, commercialRefs)
 	result.CommercialReferences = commercialRefs
 
 	if len(commercialRefs) > 0 {
