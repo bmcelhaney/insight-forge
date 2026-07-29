@@ -29,7 +29,9 @@ type productIdentity struct {
 	OfferPrice    float64 // best USD (or unlabelled) offer price
 	OfferMerchant string
 	OfferCurrency string
-	DeepLinkOK    bool // true when we have a direct product URL (Amazon /dp or UPC dossier)
+	OfferLink     string // merchant/offer product URL from resolver (often via upcitemdb redirect)
+	RetailURL     string // direct retailer product page inferred from catalog images/ids
+	DeepLinkOK    bool   // true when we have a direct product URL (Amazon /dp, retail, offer, or UPC dossier)
 }
 
 type cachedProductIdentity struct {
@@ -131,7 +133,72 @@ func enrichProductLinks(ctx context.Context, refs []models.CommercialReference, 
 	}
 	wg.Wait()
 
+	// Propagate resolved identity to every ref sharing the same UPC or SKU,
+	// not only the indices we network-resolved (critical for multi-row ETS tiles).
+	resolved = expandResolvedIdentities(refs, resolved)
+
 	return applyDeterministicProductLinks(refs, entityID, resolved)
+}
+
+// expandResolvedIdentities copies a resolved identity onto sibling refs that
+// share UPC or SKU but were not selected for a network resolve.
+func expandResolvedIdentities(refs []models.CommercialReference, resolved map[int]*productIdentity) map[int]*productIdentity {
+	if resolved == nil {
+		resolved = map[int]*productIdentity{}
+	}
+	byUPC := map[string]*productIdentity{}
+	bySKU := map[string]*productIdentity{}
+	for i, id := range resolved {
+		if id == nil {
+			continue
+		}
+		if u := normalizeUPCDigits(id.UPC); u != "" {
+			byUPC[u] = id
+		}
+		if i >= 0 && i < len(refs) {
+			if u := normalizeUPCDigits(refs[i].UPC); u != "" {
+				byUPC[u] = id
+			}
+			if s := strings.ToUpper(strings.TrimSpace(refs[i].SKU)); s != "" {
+				bySKU[s] = id
+			}
+		}
+		if s := strings.ToUpper(strings.TrimSpace(id.Model)); s != "" {
+			bySKU[s] = id
+		}
+	}
+	out := make(map[int]*productIdentity, len(refs))
+	for i, id := range resolved {
+		if id != nil {
+			out[i] = id
+		}
+	}
+	for i, r := range refs {
+		if out[i] != nil {
+			continue
+		}
+		if u := normalizeUPCDigits(r.UPC); u != "" {
+			if id := byUPC[u]; id != nil {
+				out[i] = id
+				continue
+			}
+		}
+		if s := strings.ToUpper(strings.TrimSpace(r.SKU)); s != "" {
+			if id := bySKU[s]; id != nil {
+				out[i] = id
+				continue
+			}
+			// Compact match: BICCSM11BK vs BIC CSM11BK
+			compact := compactAlnum(s)
+			for k, id := range bySKU {
+				if compact != "" && compactAlnum(k) == compact {
+					out[i] = id
+					break
+				}
+			}
+		}
+	}
+	return out
 }
 
 func applyDeterministicProductLinks(refs []models.CommercialReference, entityID string, resolved map[int]*productIdentity) []models.CommercialReference {
@@ -162,7 +229,7 @@ func applyDeterministicProductLinks(refs []models.CommercialReference, entityID 
 		}
 		sku := strings.TrimSpace(r.SKU)
 		mfr := strings.TrimSpace(r.Manufacturer)
-		if id != nil && id.Brand != "" {
+		if id != nil && id.Brand != "" && (mfr == "" || strings.EqualFold(mfr, "unknown")) {
 			mfr = id.Brand
 		}
 		title := strings.TrimSpace(r.Description)
@@ -174,34 +241,41 @@ func applyDeterministicProductLinks(refs []models.CommercialReference, entityID 
 			}
 		}
 
-		// --- Amazon: direct product page when ASIN known (resolver or SKU is already an ASIN) ---
+		// --- Amazon: /dp when ASIN known; otherwise title/UPC search (never bare empty) ---
 		asin := ""
 		if id != nil && id.ASIN != "" {
 			asin = id.ASIN
 		} else if a, ok := amazonASINFromSKU(sku); ok {
 			asin = a
 		}
-		deepOK := false
+		amazonProduct := false
 		if asin != "" {
 			r.LinkAmazon = "https://www.amazon.com/dp/" + asin
-			deepOK = true
+			amazonProduct = true
 		} else {
-			// Do not invent a weak Amazon search when we have a better deep link elsewhere.
-			r.LinkAmazon = ""
+			r.LinkAmazon = buildAmazonProductSearchURL(mfr, sku, upc, title)
 		}
 
-		// --- Shop: only when we have a strong product title/UPC; skip weak bare-SKU searches ---
-		r.LinkShop = buildPreciseShopURL(mfr, sku, upc, title)
-		// If we have an Amazon product page, prefer it as the primary commercial deep link
-		// and keep shop only when title-based (product-like).
-		if deepOK && title == "" && upc == "" {
-			r.LinkShop = ""
+		// --- Shop: prefer true retailer product / offer link over Google search ---
+		r.LinkShop = ""
+		if id != nil {
+			if id.RetailURL != "" {
+				r.LinkShop = id.RetailURL
+			} else if id.OfferLink != "" {
+				r.LinkShop = id.OfferLink
+			}
+		}
+		if r.LinkShop == "" && upc != "" {
+			// Walmart UPC search is usually more product-specific than bare Google Shopping SKU.
+			r.LinkShop = "https://www.walmart.com/search?q=" + url.QueryEscape(upc)
+		}
+		if r.LinkShop == "" {
+			r.LinkShop = buildPreciseShopURL(mfr, sku, upc, title)
 		}
 
 		// --- UPC identity page (human-readable product dossier) ---
 		if upc != "" {
 			r.LinkUPC = "https://www.upcitemdb.com/upc/" + upc
-			deepOK = true
 		}
 
 		// --- Federal: AbilityOne.com with dashed NSN (or SKU) ---
@@ -209,8 +283,14 @@ func applyDeterministicProductLinks(refs []models.CommercialReference, entityID 
 
 		r.LinkWebsite = manufacturerHomepage(mfr)
 
+		// Successful deep link = Amazon product page, retailer product page, offer link, or UPC dossier.
+		deepOK := amazonProduct ||
+			(id != nil && (id.RetailURL != "" || id.OfferLink != "")) ||
+			r.LinkUPC != "" ||
+			(id != nil && id.DeepLinkOK)
+
 		// Pull market offer price onto the tile only when a successful deep link exists.
-		// Never overwrite AbilityOne.com / PartsBase-specific sources (those are other sections).
+		// Never overwrite an existing SKU/UPC-specific price (GSA etc.).
 		if deepOK && strings.TrimSpace(r.Price) == "" && id != nil && id.OfferPrice > 0 {
 			r.Price = normalizePriceString(fmt.Sprintf("%.2f", id.OfferPrice))
 			src := "MARKET_OFFER"
@@ -229,18 +309,50 @@ func applyDeterministicProductLinks(refs []models.CommercialReference, entityID 
 			}
 		}
 
+		// Prefer price verification URL that matches the deep link we actually set.
 		if r.PriceURL == "" {
-			if r.LinkAmazon != "" && strings.Contains(r.LinkAmazon, "/dp/") {
+			switch {
+			case amazonProduct:
 				r.PriceURL = r.LinkAmazon
-			} else if r.LinkUPC != "" {
+			case id != nil && id.RetailURL != "":
+				r.PriceURL = id.RetailURL
+			case id != nil && id.OfferLink != "":
+				r.PriceURL = id.OfferLink
+			case r.LinkUPC != "":
 				r.PriceURL = r.LinkUPC
-			} else if r.LinkShop != "" {
+			case r.LinkShop != "":
 				r.PriceURL = r.LinkShop
 			}
 		}
-		_ = deepOK
 	}
 	return refs
+}
+
+// buildAmazonProductSearchURL builds the strongest Amazon search we can without an ASIN.
+// Prefer full product title + brand; then UPC; then quoted SKU + brand. Bare empty SKU searches are last resort.
+func buildAmazonProductSearchURL(manufacturer, sku, upc, title string) string {
+	if t := strings.TrimSpace(title); t != "" && !looksLikeCatalogCodeDescription(t) {
+		if len(t) > 100 {
+			t = t[:100]
+		}
+		q := t
+		mfr := strings.TrimSpace(manufacturer)
+		if mfr != "" && !strings.Contains(strings.ToLower(t), strings.ToLower(mfr)) {
+			q = mfr + " " + t
+		}
+		return "https://www.amazon.com/s?k=" + url.QueryEscape(q)
+	}
+	if u := normalizeUPCDigits(upc); u != "" {
+		return "https://www.amazon.com/s?k=" + url.QueryEscape(u)
+	}
+	if sku = strings.TrimSpace(sku); sku != "" {
+		q := sku
+		if mfr := strings.TrimSpace(manufacturer); mfr != "" {
+			q = mfr + " " + sku
+		}
+		return "https://www.amazon.com/s?k=" + url.QueryEscape(q)
+	}
+	return ""
 }
 
 // buildPreciseShopURL crafts a Google Shopping query that is much more specific
@@ -334,6 +446,7 @@ type upcOffer struct {
 	ListPrice    string  `json:"list_price"`
 	Condition    string  `json:"condition"`
 	Availability string  `json:"availability"`
+	Link         string  `json:"link"`
 }
 
 func upcitemdbFetch(ctx context.Context, endpoint, preferSKU string) (productIdentity, bool) {
@@ -367,6 +480,7 @@ func upcitemdbFetch(ctx context.Context, endpoint, preferSKU string) (productIde
 			Currency             string     `json:"currency"`
 			LowestRecordedPrice  float64    `json:"lowest_recorded_price"`
 			HighestRecordedPrice float64    `json:"highest_recorded_price"`
+			Images               []string   `json:"images"`
 			Offers               []upcOffer `json:"offers"`
 		} `json:"items"`
 	}
@@ -423,28 +537,37 @@ func upcitemdbFetch(ctx context.Context, endpoint, preferSKU string) (productIde
 			id.UPC = id.EAN[1:]
 		}
 	}
-	id.DeepLinkOK = id.ASIN != "" || id.UPC != ""
+	// Trial API often omits ASIN; recover from offer titles / image CDN URLs.
+	if id.ASIN == "" {
+		id.ASIN = extractASINFromOffersAndImages(it.Offers, it.Images)
+	}
+	// Direct retailer product page from image CDN patterns (Office Depot, etc.).
+	id.RetailURL = extractRetailProductURL(it.Images)
 
-	// Select a usable market offer price (prefer USD / unlabelled US merchants).
-	if price, merchant, currency, ok := pickBestMarketOffer(it.Offers); ok {
+	// Select a usable market offer price + offer deep link.
+	if price, merchant, currency, link, ok := pickBestMarketOffer(it.Offers); ok {
 		id.OfferPrice = price
 		id.OfferMerchant = merchant
 		id.OfferCurrency = currency
+		id.OfferLink = link
 	}
 
-	if id.Title == "" && id.ASIN == "" && id.UPC == "" {
+	id.DeepLinkOK = id.ASIN != "" || id.UPC != "" || id.RetailURL != "" || id.OfferLink != ""
+
+	if id.Title == "" && id.ASIN == "" && id.UPC == "" && id.RetailURL == "" {
 		return productIdentity{}, false
 	}
 	return id, true
 }
 
-// pickBestMarketOffer chooses a displayable commercial offer price.
+// pickBestMarketOffer chooses a displayable commercial offer price and optional product link.
 // Prefers USD (or blank currency), known US office retailers, New condition, and sane price bands.
-func pickBestMarketOffer(offers []upcOffer) (price float64, merchant, currency string, ok bool) {
+func pickBestMarketOffer(offers []upcOffer) (price float64, merchant, currency, link string, ok bool) {
 	type cand struct {
 		price    float64
 		merchant string
 		currency string
+		link     string
 		score    int
 	}
 	var cands []cand
@@ -454,6 +577,10 @@ func pickBestMarketOffer(offers []upcOffer) (price float64, merchant, currency s
 		}
 		// Skip absurd pennies / noise often present in "lowest_recorded".
 		if o.Price < 0.5 {
+			continue
+		}
+		// Skip clearly unavailable listings.
+		if av := strings.ToLower(o.Availability); strings.Contains(av, "out of stock") {
 			continue
 		}
 		cur := strings.ToUpper(strings.TrimSpace(o.Currency))
@@ -488,17 +615,22 @@ func pickBestMarketOffer(offers []upcOffer) (price float64, merchant, currency s
 			score += 25
 		case strings.Contains(ml, "uline"):
 			score += 25
+		case strings.Contains(ml, "shoplet"):
+			score += 22
 		case strings.Contains(ml, "sam"):
 			score += 20
 		}
 		if strings.EqualFold(strings.TrimSpace(o.Condition), "New") || o.Condition == "" {
 			score += 10
 		}
-		// Prefer mid-range prices slightly (avoid extreme outliers among peers).
-		cands = append(cands, cand{price: o.Price, merchant: merch, currency: cur, score: score})
+		offerLink := strings.TrimSpace(o.Link)
+		if offerLink != "" {
+			score += 8 // having a product link makes this offer more useful
+		}
+		cands = append(cands, cand{price: o.Price, merchant: merch, currency: cur, link: offerLink, score: score})
 	}
 	if len(cands) == 0 {
-		return 0, "", "", false
+		return 0, "", "", "", false
 	}
 	// Among top score band, pick lowest price.
 	bestScore := cands[0].score
@@ -510,6 +642,7 @@ func pickBestMarketOffer(offers []upcOffer) (price float64, merchant, currency s
 	bestPrice := 0.0
 	bestMerch := ""
 	bestCur := ""
+	bestLink := ""
 	for _, c := range cands {
 		if c.score < bestScore-15 {
 			continue
@@ -518,12 +651,126 @@ func pickBestMarketOffer(offers []upcOffer) (price float64, merchant, currency s
 			bestPrice = c.price
 			bestMerch = c.merchant
 			bestCur = c.currency
+			bestLink = c.link
 		}
 	}
 	if bestPrice <= 0 {
-		return 0, "", "", false
+		return 0, "", "", "", false
 	}
-	return bestPrice, bestMerch, bestCur, true
+	// If the cheapest top-band offer lacks a link, prefer any same-band offer that has one.
+	if bestLink == "" {
+		for _, c := range cands {
+			if c.score < bestScore-15 {
+				continue
+			}
+			if c.link != "" {
+				bestLink = c.link
+				break
+			}
+		}
+	}
+	return bestPrice, bestMerch, bestCur, bestLink, true
+}
+
+// extractASINFromOffersAndImages recovers an Amazon ASIN when the API omitted the asin field.
+func extractASINFromOffersAndImages(offers []upcOffer, images []string) string {
+	for _, o := range offers {
+		if a, ok := amazonASINFromSKU(scanASINToken(o.Title)); ok {
+			return a
+		}
+		if a, ok := amazonASINFromSKU(scanASINToken(o.Link)); ok {
+			return a
+		}
+		if a, ok := amazonASINFromSKU(scanASINToken(o.Domain)); ok {
+			return a
+		}
+	}
+	for _, img := range images {
+		if a, ok := amazonASINFromSKU(scanASINToken(img)); ok {
+			return a
+		}
+		// Amazon media: .../images/I/... or /dp/B0...
+		if idx := strings.Index(strings.ToUpper(img), "/DP/"); idx >= 0 && len(img) >= idx+14 {
+			cand := img[idx+4 : idx+14]
+			if a, ok := amazonASINFromSKU(cand); ok {
+				return a
+			}
+		}
+	}
+	return ""
+}
+
+// scanASINToken finds a B0xxxxxxxx-style token in free text.
+func scanASINToken(s string) string {
+	s = strings.ToUpper(s)
+	for i := 0; i+10 <= len(s); i++ {
+		if s[i] != 'B' {
+			continue
+		}
+		// B0… ASIN
+		if i+1 < len(s) && s[i+1] >= '0' && s[i+1] <= '9' {
+			tok := s[i : i+10]
+			ok := true
+			for _, r := range tok {
+				if !((r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')) {
+					ok = false
+					break
+				}
+			}
+			if ok {
+				return tok
+			}
+		}
+	}
+	return ""
+}
+
+// extractRetailProductURL builds a stable retailer product URL from CDN image paths.
+// Office Depot: media.officedepot.com/.../products/{id}/ → /a/products/{id}/
+// Only true product pages — not search results.
+func extractRetailProductURL(images []string) string {
+	for _, img := range images {
+		low := strings.ToLower(img)
+		// Office Depot product id
+		if strings.Contains(low, "officedepot.com") && strings.Contains(low, "/products/") {
+			if id := pathSegmentAfter(low, "/products/"); id != "" && isAllDigits(id) {
+				return "https://www.officedepot.com/a/products/" + id + "/"
+			}
+		}
+	}
+	return ""
+}
+
+func pathSegmentAfter(path, marker string) string {
+	idx := strings.Index(path, marker)
+	if idx < 0 {
+		return ""
+	}
+	rest := path[idx+len(marker):]
+	// stop at next / or ? or end
+	end := len(rest)
+	for i, r := range rest {
+		if r == '/' || r == '?' || r == '&' || r == '#' {
+			end = i
+			break
+		}
+	}
+	seg := rest[:end]
+	// strip trailing non-alnum
+	seg = strings.Trim(seg, "/")
+	return seg
+}
+
+func isAllDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func sanitizeMerchantTag(merchant string) string {
@@ -591,14 +838,14 @@ func setCachedProductID(key string, id productIdentity, ok bool) {
 func productLinkResolveLimit() int {
 	raw := strings.TrimSpace(os.Getenv("IF_PRODUCT_LINK_RESOLVES"))
 	if raw == "" {
-		return 12
+		return 16
 	}
 	n, err := strconv.Atoi(raw)
 	if err != nil || n < 0 {
-		return 12
+		return 16
 	}
-	if n > 25 {
-		return 25
+	if n > 30 {
+		return 30
 	}
 	return n
 }
@@ -606,11 +853,11 @@ func productLinkResolveLimit() int {
 func productLinkResolveBudget() time.Duration {
 	raw := strings.TrimSpace(os.Getenv("IF_PRODUCT_LINK_RESOLVE_MS"))
 	if raw == "" {
-		return 3500 * time.Millisecond
+		return 5000 * time.Millisecond
 	}
 	ms, err := strconv.Atoi(raw)
 	if err != nil || ms <= 0 {
-		return 3500 * time.Millisecond
+		return 5000 * time.Millisecond
 	}
 	if ms > 15000 {
 		ms = 15000

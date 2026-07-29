@@ -1330,24 +1330,32 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
       const desc = (c.description || '').trim();
       const dashed = formatDashedNSN(nsn);
 
-      // Shop fallback: product title (if known) > UPC > quoted SKU+mfr
+      // Shop fallback: UPC on Walmart (product-like) > title Google Shopping > quoted SKU
       let shopFallback = '';
-      if (desc) {
+      if (upcClean.length >= 11) {
+        shopFallback = 'https://www.walmart.com/search?q=' + encodeURIComponent(upcClean);
+      } else if (desc) {
         let q = desc.slice(0, 90);
         if (mfr && !q.toLowerCase().includes(mfr.toLowerCase())) q = mfr + ' ' + q;
         if (sku && !q.includes(sku)) q += ' "' + sku + '"';
         shopFallback = 'https://www.google.com/search?tbm=shop&q=' + encodeURIComponent(q);
-      } else if (upcClean.length >= 11) {
-        shopFallback = 'https://www.google.com/search?tbm=shop&q=' + encodeURIComponent(upcClean);
       } else if (sku) {
         shopFallback = 'https://www.google.com/search?tbm=shop&q=' + encodeURIComponent('"' + sku + '"' + (mfr ? (' ' + mfr) : ''));
       }
 
       const serverAmazon = c.link_amazon || c.linkAmazon || '';
       const amazonIsProduct = /amazon\.com\/(?:dp|gp\/product)\//i.test(serverAmazon);
-      const amazonFallback = (sku || upcClean)
-        ? ('https://www.amazon.com/s?k=' + encodeURIComponent(sku || upcClean))
-        : '';
+      // Prefer server (title/UPC-aware). Client fallback: title > UPC > SKU.
+      let amazonFallback = '';
+      if (desc && desc.length > 8) {
+        let q = desc.slice(0, 100);
+        if (mfr && !q.toLowerCase().includes(mfr.toLowerCase())) q = mfr + ' ' + q;
+        amazonFallback = 'https://www.amazon.com/s?k=' + encodeURIComponent(q);
+      } else if (upcClean.length >= 11) {
+        amazonFallback = 'https://www.amazon.com/s?k=' + encodeURIComponent(upcClean);
+      } else if (sku) {
+        amazonFallback = 'https://www.amazon.com/s?k=' + encodeURIComponent((mfr ? mfr + ' ' : '') + sku);
+      }
       const amazon = amazonIsProduct ? serverAmazon : (serverAmazon || amazonFallback);
 
       let federalFallback = 'https://www.abilityone.com/';
@@ -1364,12 +1372,24 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
       const federal = c.link_gsa || c.linkGsa || federalFallback;
       const website = c.link_website || c.linkWebsite || manufacturerHomepage(mfr);
 
+      // Label shop by how direct the URL is.
+      let shopLabel = 'Shop';
+      if (/officedepot\.com\/a\/products\//i.test(shop)) shopLabel = 'Office Depot product';
+      else if (/walmart\.com\/ip\//i.test(shop)) shopLabel = 'Walmart product';
+      else if (/staples\.com\/.*product/i.test(shop)) shopLabel = 'Staples product';
+      else if (/upcitemdb\.com\/norob\//i.test(shop)) shopLabel = 'Retail offer';
+      else if (/walmart\.com\/search/i.test(shop) && upcClean) shopLabel = 'Walmart (UPC)';
+      else if (/tbm=shop/i.test(shop)) shopLabel = desc ? 'Shop product' : (upcClean ? 'Shop (UPC)' : 'Shop (SKU)');
+      else if (shop) shopLabel = 'Retail product';
+
       return {
         shop,
-        shopLabel: desc ? 'Shop product' : (upcClean.length >= 11 ? 'Shop (UPC)' : (sku ? 'Shop (SKU)' : 'Shop')),
+        shopLabel,
+        shopIsProduct: /officedepot\.com\/a\/products\/|walmart\.com\/ip\/|upcitemdb\.com\/norob\//i.test(shop || ''),
         upc: upcIdentity,
         amazon,
-        amazonLabel: amazonIsProduct ? 'Amazon product' : (sku ? 'Amazon (SKU)' : 'Amazon'),
+        amazonLabel: amazonIsProduct ? 'Amazon product' : (desc ? 'Amazon (title)' : (upcClean ? 'Amazon (UPC)' : (sku ? 'Amazon (SKU)' : 'Amazon'))),
+        amazonIsProduct,
         federal,
         federalLabel: dashed.length === 16 ? 'AbilityOne (NSN)' : 'AbilityOne',
         website,
@@ -1392,11 +1412,13 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
         a.title = href; // hover shows full URL so analyst can verify prefill
         row.appendChild(a);
       };
-      // Prioritize direct product pages first.
-      add(links.amazon, links.amazonLabel || 'Amazon', /\/dp\//.test(links.amazon || '')
+      // Prioritize direct product pages first; emphasize true deep links.
+      add(links.amazon, links.amazonLabel || 'Amazon', links.amazonIsProduct
         ? 'text-[11px] text-orange-300 hover:text-orange-200 underline font-medium'
         : 'text-[11px] text-sky-300 hover:text-sky-200 underline');
-      add(links.shop, links.shopLabel || 'Shop product', 'text-[11px] text-emerald-300 hover:text-emerald-200 underline');
+      add(links.shop, links.shopLabel || 'Shop product', links.shopIsProduct
+        ? 'text-[11px] text-emerald-300 hover:text-emerald-200 underline font-medium'
+        : 'text-[11px] text-emerald-300 hover:text-emerald-200 underline');
       if (links.upc && links.upc !== links.shop && /upcitemdb\.com\/upc\//i.test(links.upc)) {
         add(links.upc, 'UPC identity');
       }
