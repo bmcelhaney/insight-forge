@@ -1,6 +1,7 @@
 package processing
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -496,16 +497,55 @@ func upcitemdbSearch(ctx context.Context, query, preferSKU string) (id productId
 }
 
 type upcOffer struct {
-	Merchant     string  `json:"merchant"`
-	Domain       string  `json:"domain"`
-	Title        string  `json:"title"`
-	Currency     string  `json:"currency"`
-	Price        float64 `json:"price"`
-	ListPrice    string  `json:"list_price"`
-	Condition    string  `json:"condition"`
-	Availability string  `json:"availability"`
-	Link         string  `json:"link"`
+	Merchant     string      `json:"merchant"`
+	Domain       string      `json:"domain"`
+	Title        string      `json:"title"`
+	Currency     string      `json:"currency"`
+	Price        flexibleNum `json:"price"`
+	// list_price deliberately omitted — trial API returns string or number.
+	Condition    string `json:"condition"`
+	Availability string `json:"availability"`
+	Link         string `json:"link"`
 }
+
+// flexibleNum unmarshals JSON numbers or numeric strings into float64.
+type flexibleNum float64
+
+func (n *flexibleNum) UnmarshalJSON(b []byte) error {
+	b = bytes.TrimSpace(b)
+	if len(b) == 0 || string(b) == "null" {
+		*n = 0
+		return nil
+	}
+	if b[0] == '"' {
+		var s string
+		if err := json.Unmarshal(b, &s); err != nil {
+			return err
+		}
+		s = strings.TrimSpace(strings.ReplaceAll(s, ",", ""))
+		s = strings.TrimPrefix(s, "$")
+		if s == "" {
+			*n = 0
+			return nil
+		}
+		f, err := strconv.ParseFloat(s, 64)
+		if err != nil {
+			*n = 0
+			return nil // tolerate junk prices rather than fail the whole item
+		}
+		*n = flexibleNum(f)
+		return nil
+	}
+	f, err := strconv.ParseFloat(string(b), 64)
+	if err != nil {
+		*n = 0
+		return nil
+	}
+	*n = flexibleNum(f)
+	return nil
+}
+
+func (n flexibleNum) Float() float64 { return float64(n) }
 
 func upcitemdbFetch(ctx context.Context, endpoint, preferSKU string) (id productIdentity, ok bool, transient bool) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
@@ -638,11 +678,12 @@ func pickBestMarketOffer(offers []upcOffer) (price float64, merchant, currency, 
 	}
 	var cands []cand
 	for _, o := range offers {
-		if o.Price <= 0 || o.Price > 50000 {
+		price := o.Price.Float()
+		if price <= 0 || price > 50000 {
 			continue
 		}
 		// Skip absurd pennies / noise often present in "lowest_recorded".
-		if o.Price < 0.5 {
+		if price < 0.5 {
 			continue
 		}
 		// Skip clearly unavailable listings.
@@ -693,7 +734,7 @@ func pickBestMarketOffer(offers []upcOffer) (price float64, merchant, currency, 
 		if offerLink != "" {
 			score += 8 // having a product link makes this offer more useful
 		}
-		cands = append(cands, cand{price: o.Price, merchant: merch, currency: cur, link: offerLink, score: score})
+		cands = append(cands, cand{price: price, merchant: merch, currency: cur, link: offerLink, score: score})
 	}
 	if len(cands) == 0 {
 		return 0, "", "", "", false

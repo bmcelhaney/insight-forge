@@ -117,9 +117,9 @@ func TestExtractRetailProductURLOfficeDepot(t *testing.T) {
 
 func TestPickBestMarketOfferPrefersUSD(t *testing.T) {
 	offers := []upcOffer{
-		{Merchant: "Newegg Canada", Currency: "CAD", Price: 28.44, Condition: "New", Link: "https://example.com/ca"},
-		{Merchant: "Staples", Currency: "", Price: 8.49, Condition: "New", Link: "https://www.upcitemdb.com/norob/alink/?id=staples"},
-		{Merchant: "Random", Currency: "USD", Price: 0.24, Condition: "New"},
+		{Merchant: "Newegg Canada", Currency: "CAD", Price: flexibleNum(28.44), Condition: "New", Link: "https://example.com/ca"},
+		{Merchant: "Staples", Currency: "", Price: flexibleNum(8.49), Condition: "New", Link: "https://www.upcitemdb.com/norob/alink/?id=staples"},
+		{Merchant: "Random", Currency: "USD", Price: flexibleNum(0.24), Condition: "New"},
 	}
 	p, m, c, link, ok := pickBestMarketOffer(offers)
 	if !ok {
