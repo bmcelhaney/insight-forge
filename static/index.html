@@ -899,90 +899,6 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
         relEl.appendChild(aoWrap);
       }
 
-      // PartsBase historical federal/AbilityOne transaction prices — separate from commercial/ETS
-      const pbHist = result.partsbase_historical_pricing || result.PartsBaseHistoricalPricing || null;
-      if (pbHist && ((pbHist.signal_count || pbHist.SignalCount || 0) > 0 || (pbHist.sample || pbHist.Sample || []).length > 0)) {
-        const pbWrap = document.createElement('div');
-        pbWrap.style.cssText = 'grid-column: 1 / -1; margin-top: 8px;';
-        const pbHeader = document.createElement('div');
-        pbHeader.style.cssText = 'font-size:10px; color:#64748b; margin-bottom:6px; text-transform:uppercase; letter-spacing:0.5px;';
-        pbHeader.textContent = 'PartsBase Historical Federal Prices (GovData transactions)';
-        pbWrap.appendChild(pbHeader);
-
-        const card = document.createElement('div');
-        card.className = 'bg-sky-950/30 border border-sky-800 rounded-2xl p-4';
-        const signalCount = pbHist.signal_count || pbHist.SignalCount || 0;
-        const supplierCount = pbHist.supplier_count || pbHist.SupplierCount || 0;
-        const minP = pbHist.min_unit_price || pbHist.MinUnitPrice || '—';
-        const maxP = pbHist.max_unit_price || pbHist.MaxUnitPrice || '—';
-        const medP = pbHist.median_unit_price || pbHist.MedianUnitPrice || '—';
-        const lastUp = pbHist.last_updated || pbHist.LastUpdated || '';
-        const noteTxt = pbHist.note || pbHist.Note || 'Historical federal procurement unit prices (often AbilityOne/federal transactions). Not commercial retail list prices.';
-
-        const metrics = document.createElement('div');
-        metrics.className = 'flex flex-wrap gap-2 mb-3';
-        [
-          { label: 'Signals', value: signalCount },
-          { label: 'Suppliers', value: supplierCount },
-          { label: 'Min', value: minP },
-          { label: 'Median', value: medP },
-          { label: 'Max', value: maxP },
-        ].forEach(m => {
-          const pill = document.createElement('div');
-          pill.className = 'text-[11px] text-sky-100 bg-sky-950/60 border border-sky-800 rounded-full px-2.5 py-1';
-          pill.textContent = `${m.label}: ${m.value}`;
-          metrics.appendChild(pill);
-        });
-        card.appendChild(metrics);
-
-        const note = document.createElement('div');
-        note.className = 'text-[10px] text-zinc-400 mb-2';
-        note.textContent = noteTxt + (lastUp ? ` · Last award signal: ${lastUp}` : '');
-        card.appendChild(note);
-
-        const sample = pbHist.sample || pbHist.Sample || [];
-        if (sample.length > 0) {
-          const table = document.createElement('div');
-          table.className = 'overflow-x-auto';
-          const tbl = document.createElement('table');
-          tbl.className = 'w-full text-[11px] text-left border-collapse';
-          tbl.innerHTML = `<thead class="text-zinc-500 uppercase"><tr>
-            <th class="py-1 pr-3 font-medium">Unit price</th>
-            <th class="py-1 pr-3 font-medium">Supplier</th>
-            <th class="py-1 pr-3 font-medium">Award date</th>
-            <th class="py-1 pr-3 font-medium">Qty</th>
-            <th class="py-1 pr-3 font-medium">Contract</th>
-          </tr></thead>`;
-          const tbody = document.createElement('tbody');
-          sample.slice(0, 15).forEach(row => {
-            const tr = document.createElement('tr');
-            tr.className = 'border-t border-sky-900/60 text-zinc-200';
-            const price = row.unit_price || row.UnitPrice || '—';
-            const sup = row.supplier || row.Supplier || '—';
-            const ad = row.award_date || row.AwardDate || '—';
-            const qty = row.quantity || row.Quantity || '—';
-            const cn = row.contract_number || row.ContractNumber || '—';
-            tr.innerHTML = `<td class="py-1.5 pr-3 text-sky-300 font-medium">${price}</td>
-              <td class="py-1.5 pr-3">${sup}</td>
-              <td class="py-1.5 pr-3 text-zinc-400">${ad}</td>
-              <td class="py-1.5 pr-3 text-zinc-400">${qty}</td>
-              <td class="py-1.5 pr-3 text-zinc-500 font-mono text-[10px]">${cn}</td>`;
-            tbody.appendChild(tr);
-          });
-          tbl.appendChild(tbody);
-          table.appendChild(tbl);
-          card.appendChild(table);
-          if (signalCount > sample.length) {
-            const more = document.createElement('div');
-            more.className = 'text-[10px] text-zinc-500 mt-2';
-            more.textContent = `Showing ${Math.min(15, sample.length)} of ${signalCount} historical unit-price signals (JSON export has full sample up to 25).`;
-            card.appendChild(more);
-          }
-        }
-        pbWrap.appendChild(card);
-        relEl.appendChild(pbWrap);
-      }
-
       // Commercial SKUs/UPCs — full list with resilient search links (no brittle manufacturer deep links)
       const commsAll = result.commercial_references || result.CommercialReferences || [];
       const commTops = result.top_commercial_suppliers || result.TopCommercialSuppliers || [];
@@ -1036,7 +952,7 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
 
         const note = document.createElement('div');
         note.className = 'text-[10px] text-zinc-500 mb-2';
-        note.textContent = 'Commercial/ETS mappings only. Row prices are SKU/UPC-specific (e.g. GSA) when matched. AbilityOne.com channel price and PartsBase historical federal transaction prices are shown in separate sections above.';
+        note.textContent = 'Commercial/ETS mappings only. Row prices are SKU/UPC-specific (e.g. GSA) when matched. AbilityOne.com channel price is above; PartsBase historical federal transaction prices are below.';
         commWrapper.appendChild(note);
 
         const filterRow = document.createElement('div');
@@ -1209,6 +1125,90 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
         commWrapper.appendChild(moreBtnHost);
         paintCommercialGrid();
         relEl.appendChild(commWrapper);
+      }
+
+      // PartsBase historical federal/AbilityOne transaction prices — last (after commercial/ETS)
+      const pbHist = result.partsbase_historical_pricing || result.PartsBaseHistoricalPricing || null;
+      if (pbHist && ((pbHist.signal_count || pbHist.SignalCount || 0) > 0 || (pbHist.sample || pbHist.Sample || []).length > 0)) {
+        const pbWrap = document.createElement('div');
+        pbWrap.style.cssText = 'grid-column: 1 / -1; margin-top: 8px;';
+        const pbHeader = document.createElement('div');
+        pbHeader.style.cssText = 'font-size:10px; color:#64748b; margin-bottom:6px; text-transform:uppercase; letter-spacing:0.5px;';
+        pbHeader.textContent = 'PartsBase Historical Federal Prices (GovData transactions)';
+        pbWrap.appendChild(pbHeader);
+
+        const card = document.createElement('div');
+        card.className = 'bg-sky-950/30 border border-sky-800 rounded-2xl p-4';
+        const signalCount = pbHist.signal_count || pbHist.SignalCount || 0;
+        const supplierCount = pbHist.supplier_count || pbHist.SupplierCount || 0;
+        const minP = pbHist.min_unit_price || pbHist.MinUnitPrice || '—';
+        const maxP = pbHist.max_unit_price || pbHist.MaxUnitPrice || '—';
+        const medP = pbHist.median_unit_price || pbHist.MedianUnitPrice || '—';
+        const lastUp = pbHist.last_updated || pbHist.LastUpdated || '';
+        const noteTxt = pbHist.note || pbHist.Note || 'Historical federal procurement unit prices (often AbilityOne/federal transactions). Not commercial retail list prices.';
+
+        const metrics = document.createElement('div');
+        metrics.className = 'flex flex-wrap gap-2 mb-3';
+        [
+          { label: 'Signals', value: signalCount },
+          { label: 'Suppliers', value: supplierCount },
+          { label: 'Min', value: minP },
+          { label: 'Median', value: medP },
+          { label: 'Max', value: maxP },
+        ].forEach(m => {
+          const pill = document.createElement('div');
+          pill.className = 'text-[11px] text-sky-100 bg-sky-950/60 border border-sky-800 rounded-full px-2.5 py-1';
+          pill.textContent = `${m.label}: ${m.value}`;
+          metrics.appendChild(pill);
+        });
+        card.appendChild(metrics);
+
+        const note = document.createElement('div');
+        note.className = 'text-[10px] text-zinc-400 mb-2';
+        note.textContent = noteTxt + (lastUp ? ` · Last award signal: ${lastUp}` : '');
+        card.appendChild(note);
+
+        const sample = pbHist.sample || pbHist.Sample || [];
+        if (sample.length > 0) {
+          const table = document.createElement('div');
+          table.className = 'overflow-x-auto';
+          const tbl = document.createElement('table');
+          tbl.className = 'w-full text-[11px] text-left border-collapse';
+          tbl.innerHTML = `<thead class="text-zinc-500 uppercase"><tr>
+            <th class="py-1 pr-3 font-medium">Unit price</th>
+            <th class="py-1 pr-3 font-medium">Supplier</th>
+            <th class="py-1 pr-3 font-medium">Award date</th>
+            <th class="py-1 pr-3 font-medium">Qty</th>
+            <th class="py-1 pr-3 font-medium">Contract</th>
+          </tr></thead>`;
+          const tbody = document.createElement('tbody');
+          sample.slice(0, 15).forEach(row => {
+            const tr = document.createElement('tr');
+            tr.className = 'border-t border-sky-900/60 text-zinc-200';
+            const price = row.unit_price || row.UnitPrice || '—';
+            const sup = row.supplier || row.Supplier || '—';
+            const ad = row.award_date || row.AwardDate || '—';
+            const qty = row.quantity || row.Quantity || '—';
+            const cn = row.contract_number || row.ContractNumber || '—';
+            tr.innerHTML = `<td class="py-1.5 pr-3 text-sky-300 font-medium">${price}</td>
+              <td class="py-1.5 pr-3">${sup}</td>
+              <td class="py-1.5 pr-3 text-zinc-400">${ad}</td>
+              <td class="py-1.5 pr-3 text-zinc-400">${qty}</td>
+              <td class="py-1.5 pr-3 text-zinc-500 font-mono text-[10px]">${cn}</td>`;
+            tbody.appendChild(tr);
+          });
+          tbl.appendChild(tbody);
+          table.appendChild(tbl);
+          card.appendChild(table);
+          if (signalCount > sample.length) {
+            const more = document.createElement('div');
+            more.className = 'text-[10px] text-zinc-500 mt-2';
+            more.textContent = `Showing ${Math.min(15, sample.length)} of ${signalCount} historical unit-price signals (JSON export has full sample up to 25).`;
+            card.appendChild(more);
+          }
+        }
+        pbWrap.appendChild(card);
+        relEl.appendChild(pbWrap);
       }
 
       const genAt = document.getElementById('generated-at');
