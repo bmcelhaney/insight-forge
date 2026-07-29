@@ -159,13 +159,23 @@ func applyDeterministicProductLinks(refs []models.CommercialReference, entityID 
 			mfr = id.Brand
 		}
 		title := strings.TrimSpace(r.Description)
+		// Prefer resolver title when ETS description is terse/catalog-coded.
 		if id != nil && id.Title != "" {
-			title = id.Title
+			if title == "" || looksLikeCatalogCodeDescription(title) {
+				title = id.Title
+				r.Description = id.Title
+			}
 		}
 
-		// --- Amazon: direct product page when ASIN known ---
+		// --- Amazon: direct product page when ASIN known (resolver or SKU is already an ASIN) ---
+		asin := ""
 		if id != nil && id.ASIN != "" {
-			r.LinkAmazon = "https://www.amazon.com/dp/" + id.ASIN
+			asin = id.ASIN
+		} else if a, ok := amazonASINFromSKU(sku); ok {
+			asin = a
+		}
+		if asin != "" {
+			r.LinkAmazon = "https://www.amazon.com/dp/" + asin
 		} else {
 			r.LinkAmazon = buildAmazonSearchURL(sku, upc)
 		}
