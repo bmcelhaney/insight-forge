@@ -67,64 +67,18 @@ func Synthesize(ctx context.Context, entityID string, snapshots []models.DataSna
 	result.RelatedNSNs = related
 	result.DemandSignals = demand
 
-	// Surface item identity. Prefer ABILITYONE data (higher quality for these items) over WEBFLIS prototype.
-	for _, s := range snapshots {
-		if s.SourceCode == "ABILITYONE" {
-			if name, ok := s.RawResponse["item_name"].(string); ok && name != "" {
-				result.ItemName = name
-			}
-			if uoi, ok := s.RawResponse["unit_of_issue"].(string); ok && uoi != "" {
-				result.UnitOfIssue = uoi
-			}
-			if tech, ok := s.RawResponse["technical_characteristics"].(string); ok && tech != "" {
-				result.TechnicalCharacteristics = tech
-			}
-			break
-		}
-	}
-
-	if result.ItemName == "" {
-		// Secondary fallback: AbilityOne ETS cross-reference descriptions
-		for _, s := range snapshots {
-			if s.SourceCode != "ABILITYONE_ETS" {
-				continue
-			}
-			if descs := toStringSlice(s.RawResponse["abilityone_descriptions"]); len(descs) > 0 {
-				result.ItemName = descs[0]
-			}
-			if result.ItemName == "" {
-				if descs := toStringSlice(s.RawResponse["commercial_descriptions"]); len(descs) > 0 {
-					result.ItemName = descs[0]
-				}
-			}
-			if result.TechnicalCharacteristics == "" {
-				if descs := toStringSlice(s.RawResponse["commercial_descriptions"]); len(descs) > 0 {
-					result.TechnicalCharacteristics = descs[0]
-				}
-			}
-			break
-		}
-	}
-	if result.ItemName == "" {
-		// Fallback to WEBFLIS for non-AbilityOne items
-		for _, s := range snapshots {
-			if s.SourceCode == "WEBFLIS" {
-				if name, ok := s.RawResponse["item_name"].(string); ok && name != "" {
-					result.ItemName = name
-				}
-				if uoi, ok := s.RawResponse["unit_of_issue"].(string); ok && uoi != "" {
-					result.UnitOfIssue = uoi
-				}
-				if tech, ok := s.RawResponse["technical_characteristics"].(string); ok && tech != "" {
-					result.TechnicalCharacteristics = tech
-				}
-				break
-			}
-		}
-	}
+	// Surface item identity from the best available live source (not prototype WebFLIS categories).
+	// Order: AbilityOne program → AbilityOne.com → ETS descriptions → PartsBase → GSA → WebFLIS last.
+	identity := resolveItemIdentity(snapshots)
+	result.ItemName = identity.Name
+	result.UnitOfIssue = identity.UnitOfIssue
+	result.TechnicalCharacteristics = identity.TechnicalChars
 
 	// Rich, program-aware analysis (especially for AbilityOne NSNs)
 	rich := generateRichAnalysis(analysisEntityID, result.ViabilityScore, result.RiskScore, flags, supplierView, demand, snapshots)
+	// Ensure executive summary / report titles stay aligned with the resolved item identity
+	// (generateRichAnalysis historically preferred prototype WebFLIS FSC buckets).
+	rich = alignRichAnalysisToIdentity(rich, identity, analysisEntityID, result.ViabilityScore, result.RiskScore)
 	result.Summary = rich.Summary
 	result.MarketCommentary = rich.MarketCommentary
 	result.FullAnalystReport = rich.FullReport
@@ -2672,52 +2626,327 @@ func getFSC(entityID string) string {
 	return "0000"
 }
 
+// itemIdentity is the best human-facing product description for an NSN.
+type itemIdentity struct {
+	Name           string
+	UnitOfIssue    string
+	TechnicalChars string
+	Source         string // which snapshot source supplied the name
+}
+
+// resolveItemIdentity picks a real product name when available, avoiding prototype
+// WebFLIS broad-category labels like "CLEANING, PACKAGING OR PERSONAL CARE ITEM"
+// that misclassify FSCs (e.g. 8020 paint rollers).
+func resolveItemIdentity(snaps []models.DataSnapshot) itemIdentity {
+	var id itemIdentity
+
+	// 1) Curated / program AbilityOne identity
+	for _, s := range snaps {
+		if s.SourceCode != "ABILITYONE" {
+			continue
+		}
+		if name := strings.TrimSpace(firstStringFromAny(s.RawResponse["item_name"])); name != "" && !isPrototypeGenericItemName(name) {
+			id.Name = name
+			id.Source = "ABILITYONE"
+			id.UnitOfIssue = strings.TrimSpace(firstStringFromAny(s.RawResponse["unit_of_issue"]))
+			id.TechnicalChars = strings.TrimSpace(firstStringFromAny(s.RawResponse["technical_characteristics"]))
+			return id
+		}
+	}
+
+	// 2) AbilityOne.com commerce catalog product name
+	for _, s := range snaps {
+		if s.SourceCode != "ABILITYONE_COMMERCE" {
+			continue
+		}
+		name := firstNonEmptyString(s.RawResponse,
+			"product_name", "item_name", "name", "display_name", "title")
+		if name != "" && !isPrototypeGenericItemName(name) {
+			id.Name = name
+			id.Source = "ABILITYONE_COMMERCE"
+			id.UnitOfIssue = strings.TrimSpace(firstStringFromAny(s.RawResponse["unit_of_issue"]))
+			return id
+		}
+		// Some commerce payloads nest hits
+		if hits := mapSliceFromAny(s.RawResponse["hits"]); len(hits) > 0 {
+			name = firstNonEmptyString(hits[0], "product_name", "item_name", "name", "displayName", "title")
+			if name != "" && !isPrototypeGenericItemName(name) {
+				id.Name = name
+				id.Source = "ABILITYONE_COMMERCE"
+				return id
+			}
+		}
+	}
+
+	// 3) ETS abilityOne / commercial descriptions (real product nomenclature)
+	for _, s := range snaps {
+		if s.SourceCode != "ABILITYONE_ETS" {
+			continue
+		}
+		if descs := toStringSlice(s.RawResponse["abilityone_descriptions"]); len(descs) > 0 {
+			if name := strings.TrimSpace(descs[0]); name != "" && !isPrototypeGenericItemName(name) {
+				id.Name = name
+				id.Source = "ABILITYONE_ETS"
+				if comm := toStringSlice(s.RawResponse["commercial_descriptions"]); len(comm) > 0 {
+					id.TechnicalChars = strings.TrimSpace(comm[0])
+				}
+				return id
+			}
+		}
+		if descs := toStringSlice(s.RawResponse["commercial_descriptions"]); len(descs) > 0 {
+			if name := strings.TrimSpace(descs[0]); name != "" && !isPrototypeGenericItemName(name) {
+				id.Name = name
+				id.Source = "ABILITYONE_ETS"
+				return id
+			}
+		}
+	}
+
+	// 4) PartsBase NSN description when present
+	for _, s := range snaps {
+		if s.SourceCode != "PARTSBASE" {
+			continue
+		}
+		if strings.TrimSpace(firstStringFromAny(s.RawResponse["data_source"])) == "partsbase_unavailable" {
+			continue
+		}
+		if name := strings.TrimSpace(firstStringFromAny(s.RawResponse["nsn_description"])); name != "" && !isPrototypeGenericItemName(name) {
+			id.Name = name
+			id.Source = "PARTSBASE"
+			return id
+		}
+	}
+
+	// 5) GSA / commercial reference product titles
+	for _, s := range snaps {
+		if s.SourceCode != "GSA_ADVANTAGE" {
+			continue
+		}
+		prices := mapSliceFromAny(s.RawResponse["prices_found"])
+		for _, p := range prices {
+			name := firstNonEmptyString(p, "product_name", "item_name", "name", "description", "title")
+			if name != "" && !isPrototypeGenericItemName(name) && len(name) >= 8 {
+				id.Name = name
+				id.Source = "GSA_ADVANTAGE"
+				return id
+			}
+		}
+	}
+
+	// 6) WebFLIS last — and only if not a known prototype generic category label
+	for _, s := range snaps {
+		if s.SourceCode != "WEBFLIS" {
+			continue
+		}
+		name := strings.TrimSpace(firstStringFromAny(s.RawResponse["item_name"]))
+		if name == "" {
+			continue
+		}
+		if isPrototypeGenericItemName(name) {
+			// Keep as last-resort only if nothing better is found later in this loop
+			if id.Name == "" {
+				id.Name = name
+				id.Source = "WEBFLIS_PROTOTYPE"
+				id.UnitOfIssue = strings.TrimSpace(firstStringFromAny(s.RawResponse["unit_of_issue"]))
+				id.TechnicalChars = strings.TrimSpace(firstStringFromAny(s.RawResponse["technical_characteristics"]))
+			}
+			continue
+		}
+		id.Name = name
+		id.Source = "WEBFLIS"
+		id.UnitOfIssue = strings.TrimSpace(firstStringFromAny(s.RawResponse["unit_of_issue"]))
+		id.TechnicalChars = strings.TrimSpace(firstStringFromAny(s.RawResponse["technical_characteristics"]))
+		return id
+	}
+
+	if id.Name == "" {
+		id.Name = "Federal stock item"
+		id.Source = "fallback"
+	}
+	return id
+}
+
+// isPrototypeGenericItemName detects synthetic WebFLIS broad-category labels that
+// should not override real product nomenclature from ETS/AbilityOne/PartsBase.
+func isPrototypeGenericItemName(name string) bool {
+	n := strings.TrimSpace(name)
+	if n == "" {
+		return true
+	}
+	upper := strings.ToUpper(n)
+	generics := []string{
+		"CLEANING, PACKAGING OR PERSONAL CARE ITEM",
+		"CLEANING OR JANITORIAL SUPPLY",
+		"PAINT, BRUSH, OR COATING SUPPLY",
+		"PACKAGING OR CONTAINER ITEM",
+		"TOILETRY OR PERSONAL CARE PAPER PRODUCT",
+		"FURNITURE OR FURNISHINGS ITEM",
+		"FOOD SERVICE OR KITCHEN EQUIPMENT",
+		"AIRCRAFT OR WEAPONS SYSTEM COMPONENT",
+		"VEHICLE OR ENGINE COMPONENT",
+		"HARDWARE AND FASTENER",
+		"SUBSISTENCE OR FOOD ITEM",
+		"FEDERAL STOCK ITEM",
+	}
+	for _, g := range generics {
+		if upper == g || strings.HasPrefix(upper, g+" ") || strings.HasPrefix(upper, g+" (") {
+			return true
+		}
+	}
+	// Broad prototype pattern: ALL CAPS multi-word category without product detail,
+	// ending in ITEM / EQUIPMENT / COMPONENT and lacking specific product tokens.
+	if upper == n && strings.Count(n, " ") >= 2 {
+		if strings.HasSuffix(upper, " ITEM") || strings.HasSuffix(upper, " EQUIPMENT") || strings.HasSuffix(upper, " COMPONENT") {
+			// Real federal nomenclature is often ALL CAPS too (e.g. "PEN, BALL-POINT"),
+			// but those usually include a comma-separated noun form. Category labels do not.
+			if !strings.Contains(n, ",") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// alignRichAnalysisToIdentity rewrites executive summary / report headers when they
+// still lead with a prototype category label despite a better resolved product name.
+func alignRichAnalysisToIdentity(rich RichAnalysis, id itemIdentity, entityID string, viability, risk float64) RichAnalysis {
+	if id.Name == "" || isPrototypeGenericItemName(id.Name) {
+		return rich
+	}
+	// If summary already leads with the real name (or contains it early), leave it.
+	sum := strings.TrimSpace(rich.Summary)
+	if sum == "" {
+		return rich
+	}
+	// Detect wrong prototype lead-ins in summary / report titles.
+	if isPrototypeGenericItemName(firstSummaryToken(sum)) || summaryLeadsWithPrototypeCategory(sum) {
+		// Rebuild a concise identity-correct lead while preserving the rest of the narrative.
+		rest := stripLeadingIdentityClause(sum)
+		if rest == "" {
+			rest = fmt.Sprintf("shows sourcing attractiveness of %.0f with supply risk at %.0f.", viability, risk)
+		}
+		// Avoid double-period / awkward spacing
+		rest = strings.TrimSpace(rest)
+		if !strings.HasPrefix(rest, "shows ") && !strings.HasPrefix(rest, "NSN ") && !strings.HasPrefix(strings.ToLower(rest), "presents") {
+			// Keep existing body after first sentence when rewrite would lose too much
+		}
+		rich.Summary = fmt.Sprintf("%s (NSN %s) %s", id.Name, entityID, rest)
+		// Clean common double phrasing like "NAME (NSN x) NAME (NSN x)"
+		rich.Summary = strings.ReplaceAll(rich.Summary, id.Name+" (NSN "+entityID+") "+id.Name+" (NSN "+entityID+")", id.Name+" (NSN "+entityID+")")
+	}
+
+	// Full report often starts with "CLEANING... (FSC xxxx)" — replace first line identity.
+	if rich.FullReport != "" {
+		rich.FullReport = rewriteDynamicReportIdentity(rich.FullReport, id.Name, getFSC(entityID), entityID)
+	}
+	return rich
+}
+
+func firstSummaryToken(summary string) string {
+	// e.g. "CLEANING, PACKAGING OR PERSONAL CARE ITEM (NSN ...)"
+	s := strings.TrimSpace(summary)
+	if i := strings.Index(s, " (NSN "); i > 0 {
+		return strings.TrimSpace(s[:i])
+	}
+	if i := strings.Index(s, " shows "); i > 0 {
+		return strings.TrimSpace(s[:i])
+	}
+	return s
+}
+
+func summaryLeadsWithPrototypeCategory(summary string) bool {
+	lead := firstSummaryToken(summary)
+	return isPrototypeGenericItemName(lead)
+}
+
+func stripLeadingIdentityClause(summary string) string {
+	s := strings.TrimSpace(summary)
+	// "SOMETHING (NSN 123) rest..."
+	if i := strings.Index(s, " (NSN "); i >= 0 {
+		rest := s[i+len(" (NSN "):]
+		if j := strings.Index(rest, ")"); j >= 0 {
+			return strings.TrimSpace(rest[j+1:])
+		}
+	}
+	return s
+}
+
+func rewriteDynamicReportIdentity(report, itemName, fsc, entityID string) string {
+	lines := strings.Split(report, "\n")
+	if len(lines) == 0 {
+		return report
+	}
+	// Match patterns like:
+	// "DYNAMIC SYNTHESIS — NSN ..."
+	// "CLEANING, PACKAGING OR PERSONAL CARE ITEM (FSC 8020)"
+	for i, line := range lines {
+		trim := strings.TrimSpace(line)
+		if trim == "" {
+			continue
+		}
+		// Replace pure identity title lines that are prototype generics
+		if isPrototypeGenericItemName(firstSummaryToken(trim+" ")) || isPrototypeGenericItemName(trim) {
+			lines[i] = fmt.Sprintf("%s (FSC %s)", itemName, fsc)
+			break
+		}
+		// Or lines that look like "GENERIC (FSC 8020)"
+		if strings.Contains(trim, "(FSC ") && isPrototypeGenericItemName(strings.TrimSpace(strings.Split(trim, "(FSC")[0])) {
+			lines[i] = fmt.Sprintf("%s (FSC %s)", itemName, fsc)
+			break
+		}
+		// Only rewrite early header lines
+		if i > 6 {
+			break
+		}
+	}
+	// Also fix "Item identity: ..." lines if present with wrong generic
+	for i, line := range lines {
+		if strings.Contains(line, "Item identity:") {
+			// Replace value after colon when it is a prototype generic
+			parts := strings.SplitN(line, "Item identity:", 2)
+			if len(parts) == 2 && isPrototypeGenericItemName(strings.TrimSpace(parts[1])) {
+				lines[i] = parts[0] + "Item identity: " + itemName
+			}
+		}
+	}
+	_ = entityID
+	return strings.Join(lines, "\n")
+}
+
 // buildDynamicFullReport produces a structured, multi-section analyst report for
 // any NSN that is not one of the 5 hand-crafted special cases. This is the key
 // upgrade for making Related NSNs and arbitrary inputs feel non-canned and data-grounded.
 func buildDynamicFullReport(entityID string, viability, risk float64, flags []models.RiskFlag, suppliers models.SupplierView, demand models.DemandSignals, snaps []models.DataSnapshot) string {
 	fsc := getFSC(entityID)
 
-	// Pull rich fields. Prefer ABILITYONE data (more accurate for these items) over WebFLIS prototype.
-	itemName := "Federal stock item"
-	unitOfIssue := ""
-	unitPrice := ""
-	techChars := ""
-	acqCode := ""
-	for _, s := range snaps {
-		if s.SourceCode == "ABILITYONE" {
-			if name, ok := s.RawResponse["item_name"].(string); ok && name != "" {
-				itemName = name
-			}
-			if uoi, ok := s.RawResponse["unit_of_issue"].(string); ok && uoi != "" {
-				unitOfIssue = uoi
-			}
-			if tech, ok := s.RawResponse["technical_characteristics"].(string); ok && tech != "" {
-				techChars = tech
-			}
-			break
-		}
+	// Prefer live product identity (ETS / AbilityOne / PartsBase) over prototype WebFLIS categories.
+	identity := resolveItemIdentity(snaps)
+	itemName := identity.Name
+	if itemName == "" || isPrototypeGenericItemName(itemName) {
+		itemName = "Federal stock item"
 	}
-	if itemName == "Federal stock item" {
-		// Fallback to WebFLIS
-		for _, s := range snaps {
-			if s.SourceCode == "WEBFLIS" {
-				if name, ok := s.RawResponse["item_name"].(string); ok && name != "" {
-					itemName = name
-				}
+	unitOfIssue := identity.UnitOfIssue
+	unitPrice := ""
+	techChars := identity.TechnicalChars
+	acqCode := ""
+	// Supplement unit price / UOI / tech / AAC from WebFLIS or AbilityOne when missing.
+	for _, s := range snaps {
+		if s.SourceCode == "ABILITYONE" || s.SourceCode == "WEBFLIS" {
+			if unitOfIssue == "" {
 				if uoi, ok := s.RawResponse["unit_of_issue"].(string); ok && uoi != "" {
 					unitOfIssue = uoi
 				}
-				if price, ok := s.RawResponse["unit_price"].(int); ok {
-					unitPrice = fmt.Sprintf("$%.0f", float64(price))
-				}
-				if tech, ok := s.RawResponse["technical_characteristics"].(string); ok && tech != "" {
+			}
+			if techChars == "" {
+				if tech, ok := s.RawResponse["technical_characteristics"].(string); ok && tech != "" && !isPrototypeGenericItemName(tech) {
 					techChars = tech
 				}
-				if acq, ok := s.RawResponse["acquisition_advice_code"].(string); ok {
-					acqCode = acq
-				}
-				break
+			}
+			if price, ok := s.RawResponse["unit_price"].(int); ok && unitPrice == "" {
+				unitPrice = fmt.Sprintf("$%.0f", float64(price))
+			}
+			if acq, ok := s.RawResponse["acquisition_advice_code"].(string); ok && acqCode == "" {
+				acqCode = acq
 			}
 		}
 	}
@@ -3429,28 +3658,10 @@ Synthesized from WebFLIS, award data, AbilityOne facility sustainment context, a
 	default:
 		// Significantly upgraded dynamic path for any NSN (the quality floor for Monday demo).
 		// Lead with actual item identity when available + specific analytical takeaway.
-		itemDesc := "Federal stock item"
-		for _, s := range snaps {
-			if s.SourceCode == "ABILITYONE" {
-				if name, ok := s.RawResponse["item_name"].(string); ok && name != "" {
-					itemDesc = name
-					break
-				}
-			}
-		}
-		if itemDesc == "Federal stock item" {
-			for _, s := range snaps {
-				if s.SourceCode == "WEBFLIS" {
-					if name, ok := s.RawResponse["item_name"].(string); ok && name != "" {
-						itemDesc = name
-						break
-					}
-				}
-			}
-		}
-
-		// Tone down when we only have limited catalog data for this FSC
-		if strings.HasPrefix(itemDesc, "FEDERAL STOCK ITEM") {
+		// Prefer ETS / AbilityOne / PartsBase product names over prototype WebFLIS FSC buckets.
+		identity := resolveItemIdentity(snaps)
+		itemDesc := identity.Name
+		if itemDesc == "" || isPrototypeGenericItemName(itemDesc) {
 			itemDesc = "Item in this federal supply class"
 		}
 
@@ -4650,6 +4861,14 @@ func describeFSC(fsc string) string {
 		return "Office Devices and Accessories"
 	case "7530":
 		return "Stationery and Record Forms"
+	case "8010":
+		return "Paints, Dopes, Varnishes, and Related Products"
+	case "8020":
+		return "Paint and Artists' Brushes"
+	case "8030":
+		return "Preservative and Sealing Compounds"
+	case "8040":
+		return "Adhesives"
 	case "8105":
 		return "Bags and Sacks"
 	case "8540":

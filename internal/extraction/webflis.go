@@ -193,6 +193,18 @@ func deriveWebFLISItem(fsc, entityID string, r *rand.Rand) (itemName, unitOfIssu
 		techChars = "Low VOC institutional paint for federal building maintenance"
 		basePrice = 38 + r.Intn(22)
 
+	case "8020": // Paint and artists' brushes (rollers, covers, brushes — not janitorial)
+		itemNames := []string{
+			"COVER, PAINT ROLLER, 9 IN, WOVEN, 1/2 IN NAP",
+			"ROLLER, PAINT, FRAME, 9 IN",
+			"BRUSH, PAINT, FLAT, 3 IN",
+			"TRAY, PAINT ROLLER, PLASTIC",
+		}
+		itemName = itemNames[r.Intn(len(itemNames))]
+		unitOfIssue = "EA"
+		techChars = "Paint application tool or roller cover for facility maintenance coating work"
+		basePrice = 6 + r.Intn(18)
+
 	case "8030": // Preservative and sealing compounds
 		itemName = "COMPOUND, CORROSION PREVENTIVE, 1 QT"
 		unitOfIssue = "CN"
@@ -274,9 +286,25 @@ func getBroadCategoryForFSC(fsc string, r *rand.Rand) (name, tech string, price 
 		name = "FOOD SERVICE OR KITCHEN EQUIPMENT"
 		tech = "Institutional food service or kitchen item."
 		price = 180 + r.Intn(650)
-	case fscNum >= 7900 && fscNum < 8600:
-		name = "CLEANING, PACKAGING OR PERSONAL CARE ITEM"
-		tech = "Janitorial, packaging or personal care consumable/supply."
+	// Keep janitorial / cleaning separate from paints and packaging.
+	case fscNum >= 7900 && fscNum < 8000:
+		name = "CLEANING OR JANITORIAL SUPPLY"
+		tech = "Janitorial or floor-care consumable/supply."
+		price = 14 + r.Intn(35)
+	// 80xx paints, brushes, sealers, adhesives — not personal care.
+	case fscNum >= 8000 && fscNum < 8100:
+		name = "PAINT, BRUSH, OR COATING SUPPLY"
+		tech = "Paint, brush/roller, sealer, or related coating product for facility maintenance."
+		price = 12 + r.Intn(40)
+	// Packaging / containers
+	case fscNum >= 8100 && fscNum < 8200:
+		name = "PACKAGING OR CONTAINER ITEM"
+		tech = "Bag, sack, box, or packaging supply."
+		price = 14 + r.Intn(35)
+	// Toiletries / personal care paper products
+	case fscNum >= 8500 && fscNum < 8600:
+		name = "TOILETRY OR PERSONAL CARE PAPER PRODUCT"
+		tech = "Toilet tissue, towel, or personal-care paper product."
 		price = 14 + r.Intn(35)
 	case fscNum >= 8900 && fscNum < 9100:
 		name = "SUBSISTENCE OR FOOD ITEM"
