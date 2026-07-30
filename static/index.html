@@ -1189,7 +1189,7 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
 
         const note = document.createElement('div');
         note.className = 'text-[10px] text-zinc-500 mb-2';
-        note.textContent = 'Commercial/ETS mappings only. Row prices are SKU/UPC-specific (e.g. GSA) when matched. AbilityOne.com channel price is above; PartsBase historical federal transaction prices are below.';
+        note.textContent = 'Commercial/ETS mappings. Each destination link shows its own price when known (Amazon vs retail offer vs UPC catalog vs AbilityOne.com NSN list). Primary tile price is the best commercial signal; AbilityOne channel list is also above; PartsBase historical is below.';
         commWrapper.appendChild(note);
 
         const filterRow = document.createElement('div');
@@ -1317,7 +1317,7 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
             box.appendChild(ps);
           }
 
-          const links = buildCommercialLinks(c, currentNSN);
+          const links = buildCommercialLinks(c, currentNSN, result);
           appendCommercialLinkRow(box, links);
           return box;
         }
@@ -1605,7 +1605,8 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
     }
 
     // Prefer server-resolved product deep links; fall back to prefilled search URLs.
-    function buildCommercialLinks(c, nsn) {
+    // optionalResult supplies AbilityOne channel price for the federal link when not on the row.
+    function buildCommercialLinks(c, nsn, optionalResult) {
       const mfr = (c.manufacturer || '').trim();
       const sku = (c.sku || '').trim();
       const upcClean = digitsOnly(c.upc || '');
@@ -1668,16 +1669,59 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
         ? 'Amazon product'
         : (richQ ? 'Amazon (brand+desc+SKU)' : (upcClean ? 'Amazon (UPC)' : (sku ? 'Amazon (SKU)' : 'Amazon')));
 
+      const fmtPrice = (p) => {
+        if (!p) return '';
+        const s = String(p).trim();
+        if (!s) return '';
+        return s.startsWith('$') ? s : ('$' + s);
+      };
+
+      // Per-destination prices (server fields) — shown next to each link.
+      const priceAmazon = fmtPrice(c.price_amazon || c.priceAmazon || '');
+      const priceShop = fmtPrice(c.price_shop || c.priceShop || '');
+      const priceUpc = fmtPrice(c.price_upc || c.priceUpc || '');
+      let priceFederal = fmtPrice(c.price_federal || c.priceFederal || '');
+      // NSN-level AbilityOne.com channel price for the federal link when row lacks it.
+      if (!priceFederal && optionalResult) {
+        const ao = optionalResult.abilityone_channel_price || optionalResult.AbilityOneChannelPrice || null;
+        if (ao && (ao.price || ao.Price)) {
+          priceFederal = fmtPrice(ao.price || ao.Price);
+        }
+      }
+      // Fallbacks: if only primary tile price exists, attach it to the matching channel by source.
+      const primaryPrice = fmtPrice(c.price || '');
+      const primarySrc = String(c.price_source || c.priceSource || '').toUpperCase();
+      let fallAmazon = priceAmazon, fallShop = priceShop, fallUpc = priceUpc;
+      if (primaryPrice && !fallAmazon && !fallShop && !fallUpc) {
+        if (primarySrc.includes('AMAZON') || /amazon\.com\/(?:dp|gp\/product)\//i.test(amazon)) {
+          fallAmazon = primaryPrice;
+        } else if (primarySrc.includes('MARKET') || primarySrc.includes('GSA') || primarySrc.includes('HOME') || primarySrc.includes('STAPLE') || primarySrc.includes('WALMART') || primarySrc.includes('DEPOT')) {
+          fallShop = primaryPrice;
+        } else if (upcIdentity) {
+          fallUpc = primaryPrice;
+        } else {
+          fallShop = primaryPrice;
+        }
+      }
+
       return {
         shop,
         shopLabel,
         shopIsProduct: /officedepot\.com\/a\/products\/|walmart\.com\/ip\/|upcitemdb\.com\/norob\//i.test(shop || ''),
+        shopPrice: fallShop,
+        shopPriceSrc: c.price_shop_source || c.priceShopSrc || '',
         upc: upcIdentity,
+        upcPrice: fallUpc,
+        upcPriceSrc: c.price_upc_source || c.priceUpcSrc || '',
         amazon,
         amazonLabel,
         amazonIsProduct,
+        amazonPrice: fallAmazon,
+        amazonPriceSrc: c.price_amazon_source || c.priceAmazonSrc || '',
         federal,
         federalLabel: dashed.length === 16 ? 'AbilityOne (NSN)' : 'AbilityOne',
+        federalPrice: priceFederal,
+        federalPriceSrc: c.price_federal_source || c.priceFederalSrc || '',
         website,
         priceUrl: c.price_url || c.priceUrl || '',
       };
@@ -1686,9 +1730,11 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
     function appendCommercialLinkRow(parent, links) {
       if (!links) return;
       const row = document.createElement('div');
-      row.className = 'flex flex-wrap gap-x-3 gap-y-1 mt-1';
-      const add = (href, label, cls) => {
+      row.className = 'flex flex-col gap-1 mt-1.5';
+      const add = (href, label, price, priceSrc, cls) => {
         if (!href || !label) return;
+        const line = document.createElement('div');
+        line.className = 'flex flex-wrap items-baseline gap-x-2 gap-y-0.5';
         const a = document.createElement('a');
         a.href = href;
         a.target = '_blank';
@@ -1696,20 +1742,37 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
         a.className = cls || 'text-[11px] text-sky-300 hover:text-sky-200 underline';
         a.textContent = label;
         a.title = href; // hover shows full URL so analyst can verify prefill
-        row.appendChild(a);
+        line.appendChild(a);
+        if (price) {
+          const p = document.createElement('span');
+          p.className = 'text-[11px] font-semibold text-emerald-300';
+          p.textContent = price;
+          if (priceSrc) p.title = 'Source: ' + priceSrc;
+          line.appendChild(p);
+        } else {
+          const na = document.createElement('span');
+          na.className = 'text-[10px] text-zinc-600';
+          na.textContent = 'price n/a';
+          na.title = 'No resolved price for this destination yet';
+          line.appendChild(na);
+        }
+        row.appendChild(line);
       };
-      // Prioritize direct product pages first; emphasize true deep links.
-      add(links.amazon, links.amazonLabel || 'Amazon', links.amazonIsProduct
+      // Prioritize direct product pages first; emphasize true deep links. Price sits next to each link.
+      add(links.amazon, links.amazonLabel || 'Amazon', links.amazonPrice, links.amazonPriceSrc, links.amazonIsProduct
         ? 'text-[11px] text-orange-300 hover:text-orange-200 underline font-medium'
         : 'text-[11px] text-sky-300 hover:text-sky-200 underline');
-      add(links.shop, links.shopLabel || 'Shop product', links.shopIsProduct
+      add(links.shop, links.shopLabel || 'Shop product', links.shopPrice, links.shopPriceSrc, links.shopIsProduct
         ? 'text-[11px] text-emerald-300 hover:text-emerald-200 underline font-medium'
         : 'text-[11px] text-emerald-300 hover:text-emerald-200 underline');
       if (links.upc && links.upc !== links.shop && /upcitemdb\.com\/upc\//i.test(links.upc)) {
-        add(links.upc, 'UPC identity');
+        add(links.upc, 'UPC identity', links.upcPrice, links.upcPriceSrc);
       }
-      add(links.federal, links.federalLabel || 'AbilityOne (NSN)', 'text-[11px] text-amber-300 hover:text-amber-200 underline');
-      add(links.website, 'Manufacturer site', 'text-[11px] text-zinc-400 hover:text-zinc-200 underline');
+      add(links.federal, links.federalLabel || 'AbilityOne (NSN)', links.federalPrice, links.federalPriceSrc,
+        'text-[11px] text-amber-300 hover:text-amber-200 underline');
+      if (links.website) {
+        add(links.website, 'Manufacturer site', '', '', 'text-[11px] text-zinc-400 hover:text-zinc-200 underline');
+      }
       if (row.childNodes.length) parent.appendChild(row);
     }
 

@@ -186,15 +186,25 @@ type CommercialReference struct {
 	Manufacturer string `json:"manufacturer,omitempty"`
 	Description  string `json:"description,omitempty"`   // Commercial or AbilityOne product description
 	Source       string `json:"source"`                  // e.g. "ABILITYONE_ETS", "GSA_ADVANTAGE"
-	Price        string `json:"price,omitempty"`         // Observed commercial/federal channel price
-	PriceSource  string `json:"price_source,omitempty"`  // GSA_ADVANTAGE | PARTSBASE | etc.
+	Price        string `json:"price,omitempty"`         // Primary observed price (best commercial signal)
+	PriceSource  string `json:"price_source,omitempty"`  // GSA_ADVANTAGE | MARKET:… | etc.
 	PriceAsOf    string `json:"price_as_of,omitempty"`   // ISO date or capture time when known
-	PriceURL     string `json:"price_url,omitempty"`     // Best URL to view/verify the price
-	LinkShop     string `json:"link_shop,omitempty"`     // Google Shopping prefilled with exact UPC or SKU
+	PriceURL     string `json:"price_url,omitempty"`     // Best URL to view/verify the primary price
+	LinkShop     string `json:"link_shop,omitempty"`     // Google Shopping / retailer product link
 	LinkUPC      string `json:"link_upc,omitempty"`      // UPC product lookup
-	LinkAmazon   string `json:"link_amazon,omitempty"`   // Amazon search prefilled with SKU/UPC
+	LinkAmazon   string `json:"link_amazon,omitempty"`   // Amazon product or search
 	LinkGSA      string `json:"link_gsa,omitempty"`      // Federal catalog (AbilityOne.com) prefilled with NSN/SKU
 	LinkWebsite  string `json:"link_website,omitempty"`  // Manufacturer homepage when known
+	// Per-destination prices shown next to each commercial tile link.
+	// These may differ (Amazon vs Home Depot vs AbilityOne channel).
+	PriceAmazon   string `json:"price_amazon,omitempty"`
+	PriceAmazonSrc string `json:"price_amazon_source,omitempty"`
+	PriceShop     string `json:"price_shop,omitempty"`
+	PriceShopSrc  string `json:"price_shop_source,omitempty"`
+	PriceUPC      string `json:"price_upc,omitempty"`
+	PriceUPCSrc   string `json:"price_upc_source,omitempty"`
+	PriceFederal  string `json:"price_federal,omitempty"`
+	PriceFederalSrc string `json:"price_federal_source,omitempty"`
 	Context      string `json:"context,omitempty"`       // Short note from source (e.g. "JWOD listing", "substitute")
 	DateAdded    string `json:"date_added,omitempty"`    // ETS mapping date when available
 }

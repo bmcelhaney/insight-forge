@@ -27,12 +27,20 @@ type productIdentity struct {
 	UPC           string
 	ASIN          string
 	EAN           string
-	OfferPrice    float64 // best USD (or unlabelled) offer price
+	OfferPrice    float64 // best overall USD (or unlabelled) offer price
 	OfferMerchant string
 	OfferCurrency string
 	OfferLink     string // merchant/offer product URL from resolver (often via upcitemdb redirect)
 	RetailURL     string // direct retailer product page inferred from catalog images/ids
-	DeepLinkOK    bool   // true when we have a direct product URL (Amazon /dp, retail, offer, or UPC dossier)
+	// Channel-specific prices from offer rows (shown next to each tile link).
+	AmazonPrice    float64
+	AmazonMerchant string
+	ShopPrice      float64
+	ShopMerchant   string
+	ShopLink       string // preferred non-Amazon offer link
+	UPCPrice       float64 // best catalog price suitable for UPC identity page
+	UPCMerchant    string
+	DeepLinkOK     bool // true when we have a direct product URL (Amazon /dp, retail, offer, or UPC dossier)
 }
 
 type cachedProductIdentity struct {
@@ -50,14 +58,19 @@ var (
 // enrichProductLinks resolves UPC/SKU to real product identity (title, ASIN) and
 // rewrites shop/Amazon/federal links to be as product-specific as possible.
 // Soft-fails always; bounded by IF_PRODUCT_LINK_RESOLVES (default 16).
+// federalPrice is optional AbilityOne.com NSN channel price stamped onto each tile's federal link.
 func enrichProductLinks(ctx context.Context, refs []models.CommercialReference, entityID string) []models.CommercialReference {
+	return enrichProductLinksWithFederal(ctx, refs, entityID, "", "")
+}
+
+func enrichProductLinksWithFederal(ctx context.Context, refs []models.CommercialReference, entityID, federalPrice, federalSource string) []models.CommercialReference {
 	if len(refs) == 0 {
 		return refs
 	}
 	limit := productLinkResolveLimit()
 	if limit <= 0 {
 		// Still rewrite links with deterministic rules (no network).
-		return applyDeterministicProductLinks(refs, entityID, nil)
+		return applyDeterministicProductLinks(refs, entityID, nil, federalPrice, federalSource)
 	}
 
 	// Independent budget so a spent parent analyze context cannot zero out deep-link work.
@@ -165,7 +178,7 @@ func enrichProductLinks(ctx context.Context, refs []models.CommercialReference, 
 	// not only the indices we network-resolved (critical for multi-row ETS tiles).
 	resolved = expandResolvedIdentities(refs, resolved)
 
-	return applyDeterministicProductLinks(refs, entityID, resolved)
+	return applyDeterministicProductLinks(refs, entityID, resolved, federalPrice, federalSource)
 }
 
 // expandResolvedIdentities copies a resolved identity onto sibling refs that
@@ -250,8 +263,13 @@ func expandResolvedIdentities(refs []models.CommercialReference, resolved map[in
 	return out
 }
 
-func applyDeterministicProductLinks(refs []models.CommercialReference, entityID string, resolved map[int]*productIdentity) []models.CommercialReference {
+func applyDeterministicProductLinks(refs []models.CommercialReference, entityID string, resolved map[int]*productIdentity, federalPrice, federalSource string) []models.CommercialReference {
 	digitsNSN := digitsOnlyString(entityID)
+	fedPrice := strings.TrimSpace(federalPrice)
+	fedSrc := strings.TrimSpace(federalSource)
+	if fedSrc == "" && fedPrice != "" {
+		fedSrc = "ABILITYONE_COM"
+	}
 	for i := range refs {
 		r := &refs[i]
 		id := (*productIdentity)(nil)
@@ -341,8 +359,40 @@ func applyDeterministicProductLinks(refs []models.CommercialReference, entityID 
 			r.LinkUPC != "" ||
 			strongSearch
 
-		// Pull market offer price onto the tile when we resolved an offer price.
-		// Prefer attaching when deepOK; still attach on resolved offer even if only strong search.
+		// --- Per-link channel prices (shown next to Amazon / Shop / UPC / AbilityOne) ---
+		if id != nil {
+			if id.AmazonPrice > 0 {
+				r.PriceAmazon = normalizePriceString(fmt.Sprintf("%.2f", id.AmazonPrice))
+				r.PriceAmazonSrc = "MARKET:" + sanitizeMerchantTag(nonEmpty(id.AmazonMerchant, "AMAZON"))
+			}
+			if id.ShopPrice > 0 {
+				r.PriceShop = normalizePriceString(fmt.Sprintf("%.2f", id.ShopPrice))
+				r.PriceShopSrc = "MARKET:" + sanitizeMerchantTag(nonEmpty(id.ShopMerchant, "RETAIL"))
+			} else if id.OfferPrice > 0 && id.AmazonPrice <= 0 {
+				// Single overall offer that isn't Amazon-tagged → treat as shop/retail.
+				r.PriceShop = normalizePriceString(fmt.Sprintf("%.2f", id.OfferPrice))
+				r.PriceShopSrc = "MARKET:" + sanitizeMerchantTag(nonEmpty(id.OfferMerchant, "OFFER"))
+			}
+			if id.UPCPrice > 0 && r.LinkUPC != "" {
+				r.PriceUPC = normalizePriceString(fmt.Sprintf("%.2f", id.UPCPrice))
+				r.PriceUPCSrc = "MARKET:" + sanitizeMerchantTag(nonEmpty(id.UPCMerchant, "CATALOG"))
+			} else if id.OfferPrice > 0 && r.LinkUPC != "" && r.PriceUPC == "" {
+				// UPC dossier aggregates multi-merchant offers — show best overall.
+				r.PriceUPC = normalizePriceString(fmt.Sprintf("%.2f", id.OfferPrice))
+				r.PriceUPCSrc = "MARKET:" + sanitizeMerchantTag(nonEmpty(id.OfferMerchant, "CATALOG"))
+			}
+			// Prefer shop link from non-Amazon offer when we have one.
+			if r.LinkShop == "" && id.ShopLink != "" {
+				r.LinkShop = id.ShopLink
+			}
+		}
+		// AbilityOne.com NSN channel price on the federal link (same NSN for every commercial row).
+		if fedPrice != "" && r.LinkGSA != "" {
+			r.PriceFederal = normalizePriceString(fedPrice)
+			r.PriceFederalSrc = fedSrc
+		}
+
+		// Primary tile price: prefer shop, then amazon, then upc, then existing GSA/row price.
 		if strings.TrimSpace(r.Price) == "" && id != nil && id.OfferPrice > 0 && (deepOK || id.DeepLinkOK || id.Title != "") {
 			r.Price = normalizePriceString(fmt.Sprintf("%.2f", id.OfferPrice))
 			src := "MARKET_OFFER"
@@ -360,11 +410,29 @@ func applyDeterministicProductLinks(refs []models.CommercialReference, entityID 
 				}
 			}
 		}
+		// If primary still empty, promote the best channel price we have.
+		if strings.TrimSpace(r.Price) == "" {
+			switch {
+			case r.PriceShop != "":
+				r.Price, r.PriceSource = r.PriceShop, r.PriceShopSrc
+			case r.PriceAmazon != "":
+				r.Price, r.PriceSource = r.PriceAmazon, r.PriceAmazonSrc
+			case r.PriceUPC != "":
+				r.Price, r.PriceSource = r.PriceUPC, r.PriceUPCSrc
+			}
+			if r.Price != "" && r.PriceAsOf == "" {
+				r.PriceAsOf = time.Now().UTC().Format("2006-01-02")
+			}
+		}
 
 		// Always refresh PriceURL to the best product/verify link we now have
 		// (earlier enrichment may have set a weak SKU-only Google URL).
 		bestPriceURL := ""
 		switch {
+		case amazonProduct && r.PriceAmazon != "":
+			bestPriceURL = r.LinkAmazon
+		case r.PriceShop != "" && r.LinkShop != "":
+			bestPriceURL = r.LinkShop
 		case amazonProduct:
 			bestPriceURL = r.LinkAmazon
 		case id != nil && id.RetailURL != "":
@@ -386,6 +454,13 @@ func applyDeterministicProductLinks(refs []models.CommercialReference, entityID 
 		}
 	}
 	return refs
+}
+
+func nonEmpty(s, fallback string) string {
+	if strings.TrimSpace(s) != "" {
+		return s
+	}
+	return fallback
 }
 
 // buildProductSearchQuery builds the strongest free-text product query we can:
@@ -865,12 +940,23 @@ func upcitemdbFetch(ctx context.Context, endpoint, preferSKU string) (id product
 	// Direct retailer product page from image CDN patterns (Office Depot, etc.).
 	id.RetailURL = extractRetailProductURL(it.Images)
 
-	// Select a usable market offer price + offer deep link.
-	if price, merchant, currency, link, ok := pickBestMarketOffer(it.Offers); ok {
-		id.OfferPrice = price
-		id.OfferMerchant = merchant
-		id.OfferCurrency = currency
-		id.OfferLink = link
+	// Select overall + channel-specific offer prices (Amazon vs retail vs catalog).
+	ch := collectChannelOffers(it.Offers)
+	if ch.BestPrice > 0 {
+		id.OfferPrice = ch.BestPrice
+		id.OfferMerchant = ch.BestMerchant
+		id.OfferCurrency = ch.BestCurrency
+		id.OfferLink = ch.BestLink
+	}
+	id.AmazonPrice = ch.AmazonPrice
+	id.AmazonMerchant = ch.AmazonMerchant
+	id.ShopPrice = ch.ShopPrice
+	id.ShopMerchant = ch.ShopMerchant
+	id.ShopLink = ch.ShopLink
+	id.UPCPrice = ch.BestPrice
+	id.UPCMerchant = ch.BestMerchant
+	if id.OfferLink == "" && ch.ShopLink != "" {
+		id.OfferLink = ch.ShopLink
 	}
 	// Fallback: sane lowest_recorded_price when offer rows are empty/noisy.
 	if id.OfferPrice <= 0 {
@@ -882,6 +968,10 @@ func upcitemdbFetch(ctx context.Context, endpoint, preferSKU string) (id product
 				id.OfferPrice = low
 				id.OfferMerchant = "catalog low"
 				id.OfferCurrency = "USD"
+				if id.UPCPrice <= 0 {
+					id.UPCPrice = low
+					id.UPCMerchant = "catalog low"
+				}
 			}
 		}
 	}
@@ -892,6 +982,134 @@ func upcitemdbFetch(ctx context.Context, endpoint, preferSKU string) (id product
 		return productIdentity{}, false, false
 	}
 	return id, true, false
+}
+
+// channelOfferSet holds the best price per commercial destination.
+type channelOfferSet struct {
+	BestPrice    float64
+	BestMerchant string
+	BestCurrency string
+	BestLink     string
+	AmazonPrice  float64
+	AmazonMerchant string
+	ShopPrice    float64
+	ShopMerchant string
+	ShopLink     string
+}
+
+// collectChannelOffers splits offers into Amazon vs other retail channels.
+func collectChannelOffers(offers []upcOffer) channelOfferSet {
+	var out channelOfferSet
+	type scored struct {
+		price    float64
+		merchant string
+		currency string
+		link     string
+		score    int
+		channel  string // amazon | shop
+	}
+	var all []scored
+	for _, o := range offers {
+		price := o.Price.Float()
+		if price <= 0 || price > 50000 || price < 0.5 {
+			continue
+		}
+		if av := strings.ToLower(o.Availability); strings.Contains(av, "out of stock") {
+			continue
+		}
+		cur := strings.ToUpper(strings.TrimSpace(o.Currency))
+		score := 0
+		switch cur {
+		case "", "USD", "US$":
+			score += 50
+			cur = "USD"
+		case "CAD":
+			score += 5
+		default:
+			score += 10
+		}
+		merch := strings.TrimSpace(o.Merchant)
+		if merch == "" {
+			merch = strings.TrimSpace(o.Domain)
+		}
+		ml := strings.ToLower(merch + " " + o.Domain + " " + o.Link)
+		channel := "shop"
+		switch {
+		case strings.Contains(ml, "amazon"):
+			channel = "amazon"
+			score += 40
+		case strings.Contains(ml, "home depot"), strings.Contains(ml, "homedepot"):
+			score += 38
+		case strings.Contains(ml, "staples"):
+			score += 35
+		case strings.Contains(ml, "office depot"), strings.Contains(ml, "officedepot"):
+			score += 35
+		case strings.Contains(ml, "lowes"), strings.Contains(ml, "lowe's"):
+			score += 34
+		case strings.Contains(ml, "walmart"):
+			score += 30
+		case strings.Contains(ml, "grainger"):
+			score += 30
+		case strings.Contains(ml, "sherwin"):
+			score += 28
+		case strings.Contains(ml, "target"):
+			score += 25
+		case strings.Contains(ml, "uline"):
+			score += 25
+		case strings.Contains(ml, "shoplet"):
+			score += 22
+		case strings.Contains(ml, "sam"):
+			score += 20
+		}
+		if strings.EqualFold(strings.TrimSpace(o.Condition), "New") || o.Condition == "" {
+			score += 10
+		}
+		link := strings.TrimSpace(o.Link)
+		if link != "" {
+			score += 8
+		}
+		all = append(all, scored{price: price, merchant: merch, currency: cur, link: link, score: score, channel: channel})
+	}
+	// Best overall among USD-ish top band.
+	pickBest := func(filter func(scored) bool) (scored, bool) {
+		var cands []scored
+		for _, c := range all {
+			if filter != nil && !filter(c) {
+				continue
+			}
+			cands = append(cands, c)
+		}
+		if len(cands) == 0 {
+			return scored{}, false
+		}
+		bestScore := cands[0].score
+		for _, c := range cands {
+			if c.score > bestScore {
+				bestScore = c.score
+			}
+		}
+		best := cands[0]
+		best.price = 0
+		for _, c := range cands {
+			if c.score < bestScore-15 {
+				continue
+			}
+			if best.price == 0 || c.price < best.price {
+				best = c
+			}
+		}
+		return best, best.price > 0
+	}
+	if b, ok := pickBest(nil); ok {
+		out.BestPrice, out.BestMerchant, out.BestCurrency, out.BestLink = b.price, b.merchant, b.currency, b.link
+	}
+	if b, ok := pickBest(func(c scored) bool { return c.channel == "amazon" }); ok {
+		out.AmazonPrice, out.AmazonMerchant = b.price, b.merchant
+	}
+	if b, ok := pickBest(func(c scored) bool { return c.channel == "shop" }); ok {
+		out.ShopPrice, out.ShopMerchant, out.ShopLink = b.price, b.merchant, b.link
+	}
+	return out
 }
 
 // pickBestMarketOffer chooses a displayable commercial offer price and optional product link.

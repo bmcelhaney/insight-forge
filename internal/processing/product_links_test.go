@@ -89,7 +89,7 @@ func TestApplyDeterministicProductLinksAmazonASIN(t *testing.T) {
 			DeepLinkOK:    true,
 		},
 	}
-	out := applyDeterministicProductLinks(refs, "7520009357136", resolved)
+	out := applyDeterministicProductLinks(refs, "7520009357136", resolved, "$13.01", "ABILITYONE_COM")
 	if out[0].LinkAmazon != "https://www.amazon.com/dp/B00006IE7Z" {
 		t.Fatalf("amazon link %q", out[0].LinkAmazon)
 	}
@@ -117,6 +117,13 @@ func TestApplyDeterministicProductLinksAmazonASIN(t *testing.T) {
 	if out[0].PriceURL == "" {
 		t.Fatal("expected price_url set from deep link")
 	}
+	if out[0].PriceFederal == "" || !strings.Contains(out[0].PriceFederal, "13.01") {
+		t.Fatalf("expected federal AbilityOne price on link, got %q", out[0].PriceFederal)
+	}
+	if out[0].PriceShop == "" && out[0].PriceAmazon == "" {
+		// With only overall offer, shop or amazon channel should be filled
+		t.Fatalf("expected per-channel market price, shop=%q amazon=%q", out[0].PriceShop, out[0].PriceAmazon)
+	}
 }
 
 func TestApplyDeterministicProductLinksPropagatesPriceToSiblingUPC(t *testing.T) {
@@ -138,7 +145,7 @@ func TestApplyDeterministicProductLinksPropagatesPriceToSiblingUPC(t *testing.T)
 		},
 	}
 	resolved = expandResolvedIdentities(refs, resolved)
-	out := applyDeterministicProductLinks(refs, "7520009357136", resolved)
+	out := applyDeterministicProductLinks(refs, "7520009357136", resolved, "", "")
 	if out[1].Price == "" || !strings.Contains(out[1].Price, "8.49") {
 		t.Fatalf("sibling UPC tile should get market price, got %q", out[1].Price)
 	}
@@ -184,6 +191,27 @@ func TestPickBestMarketOfferPrefersUSD(t *testing.T) {
 	}
 	if link == "" {
 		t.Fatal("expected offer link")
+	}
+}
+
+func TestCollectChannelOffersSplitsAmazonAndRetail(t *testing.T) {
+	offers := []upcOffer{
+		{Merchant: "Amazon.com", Currency: "USD", Price: flexibleNum(12.99), Condition: "New", Link: "https://www.amazon.com/dp/B00006IE7Z"},
+		{Merchant: "Home Depot", Currency: "", Price: flexibleNum(40.35), Condition: "New", Link: "https://www.homedepot.com/p/123"},
+		{Merchant: "Amazon.com", Currency: "USD", Price: flexibleNum(11.50), Condition: "New"},
+	}
+	ch := collectChannelOffers(offers)
+	if ch.AmazonPrice != 11.50 {
+		t.Fatalf("amazon price %v (want lowest Amazon)", ch.AmazonPrice)
+	}
+	if ch.ShopPrice != 40.35 {
+		t.Fatalf("shop price %v", ch.ShopPrice)
+	}
+	if !strings.Contains(strings.ToLower(ch.ShopMerchant), "home") {
+		t.Fatalf("shop merchant %q", ch.ShopMerchant)
+	}
+	if ch.BestPrice <= 0 {
+		t.Fatal("expected best overall")
 	}
 }
 

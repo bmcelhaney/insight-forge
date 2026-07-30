@@ -120,7 +120,16 @@ func Synthesize(ctx context.Context, entityID string, snapshots []models.DataSna
 	// Bounded probes for top unpriced commercial/ETS rows (soft-fail, cached, env-gated).
 	commercialRefs = probeCommercialPrices(ctx, commercialRefs)
 	// Resolve UPC/SKU → product title + Amazon ASIN for accurate deep links (soft-fail).
-	commercialRefs = enrichProductLinks(ctx, commercialRefs, entityID)
+	// Stamp AbilityOne.com NSN channel price onto each tile's federal link for per-link pricing.
+	fedPrice, fedSrc := "", ""
+	if result.AbilityOneChannelPrice != nil {
+		fedPrice = result.AbilityOneChannelPrice.Price
+		fedSrc = result.AbilityOneChannelPrice.Source
+		if fedSrc == "" {
+			fedSrc = "ABILITYONE_COM"
+		}
+	}
+	commercialRefs = enrichProductLinksWithFederal(ctx, commercialRefs, entityID, fedPrice, fedSrc)
 	result.CommercialReferences = commercialRefs
 
 	if len(commercialRefs) > 0 {
