@@ -103,7 +103,6 @@ func main() {
 		}
 		// Last observed PartsBase fetch outcome (for UI source-status banner).
 		if st, ok := extractorReg.PartsBaseLastStatus(); ok {
-			payload["partsbase_ok"] = st.OK
 			payload["partsbase_live"] = st.Live
 			payload["partsbase_data_source"] = st.DataSource
 			payload["partsbase_message"] = st.Message
@@ -112,6 +111,13 @@ func main() {
 			}
 			if !st.CheckedAt.IsZero() {
 				payload["partsbase_checked_at"] = st.CheckedAt.Format("2006-01-02T15:04:05Z")
+			}
+			// Only report ok=true/false after a real query (not the initial "not_checked" state).
+			if st.DataSource == "" || st.DataSource == "not_checked" {
+				payload["partsbase_ok"] = nil
+				payload["partsbase_message"] = "PartsBase registered; awaiting first analysis query."
+			} else {
+				payload["partsbase_ok"] = st.OK
 			}
 		} else if cfg.PartsBaseEnabled && !cfg.PartsBaseConfigured {
 			payload["partsbase_ok"] = false
