@@ -1756,7 +1756,10 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
           p.textContent = price;
           let tip = priceSrc ? ('Source: ' + priceSrc) : '';
           if (isRange) {
-            tip = (tip ? tip + ' · ' : '') + 'Price range across top market results (no single product deep-link for this destination)';
+            const nsnBand = /NSN_TOP_RESULTS/i.test(String(priceSrc || ''));
+            tip = (tip ? tip + ' · ' : '') + (nsnBand
+              ? 'Price range from top market offers resolved for this NSN (shared across ETS rows without their own match)'
+              : 'Price range across top market results (no single product deep-link for this destination)');
           }
           if (tip) p.title = tip;
           line.appendChild(p);

@@ -89,7 +89,7 @@ func TestApplyDeterministicProductLinksAmazonASIN(t *testing.T) {
 			DeepLinkOK:    true,
 		},
 	}
-	out := applyDeterministicProductLinks(refs, "7520009357136", resolved, "$13.01", "ABILITYONE_COM")
+	out := applyDeterministicProductLinks(refs, "7520009357136", resolved, "$13.01", "ABILITYONE_COM", nsnMarketBand{})
 	if out[0].LinkAmazon != "https://www.amazon.com/dp/B00006IE7Z" {
 		t.Fatalf("amazon link %q", out[0].LinkAmazon)
 	}
@@ -145,7 +145,7 @@ func TestApplyDeterministicProductLinksPropagatesPriceToSiblingUPC(t *testing.T)
 		},
 	}
 	resolved = expandResolvedIdentities(refs, resolved)
-	out := applyDeterministicProductLinks(refs, "7520009357136", resolved, "", "")
+	out := applyDeterministicProductLinks(refs, "7520009357136", resolved, "", "", nsnMarketBand{})
 	if out[1].Price == "" || !strings.Contains(out[1].Price, "8.49") {
 		t.Fatalf("sibling UPC tile should get market price, got %q", out[1].Price)
 	}
@@ -260,7 +260,7 @@ func TestApplyDeterministicUsesRangeWhenNoDirectLink(t *testing.T) {
 		},
 	}
 	// No ASIN → Amazon is search; shop is HD search (not a product deep-link) → ranges.
-	out := applyDeterministicProductLinks(refs, "8020015964253", resolved, "$42.62", "ABILITYONE_COM")
+	out := applyDeterministicProductLinks(refs, "8020015964253", resolved, "$42.62", "ABILITYONE_COM", nsnMarketBand{})
 	if !out[0].PriceAmazonIsRange || !strings.Contains(out[0].PriceAmazon, "offers") {
 		t.Fatalf("amazon range expected, got %q isRange=%v", out[0].PriceAmazon, out[0].PriceAmazonIsRange)
 	}
@@ -289,6 +289,43 @@ func TestPickSearchPriceRangePrefersRicherBand(t *testing.T) {
 	}
 }
 
+func TestNSNMarketBandFillsOtherSearchOnlyTiles(t *testing.T) {
+	refs := []models.CommercialReference{
+		{SKU: "R091", UPC: "071497149299", Manufacturer: "WOOSTER", Description: "Sherlock pole"},
+		{SKU: "001809102", Manufacturer: "PURDY", Description: "4'-8' Purdy Professional Extension Pole"},
+		{SKU: "215467", Manufacturer: "Dynamic", Description: "Pin Lock Fiberglass Extension Pole"},
+	}
+	// Only first row "resolved" with multi-offer catalog data.
+	resolved := map[int]*productIdentity{
+		0: {
+			Title: "Wooster Sherlock", UPC: "071497149299",
+			OfferPrice: 20.39, UPCMin: 20.39, UPCMax: 47.77, UPCCount: 12, UPCPrice: 20.39,
+			ShopPrice: 40.35, ShopMerchant: "Home Depot", ShopLink: "https://www.upcitemdb.com/norob/x",
+			ASIN: "B000DZGQIM", AmazonPrice: 0,
+		},
+	}
+	resolved = expandResolvedIdentities(refs, resolved)
+	band := buildNSNMarketBand(resolved)
+	if band.Count < 2 {
+		t.Fatalf("expected nsn band from resolved row, got %+v", band)
+	}
+	out := applyDeterministicProductLinks(refs, "8020015964253", resolved, "$42.62", "ABILITYONE_COM", band)
+	// Row 0 has direct amazon/shop — not forced to range for shop if direct.
+	// Rows 1–2 are search-only with no own identity → should inherit NSN band on amazon+shop.
+	if out[1].PriceAmazon == "" || !out[1].PriceAmazonIsRange {
+		t.Fatalf("row1 amazon should inherit nsn range, got %q", out[1].PriceAmazon)
+	}
+	if out[1].PriceShop == "" || !out[1].PriceShopIsRange {
+		t.Fatalf("row1 shop should inherit nsn range, got %q", out[1].PriceShop)
+	}
+	if out[2].PriceAmazon == "" || !strings.Contains(out[2].PriceAmazon, "offers") {
+		t.Fatalf("row2 amazon range %q", out[2].PriceAmazon)
+	}
+	if out[1].PriceFederal == "" || out[2].PriceFederal == "" {
+		t.Fatal("federal should still stamp all rows")
+	}
+}
+
 func TestSearchOnlyAmazonUsesCatalogRangeWhenNoAmazonOffers(t *testing.T) {
 	refs := []models.CommercialReference{
 		{SKU: "14A050", Manufacturer: "WOOSTER", Description: "Paint Roller Cover"},
@@ -308,7 +345,7 @@ func TestSearchOnlyAmazonUsesCatalogRangeWhenNoAmazonOffers(t *testing.T) {
 			ShopPrice:  7.00,
 		},
 	}
-	out := applyDeterministicProductLinks(refs, "8020015964250", resolved, "", "")
+	out := applyDeterministicProductLinks(refs, "8020015964250", resolved, "", "", nsnMarketBand{})
 	if strings.Contains(out[0].LinkAmazon, "/dp/") {
 		t.Fatalf("expected amazon search, got %q", out[0].LinkAmazon)
 	}

@@ -79,7 +79,7 @@ func enrichProductLinksWithFederal(ctx context.Context, refs []models.Commercial
 	limit := productLinkResolveLimit()
 	if limit <= 0 {
 		// Still rewrite links with deterministic rules (no network).
-		return applyDeterministicProductLinks(refs, entityID, nil, federalPrice, federalSource)
+		return applyDeterministicProductLinks(refs, entityID, nil, federalPrice, federalSource, nsnMarketBand{})
 	}
 
 	// Independent budget so a spent parent analyze context cannot zero out deep-link work.
@@ -187,7 +187,54 @@ func enrichProductLinksWithFederal(ctx context.Context, refs []models.Commercial
 	// not only the indices we network-resolved (critical for multi-row ETS tiles).
 	resolved = expandResolvedIdentities(refs, resolved)
 
-	return applyDeterministicProductLinks(refs, entityID, resolved, federalPrice, federalSource)
+	// NSN-level market band from any multi-offer resolve — used so search-only
+	// ETS rows that never got their own API hit still show a useful range.
+	nsnBand := buildNSNMarketBand(resolved)
+
+	return applyDeterministicProductLinks(refs, entityID, resolved, federalPrice, federalSource, nsnBand)
+}
+
+// nsnMarketBand is a multi-offer price span observed for at least one commercial
+// identity on this NSN analysis (used as fallback for other search-only tiles).
+type nsnMarketBand struct {
+	Min   float64
+	Max   float64
+	Count int
+}
+
+func buildNSNMarketBand(resolved map[int]*productIdentity) nsnMarketBand {
+	var b nsnMarketBand
+	for _, id := range resolved {
+		if id == nil {
+			continue
+		}
+		// Prefer full catalog span when available.
+		min, max, n := id.UPCMin, id.UPCMax, id.UPCCount
+		if n < 2 || min <= 0 {
+			min, max, n = id.ShopMin, id.ShopMax, id.ShopCount
+		}
+		if n < 2 || min <= 0 {
+			min, max, n = id.AmazonMin, id.AmazonMax, id.AmazonCount
+		}
+		if n < 2 || min <= 0 {
+			continue
+		}
+		if b.Count == 0 {
+			b = nsnMarketBand{Min: min, Max: max, Count: n}
+			continue
+		}
+		// Merge: widest span, sum-ish count (use max count as representative sample size).
+		if min < b.Min {
+			b.Min = min
+		}
+		if max > b.Max {
+			b.Max = max
+		}
+		if n > b.Count {
+			b.Count = n
+		}
+	}
+	return b
 }
 
 // expandResolvedIdentities copies a resolved identity onto sibling refs that
@@ -272,7 +319,7 @@ func expandResolvedIdentities(refs []models.CommercialReference, resolved map[in
 	return out
 }
 
-func applyDeterministicProductLinks(refs []models.CommercialReference, entityID string, resolved map[int]*productIdentity, federalPrice, federalSource string) []models.CommercialReference {
+func applyDeterministicProductLinks(refs []models.CommercialReference, entityID string, resolved map[int]*productIdentity, federalPrice, federalSource string, nsnBand nsnMarketBand) []models.CommercialReference {
 	digitsNSN := digitsOnlyString(entityID)
 	fedPrice := strings.TrimSpace(federalPrice)
 	fedSrc := strings.TrimSpace(federalSource)
@@ -451,6 +498,22 @@ func applyDeterministicProductLinks(refs []models.CommercialReference, entityID 
 					r.PriceUPC = normalizePriceString(fmt.Sprintf("%.2f", id.OfferPrice))
 					r.PriceUPCSrc = "MARKET:" + sanitizeMerchantTag(nonEmpty(id.OfferMerchant, "CATALOG"))
 				}
+			}
+		}
+
+		// Search-only tiles that never got their own product resolve still show the
+		// NSN-level multi-offer band (from other ETS rows that did resolve).
+		if nsnBand.Count >= 2 && nsnBand.Min > 0 {
+			band := formatPriceRange(nsnBand.Min, nsnBand.Max, nsnBand.Count)
+			if !amazonProduct && r.PriceAmazon == "" && r.LinkAmazon != "" {
+				r.PriceAmazon = band
+				r.PriceAmazonSrc = "MARKET_RANGE:NSN_TOP_RESULTS"
+				r.PriceAmazonIsRange = true
+			}
+			if !shopIsDirect && r.PriceShop == "" && r.LinkShop != "" {
+				r.PriceShop = band
+				r.PriceShopSrc = "MARKET_RANGE:NSN_TOP_RESULTS"
+				r.PriceShopIsRange = true
 			}
 		}
 		// AbilityOne.com NSN channel price on the federal link (same NSN for every commercial row).
@@ -767,7 +830,7 @@ func resolveProductIdentity(ctx context.Context, sku, upc, mfr, title string) (p
 	var ok bool
 	var transient bool // rate-limit / 5xx — do not long-cache as "not found"
 
-	// Prefer UPC lookup (single definitive item).
+	// Prefer UPC lookup (single definitive item) — one API call.
 	if u := normalizeUPCDigits(upc); u != "" {
 		id, ok, transient = upcitemdbLookup(ctx, u)
 	}
@@ -777,18 +840,21 @@ func resolveProductIdentity(ctx context.Context, sku, upc, mfr, title string) (p
 			id, ok, transient = upcitemdbSearch(ctx, asin, sku)
 		}
 	}
-	// Cascading text searches: richest query first (brand + description + SKU), then simpler.
+	// Text search: ONE best query only (full brand+desc+SKU). Cascading multiple
+	// searches burned the trial API rate limit on the first ETS row so later tiles
+	// never resolved.
 	if !ok && !transient {
 		if _, isASIN := amazonASINFromSKU(sku); !isASIN {
-			queries := productSearchQueryCascade(mfr, sku, upc, title)
-			for _, q := range queries {
-				if ctx.Err() != nil {
-					break
-				}
+			q := buildProductSearchQuery(mfr, sku, upc, title)
+			if q == "" {
+				q = strings.TrimSpace(mfr + " " + sku)
+			}
+			if q != "" && ctx.Err() == nil {
 				id, ok, transient = upcitemdbSearch(ctx, q, sku)
-				if ok || transient {
-					break
-				}
+			}
+			// One light fallback if the rich query missed: brand + SKU only.
+			if !ok && !transient && mfr != "" && sku != "" && ctx.Err() == nil {
+				id, ok, transient = upcitemdbSearch(ctx, mfr+" "+sku, sku)
 			}
 		}
 	}
@@ -1651,12 +1717,12 @@ func setCachedProductIDTTL(key string, id productIdentity, ok bool, ttl time.Dur
 func productLinkResolveLimit() int {
 	raw := strings.TrimSpace(os.Getenv("IF_PRODUCT_LINK_RESOLVES"))
 	if raw == "" {
-		// Keep modest — trial UPCItemDB rate-limits hard; quality queries matter more.
-		return 10
+		// Cover a full commercial tile page; each resolve is now 1–2 API calls.
+		return 14
 	}
 	n, err := strconv.Atoi(raw)
 	if err != nil || n < 0 {
-		return 10
+		return 14
 	}
 	if n > 30 {
 		return 30
@@ -1667,14 +1733,14 @@ func productLinkResolveLimit() int {
 func productLinkResolveBudget() time.Duration {
 	raw := strings.TrimSpace(os.Getenv("IF_PRODUCT_LINK_RESOLVE_MS"))
 	if raw == "" {
-		return 8000 * time.Millisecond
+		return 12000 * time.Millisecond
 	}
 	ms, err := strconv.Atoi(raw)
 	if err != nil || ms <= 0 {
-		return 8000 * time.Millisecond
+		return 12000 * time.Millisecond
 	}
-	if ms > 20000 {
-		ms = 20000
+	if ms > 25000 {
+		ms = 25000
 	}
 	return time.Duration(ms) * time.Millisecond
 }
