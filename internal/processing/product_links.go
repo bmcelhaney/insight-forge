@@ -69,7 +69,7 @@ func enrichProductLinks(ctx context.Context, refs []models.CommercialReference, 
 	probeCtx, cancel := context.WithTimeout(context.WithoutCancel(base), budget)
 	defer cancel()
 
-	// Rank candidates: has UPC first, then ASIN-as-SKU, then SKU+mfr, cap to limit.
+	// Rank candidates: has UPC first, then ASIN-as-SKU, then SKU+mfr+description.
 	// Deduplicate by cache key so we only network-resolve each UPC/SKU once.
 	type cand struct {
 		idx   int
@@ -78,6 +78,7 @@ func enrichProductLinks(ctx context.Context, refs []models.CommercialReference, 
 		sku   string
 		upc   string
 		mfr   string
+		title string
 	}
 	var cands []cand
 	seenKey := map[string]bool{}
@@ -106,11 +107,17 @@ func enrichProductLinks(ctx context.Context, refs []models.CommercialReference, 
 		if strings.TrimSpace(r.Manufacturer) != "" {
 			score += 5
 		}
+		if strings.TrimSpace(r.Description) != "" {
+			score += 10 // description enables much better product search
+		}
 		// Prefer unpriced tiles so we spend budget where price backfill helps most.
 		if strings.TrimSpace(r.Price) == "" {
 			score += 8
 		}
-		cands = append(cands, cand{idx: i, score: score, key: key, sku: sku, upc: upc, mfr: strings.TrimSpace(r.Manufacturer)})
+		cands = append(cands, cand{
+			idx: i, score: score, key: key, sku: sku, upc: upc,
+			mfr: strings.TrimSpace(r.Manufacturer), title: strings.TrimSpace(r.Description),
+		})
 	}
 	if len(cands) > 1 {
 		// sort by score desc
@@ -128,8 +135,8 @@ func enrichProductLinks(ctx context.Context, refs []models.CommercialReference, 
 
 	resolved := make(map[int]*productIdentity, len(cands))
 	var mu sync.Mutex
-	// Serial-ish (2) to reduce UPCItemDB trial rate-limit storms after release gates.
-	sem := make(chan struct{}, 2)
+	// Serial (1) to reduce UPCItemDB trial rate-limit storms; quality over volume.
+	sem := make(chan struct{}, 1)
 	var wg sync.WaitGroup
 	for _, c := range cands {
 		c := c
@@ -143,7 +150,7 @@ func enrichProductLinks(ctx context.Context, refs []models.CommercialReference, 
 			}
 			defer func() { <-sem }()
 
-			id, ok := resolveProductIdentity(probeCtx, c.sku, c.upc, c.mfr)
+			id, ok := resolveProductIdentity(probeCtx, c.sku, c.upc, c.mfr, c.title)
 			if !ok {
 				return
 			}
@@ -283,7 +290,10 @@ func applyDeterministicProductLinks(refs []models.CommercialReference, entityID 
 			}
 		}
 
-		// --- Amazon: /dp when ASIN known; otherwise title/UPC search (never bare empty) ---
+		// Strong multi-field product query (brand + humanized description + SKU + UPC).
+		searchQ := buildProductSearchQuery(mfr, sku, upc, title)
+
+		// --- Amazon: /dp when ASIN known; otherwise rich product search ---
 		asin := ""
 		if id != nil && id.ASIN != "" {
 			asin = id.ASIN
@@ -294,11 +304,13 @@ func applyDeterministicProductLinks(refs []models.CommercialReference, entityID 
 		if asin != "" {
 			r.LinkAmazon = "https://www.amazon.com/dp/" + asin
 			amazonProduct = true
+		} else if searchQ != "" {
+			r.LinkAmazon = "https://www.amazon.com/s?k=" + url.QueryEscape(searchQ)
 		} else {
 			r.LinkAmazon = buildAmazonProductSearchURL(mfr, sku, upc, title)
 		}
 
-		// --- Shop: prefer true retailer product / offer link over Google search ---
+		// --- Shop: true product URL first, then rich retailer/Google search ---
 		r.LinkShop = ""
 		if id != nil {
 			if id.RetailURL != "" {
@@ -307,12 +319,8 @@ func applyDeterministicProductLinks(refs []models.CommercialReference, entityID 
 				r.LinkShop = id.OfferLink
 			}
 		}
-		if r.LinkShop == "" && upc != "" {
-			// Walmart UPC search is usually more product-specific than bare Google Shopping SKU.
-			r.LinkShop = "https://www.walmart.com/search?q=" + url.QueryEscape(upc)
-		}
 		if r.LinkShop == "" {
-			r.LinkShop = buildPreciseShopURL(mfr, sku, upc, title)
+			r.LinkShop = buildBestShopURL(mfr, sku, upc, title, searchQ)
 		}
 
 		// --- UPC identity page (human-readable product dossier) ---
@@ -325,15 +333,17 @@ func applyDeterministicProductLinks(refs []models.CommercialReference, entityID 
 
 		r.LinkWebsite = manufacturerHomepage(mfr)
 
-		// Successful deep link = Amazon product page, retailer product page, offer link, or UPC dossier.
+		// Successful deep / near-deep link for price attach.
+		// True product pages count; also rich multi-token product searches (not bare SKU).
+		strongSearch := searchQ != "" && (strings.Count(searchQ, " ") >= 2 || upc != "")
 		deepOK := amazonProduct ||
-			(id != nil && (id.RetailURL != "" || id.OfferLink != "")) ||
+			(id != nil && (id.RetailURL != "" || id.OfferLink != "" || id.DeepLinkOK)) ||
 			r.LinkUPC != "" ||
-			(id != nil && id.DeepLinkOK)
+			strongSearch
 
-		// Pull market offer price onto the tile only when a successful deep link exists.
-		// Never overwrite an existing SKU/UPC-specific price (GSA etc.).
-		if deepOK && strings.TrimSpace(r.Price) == "" && id != nil && id.OfferPrice > 0 {
+		// Pull market offer price onto the tile when we resolved an offer price.
+		// Prefer attaching when deepOK; still attach on resolved offer even if only strong search.
+		if strings.TrimSpace(r.Price) == "" && id != nil && id.OfferPrice > 0 && (deepOK || id.DeepLinkOK || id.Title != "") {
 			r.Price = normalizePriceString(fmt.Sprintf("%.2f", id.OfferPrice))
 			src := "MARKET_OFFER"
 			if id.OfferMerchant != "" {
@@ -342,7 +352,7 @@ func applyDeterministicProductLinks(refs []models.CommercialReference, entityID 
 			r.PriceSource = src
 			r.PriceAsOf = time.Now().UTC().Format("2006-01-02")
 			if id.OfferMerchant != "" {
-				note := "Market offer via " + id.OfferMerchant + " (resolved with product deep link)"
+				note := "Market offer via " + id.OfferMerchant + " (resolved with product identity)"
 				if r.Context == "" {
 					r.Context = note
 				} else if !strings.Contains(strings.ToLower(r.Context), "market offer") {
@@ -351,37 +361,217 @@ func applyDeterministicProductLinks(refs []models.CommercialReference, entityID 
 			}
 		}
 
-		// Prefer price verification URL that matches the deep link we actually set.
-		if r.PriceURL == "" {
-			switch {
-			case amazonProduct:
-				r.PriceURL = r.LinkAmazon
-			case id != nil && id.RetailURL != "":
-				r.PriceURL = id.RetailURL
-			case id != nil && id.OfferLink != "":
-				r.PriceURL = id.OfferLink
-			case r.LinkUPC != "":
-				r.PriceURL = r.LinkUPC
-			case r.LinkShop != "":
-				r.PriceURL = r.LinkShop
+		// Always refresh PriceURL to the best product/verify link we now have
+		// (earlier enrichment may have set a weak SKU-only Google URL).
+		bestPriceURL := ""
+		switch {
+		case amazonProduct:
+			bestPriceURL = r.LinkAmazon
+		case id != nil && id.RetailURL != "":
+			bestPriceURL = id.RetailURL
+		case id != nil && id.OfferLink != "":
+			bestPriceURL = id.OfferLink
+		case r.LinkShop != "":
+			bestPriceURL = r.LinkShop
+		case r.LinkAmazon != "":
+			bestPriceURL = r.LinkAmazon
+		case r.LinkUPC != "":
+			bestPriceURL = r.LinkUPC
+		}
+		if bestPriceURL != "" {
+			// Overwrite weak prior price URLs (bare SKU searches).
+			if r.PriceURL == "" || isWeakProductSearchURL(r.PriceURL) || !isWeakProductSearchURL(bestPriceURL) {
+				r.PriceURL = bestPriceURL
 			}
 		}
 	}
 	return refs
 }
 
+// buildProductSearchQuery builds the strongest free-text product query we can:
+// brand + humanized description + quoted SKU + UPC. This is far more specific than bare SKU.
+func buildProductSearchQuery(manufacturer, sku, upc, title string) string {
+	mfr := strings.TrimSpace(manufacturer)
+	sku = strings.TrimSpace(sku)
+	u := normalizeUPCDigits(upc)
+	desc := humanizeProductDescription(title)
+
+	var parts []string
+	// Brand first when not already in description.
+	if mfr != "" && (desc == "" || !strings.Contains(strings.ToLower(desc), strings.ToLower(mfr))) {
+		parts = append(parts, mfr)
+	}
+	if desc != "" {
+		// Cap description length for URL quality.
+		if len(desc) > 80 {
+			desc = strings.TrimSpace(desc[:80])
+		}
+		parts = append(parts, desc)
+	}
+	// Exact SKU in quotes for disambiguation (critical for multipacks / variants).
+	if sku != "" && !strings.Contains(strings.ToUpper(desc), strings.ToUpper(sku)) {
+		parts = append(parts, `"`+sku+`"`)
+	}
+	// UPC is highly specific when present.
+	if u != "" {
+		parts = append(parts, u)
+	}
+	q := strings.Join(parts, " ")
+	q = strings.Join(strings.Fields(q), " ")
+	return q
+}
+
+// humanizeProductDescription turns ETS catalog codes into search-friendly text.
+// e.g. `9"ROLLERCOVER WOVEN NAPSIZE .5"` → `9" roller cover woven nap size .5`
+func humanizeProductDescription(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	// Normalize common catalog compressions.
+	repl := []struct{ old, new string }{
+		{"ROLLERCOVER", "roller cover"},
+		{"ROLLCOVER", "roller cover"},
+		{"NAPSIZE", "nap size"},
+		{"BALLPOINT", "ball point"},
+		{"BALL-POINT", "ball point"},
+		{"RETRACTABLE", "retractable"},
+		{"MEDPT", "medium point"},
+		{"MED POINT", "medium point"},
+		{"PK12", "12 pack"},
+		{"PK/12", "12 pack"},
+		{"DOZ", "dozen"},
+		{"WOVEN", "woven"},
+		{"POLYESTER", "polyester"},
+	}
+	out := s
+	upper := strings.ToUpper(out)
+	for _, r := range repl {
+		if strings.Contains(upper, r.old) {
+			// Case-insensitive replace
+			out = replaceInsensitive(out, r.old, r.new)
+			upper = strings.ToUpper(out)
+		}
+	}
+	// Insert spaces at letter/digit boundaries and after quotes: 9"ROLLER → 9" ROLLER
+	var b strings.Builder
+	runes := []rune(out)
+	for i, r := range runes {
+		if i > 0 {
+			prev := runes[i-1]
+			// digit/letter or letter/digit
+			if (unicode.IsDigit(prev) && unicode.IsLetter(r)) || (unicode.IsLetter(prev) && unicode.IsDigit(r)) {
+				b.WriteByte(' ')
+			}
+			// quote followed by letter
+			if (prev == '"' || prev == '\'') && unicode.IsLetter(r) {
+				b.WriteByte(' ')
+			}
+			// lower then upper (camel)
+			if unicode.IsLower(prev) && unicode.IsUpper(r) {
+				b.WriteByte(' ')
+			}
+		}
+		b.WriteRune(r)
+	}
+	out = b.String()
+	// Commas to spaces for search, collapse whitespace
+	out = strings.ReplaceAll(out, ",", " ")
+	out = strings.ReplaceAll(out, ";", " ")
+	out = strings.Join(strings.Fields(out), " ")
+	return out
+}
+
+func replaceInsensitive(s, old, new string) string {
+	if old == "" {
+		return s
+	}
+	lower := strings.ToLower(s)
+	oldL := strings.ToLower(old)
+	var b strings.Builder
+	i := 0
+	for {
+		j := strings.Index(lower[i:], oldL)
+		if j < 0 {
+			b.WriteString(s[i:])
+			break
+		}
+		j += i
+		b.WriteString(s[i:j])
+		b.WriteString(new)
+		i = j + len(old)
+	}
+	return b.String()
+}
+
+// buildBestShopURL prefers retailer product searches that rank specific SKUs highly.
+func buildBestShopURL(manufacturer, sku, upc, title, searchQ string) string {
+	if searchQ == "" {
+		searchQ = buildProductSearchQuery(manufacturer, sku, upc, title)
+	}
+	u := normalizeUPCDigits(upc)
+	// UPC-only Walmart is product-like when we lack a title.
+	if searchQ == "" && u != "" {
+		return "https://www.walmart.com/search?q=" + url.QueryEscape(u)
+	}
+	if searchQ == "" {
+		return buildPreciseShopURL(manufacturer, sku, upc, title)
+	}
+	// Home Depot ranks industrial/paint/facility SKUs well; use rich query.
+	// Analysts often find the exact cover/brush here faster than Google Shopping.
+	if looksLikeFacilityOrPaintProduct(manufacturer, title, sku) {
+		return "https://www.homedepot.com/s/" + url.PathEscape(searchQ)
+	}
+	// Google Shopping with full brand+description+SKU query.
+	return "https://www.google.com/search?tbm=shop&q=" + url.QueryEscape(searchQ)
+}
+
+func looksLikeFacilityOrPaintProduct(mfr, title, sku string) bool {
+	blob := strings.ToLower(mfr + " " + title + " " + sku)
+	keys := []string{
+		"paint", "roller", "brush", "nap", "primer", "coating",
+		"wooster", "purdy", "sherwin", "premier", "homax",
+		"mop", "broom", "towel", "cleaner", "janitor",
+		"grainger", "uline", "tool",
+	}
+	for _, k := range keys {
+		if strings.Contains(blob, k) {
+			return true
+		}
+	}
+	return false
+}
+
+func isWeakProductSearchURL(u string) bool {
+	u = strings.ToLower(u)
+	if u == "" {
+		return true
+	}
+	// Bare SKU-ish Amazon / Google searches (few query tokens) are weak.
+	if strings.Contains(u, "amazon.com/s?") || strings.Contains(u, "tbm=shop") || strings.Contains(u, "walmart.com/search") {
+		// Count approximate query richness via encoded spaces / plus signs
+		q := u
+		if i := strings.Index(q, "q="); i >= 0 {
+			q = q[i+2:]
+		} else if i := strings.Index(q, "k="); i >= 0 {
+			q = q[i+2:]
+		}
+		// Path-style Home Depot /s/QUERY
+		if i := strings.Index(u, "homedepot.com/s/"); i >= 0 {
+			return false // HD product search is preferred
+		}
+		plus := strings.Count(q, "+") + strings.Count(q, "%20")
+		if plus < 2 && !strings.Contains(u, "upcitemdb.com/upc/") {
+			return true
+		}
+	}
+	return false
+}
+
 // buildAmazonProductSearchURL builds the strongest Amazon search we can without an ASIN.
-// Prefer full product title + brand; then UPC; then quoted SKU + brand. Bare empty SKU searches are last resort.
+// Always prefers brand + humanized description + quoted SKU over bare SKU.
 func buildAmazonProductSearchURL(manufacturer, sku, upc, title string) string {
-	if t := strings.TrimSpace(title); t != "" && !looksLikeCatalogCodeDescription(t) {
-		if len(t) > 100 {
-			t = t[:100]
-		}
-		q := t
-		mfr := strings.TrimSpace(manufacturer)
-		if mfr != "" && !strings.Contains(strings.ToLower(t), strings.ToLower(mfr)) {
-			q = mfr + " " + t
-		}
+	if q := buildProductSearchQuery(manufacturer, sku, upc, title); q != "" {
 		return "https://www.amazon.com/s?k=" + url.QueryEscape(q)
 	}
 	if u := normalizeUPCDigits(upc); u != "" {
@@ -400,21 +590,7 @@ func buildAmazonProductSearchURL(manufacturer, sku, upc, title string) string {
 // buildPreciseShopURL crafts a Google Shopping query that is much more specific
 // than a bare manufacturer string.
 func buildPreciseShopURL(manufacturer, sku, upc, title string) string {
-	// 1) Full product title from resolver is the best shopping query.
-	if t := strings.TrimSpace(title); t != "" {
-		// Keep it short enough for URL quality; include brand if not already present.
-		if len(t) > 90 {
-			t = t[:90]
-		}
-		q := t
-		mfr := strings.TrimSpace(manufacturer)
-		if mfr != "" && !strings.Contains(strings.ToLower(t), strings.ToLower(mfr)) {
-			q = mfr + " " + t
-		}
-		// Append exact SKU in quotes when available for disambiguation.
-		if sku = strings.TrimSpace(sku); sku != "" && !strings.Contains(t, sku) {
-			q += ` "` + sku + `"`
-		}
+	if q := buildProductSearchQuery(manufacturer, sku, upc, title); q != "" {
 		return "https://www.google.com/search?tbm=shop&q=" + url.QueryEscape(q)
 	}
 	// 2) UPC alone
@@ -439,7 +615,7 @@ func productCacheKey(sku, upc string) string {
 	return "sku:" + strings.ToUpper(strings.TrimSpace(sku))
 }
 
-func resolveProductIdentity(ctx context.Context, sku, upc, mfr string) (productIdentity, bool) {
+func resolveProductIdentity(ctx context.Context, sku, upc, mfr, title string) (productIdentity, bool) {
 	key := productCacheKey(sku, upc)
 	if hit, ok := getCachedProductID(key); ok {
 		return hit.id, hit.ok
@@ -459,14 +635,19 @@ func resolveProductIdentity(ctx context.Context, sku, upc, mfr string) (productI
 			id, ok, transient = upcitemdbSearch(ctx, asin, sku)
 		}
 	}
-	// Fall back to text search by SKU (+ brand).
-	if !ok && !transient && strings.TrimSpace(sku) != "" {
+	// Cascading text searches: richest query first (brand + description + SKU), then simpler.
+	if !ok && !transient {
 		if _, isASIN := amazonASINFromSKU(sku); !isASIN {
-			q := strings.TrimSpace(sku)
-			if mfr != "" {
-				q = mfr + " " + q
+			queries := productSearchQueryCascade(mfr, sku, upc, title)
+			for _, q := range queries {
+				if ctx.Err() != nil {
+					break
+				}
+				id, ok, transient = upcitemdbSearch(ctx, q, sku)
+				if ok || transient {
+					break
+				}
 			}
-			id, ok, transient = upcitemdbSearch(ctx, q, sku)
 		}
 	}
 
@@ -484,6 +665,40 @@ func resolveProductIdentity(ctx context.Context, sku, upc, mfr string) (productI
 		setCachedProductID("sku:"+strings.ToUpper(id.ASIN), id, true)
 	}
 	return id, ok
+}
+
+// productSearchQueryCascade returns ordered UPCItemDB search queries from most specific to least.
+func productSearchQueryCascade(mfr, sku, upc, title string) []string {
+	var out []string
+	seen := map[string]bool{}
+	add := func(q string) {
+		q = strings.Join(strings.Fields(strings.TrimSpace(q)), " ")
+		if q == "" || seen[q] {
+			return
+		}
+		seen[q] = true
+		out = append(out, q)
+	}
+	// 1) Full product query
+	add(buildProductSearchQuery(mfr, sku, upc, title))
+	// 2) Brand + humanized description (no SKU noise)
+	desc := humanizeProductDescription(title)
+	if mfr != "" && desc != "" {
+		add(mfr + " " + desc)
+	}
+	// 3) Brand + SKU
+	if mfr != "" && sku != "" {
+		add(mfr + " " + sku)
+	}
+	// 4) SKU alone
+	if sku != "" {
+		add(sku)
+	}
+	// 5) Description alone
+	if desc != "" {
+		add(desc)
+	}
+	return out
 }
 
 func upcitemdbLookup(ctx context.Context, upc string) (id productIdentity, ok bool, transient bool) {
@@ -657,10 +872,23 @@ func upcitemdbFetch(ctx context.Context, endpoint, preferSKU string) (id product
 		id.OfferCurrency = currency
 		id.OfferLink = link
 	}
+	// Fallback: sane lowest_recorded_price when offer rows are empty/noisy.
+	if id.OfferPrice <= 0 {
+		low := it.LowestRecordedPrice
+		high := it.HighestRecordedPrice
+		if low >= 1.0 && low <= 2500 {
+			// Reject absurd spans (often bad historical min pennies vs bulk max).
+			if high <= 0 || high/low <= 40 {
+				id.OfferPrice = low
+				id.OfferMerchant = "catalog low"
+				id.OfferCurrency = "USD"
+			}
+		}
+	}
 
-	id.DeepLinkOK = id.ASIN != "" || id.UPC != "" || id.RetailURL != "" || id.OfferLink != ""
+	id.DeepLinkOK = id.ASIN != "" || id.UPC != "" || id.RetailURL != "" || id.OfferLink != "" || id.OfferPrice > 0
 
-	if id.Title == "" && id.ASIN == "" && id.UPC == "" && id.RetailURL == "" {
+	if id.Title == "" && id.ASIN == "" && id.UPC == "" && id.RetailURL == "" && id.OfferPrice <= 0 {
 		return productIdentity{}, false, false
 	}
 	return id, true, false
@@ -718,12 +946,18 @@ func pickBestMarketOffer(offers []upcOffer) (price float64, merchant, currency, 
 			score += 30
 		case strings.Contains(ml, "target"):
 			score += 25
+		case strings.Contains(ml, "home depot"), strings.Contains(ml, "homedepot"):
+			score += 38
+		case strings.Contains(ml, "lowes"), strings.Contains(ml, "lowe's"):
+			score += 34
 		case strings.Contains(ml, "grainger"):
-			score += 25
+			score += 30
 		case strings.Contains(ml, "uline"):
 			score += 25
 		case strings.Contains(ml, "shoplet"):
 			score += 22
+		case strings.Contains(ml, "sherwin"):
+			score += 28
 		case strings.Contains(ml, "sam"):
 			score += 20
 		}
@@ -948,11 +1182,12 @@ func setCachedProductIDTTL(key string, id productIdentity, ok bool, ttl time.Dur
 func productLinkResolveLimit() int {
 	raw := strings.TrimSpace(os.Getenv("IF_PRODUCT_LINK_RESOLVES"))
 	if raw == "" {
-		return 16
+		// Keep modest — trial UPCItemDB rate-limits hard; quality queries matter more.
+		return 10
 	}
 	n, err := strconv.Atoi(raw)
 	if err != nil || n < 0 {
-		return 16
+		return 10
 	}
 	if n > 30 {
 		return 30
@@ -963,14 +1198,14 @@ func productLinkResolveLimit() int {
 func productLinkResolveBudget() time.Duration {
 	raw := strings.TrimSpace(os.Getenv("IF_PRODUCT_LINK_RESOLVE_MS"))
 	if raw == "" {
-		return 5000 * time.Millisecond
+		return 8000 * time.Millisecond
 	}
 	ms, err := strconv.Atoi(raw)
 	if err != nil || ms <= 0 {
-		return 5000 * time.Millisecond
+		return 8000 * time.Millisecond
 	}
-	if ms > 15000 {
-		ms = 15000
+	if ms > 20000 {
+		ms = 20000
 	}
 	return time.Duration(ms) * time.Millisecond
 }

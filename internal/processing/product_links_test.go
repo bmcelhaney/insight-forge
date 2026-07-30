@@ -24,6 +24,54 @@ func TestBuildPreciseShopURLUsesTitle(t *testing.T) {
 	}
 }
 
+func TestHumanizeProductDescriptionExpandsCatalogCodes(t *testing.T) {
+	got := humanizeProductDescription(`9"ROLLERCOVER WOVEN NAPSIZE .5"`)
+	low := strings.ToLower(got)
+	if !strings.Contains(low, "roller cover") {
+		t.Fatalf("expected humanized roller cover, got %q", got)
+	}
+	if !strings.Contains(low, "nap") {
+		t.Fatalf("expected nap in %q", got)
+	}
+}
+
+func TestBuildProductSearchQueryIncludesBrandDescSKU(t *testing.T) {
+	q := buildProductSearchQuery("WOOSTER", "14A050", "", `9"ROLLERCOVER WOVEN NAPSIZE .5"`)
+	if !strings.Contains(strings.ToUpper(q), "WOOSTER") {
+		t.Fatalf("missing brand: %q", q)
+	}
+	if !strings.Contains(q, "14A050") {
+		t.Fatalf("missing sku: %q", q)
+	}
+	if !strings.Contains(strings.ToLower(q), "roller") {
+		t.Fatalf("missing humanized desc: %q", q)
+	}
+}
+
+func TestBuildBestShopURLHomeDepotForPaint(t *testing.T) {
+	u := buildBestShopURL("WOOSTER", "14A050", "", "WOOSTER Paint Roller Cover, 1/2 In", "")
+	if !strings.Contains(u, "homedepot.com/s/") {
+		t.Fatalf("expected Home Depot search for paint product, got %q", u)
+	}
+	if !strings.Contains(strings.ToUpper(u), "WOOSTER") && !strings.Contains(u, "WOOSTER") {
+		// path-escaped
+		if !strings.Contains(u, "14A050") {
+			t.Fatalf("expected sku in HD url: %q", u)
+		}
+	}
+}
+
+func TestBuildAmazonProductSearchUsesCatalogDescription(t *testing.T) {
+	u := buildAmazonProductSearchURL("WOOSTER", "3UW81", "", `9"ROLLERCOVER WOVEN NAPSIZE .5"`)
+	if !strings.Contains(u, "amazon.com/s?k=") {
+		t.Fatalf("expected amazon search: %q", u)
+	}
+	// Must not be bare SKU-only (should include brand and/or humanized tokens)
+	if strings.HasSuffix(u, "3UW81") && !strings.Contains(u, "WOOSTER") && !strings.Contains(strings.ToLower(u), "roller") {
+		t.Fatalf("amazon query too weak: %q", u)
+	}
+}
+
 func TestApplyDeterministicProductLinksAmazonASIN(t *testing.T) {
 	refs := []models.CommercialReference{
 		{SKU: "BICCSM11BK", UPC: "070330904330", Manufacturer: "BIC"},
