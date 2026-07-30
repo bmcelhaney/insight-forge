@@ -199,22 +199,28 @@ func TestCollectChannelOffersSplitsAmazonAndRetail(t *testing.T) {
 		{Merchant: "Amazon.com", Currency: "USD", Price: flexibleNum(12.99), Condition: "New", Link: "https://www.amazon.com/dp/B00006IE7Z"},
 		{Merchant: "Home Depot", Currency: "", Price: flexibleNum(40.35), Condition: "New", Link: "https://www.homedepot.com/p/123"},
 		{Merchant: "Amazon.com", Currency: "USD", Price: flexibleNum(11.50), Condition: "New"},
+		{Merchant: "Newegg.com", Currency: "", Price: flexibleNum(20.39), Condition: "New"},
+		{Merchant: "Ace Hardware", Currency: "", Price: flexibleNum(33.99), Condition: "New"},
+		{Merchant: "Wal-Mart.com", Currency: "", Price: flexibleNum(43.68), Condition: "New"},
+		{Merchant: "Jet.com", Currency: "", Price: flexibleNum(21.25), Condition: "New"},
 	}
 	ch := collectChannelOffers(offers)
 	if ch.AmazonPrice != 11.50 {
 		t.Fatalf("amazon price %v (want lowest Amazon)", ch.AmazonPrice)
 	}
-	if ch.ShopPrice != 40.35 {
-		t.Fatalf("shop price %v", ch.ShopPrice)
-	}
-	if !strings.Contains(strings.ToLower(ch.ShopMerchant), "home") {
-		t.Fatalf("shop merchant %q", ch.ShopMerchant)
+	// UPC / full catalog range must include low Newegg and high Walmart, not only scored "top band".
+	if ch.AllCount < 7 || ch.AllMin != 11.50 || ch.AllMax != 43.68 {
+		t.Fatalf("full catalog range min=%v max=%v n=%d (want all USD offers)", ch.AllMin, ch.AllMax, ch.AllCount)
 	}
 	if ch.BestPrice <= 0 {
 		t.Fatal("expected best overall")
 	}
 	if ch.AmazonCount < 2 || ch.AmazonMin != 11.50 || ch.AmazonMax != 12.99 {
 		t.Fatalf("amazon range min=%v max=%v n=%d", ch.AmazonMin, ch.AmazonMax, ch.AmazonCount)
+	}
+	// Shop full set should span Newegg..Walmart (non-Amazon).
+	if ch.ShopCount < 4 || ch.ShopMin > 21 || ch.ShopMax < 40 {
+		t.Fatalf("shop full-ish range min=%v max=%v n=%d", ch.ShopMin, ch.ShopMax, ch.ShopCount)
 	}
 }
 

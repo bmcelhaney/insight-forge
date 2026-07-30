@@ -1000,34 +1000,26 @@ func upcitemdbFetch(ctx context.Context, endpoint, preferSKU string) (id product
 	if id.OfferLink == "" && ch.ShopLink != "" {
 		id.OfferLink = ch.ShopLink
 	}
-	// Fallback: recorded low/high as a catalog range when offer rows are empty/noisy.
-	if id.OfferPrice <= 0 || id.UPCCount < 2 {
+	// Fallback: recorded low/high only when we have no live offer rows.
+	// Do NOT replace a multi-offer range with lowest_recorded/highest_recorded —
+	// those historical extremes are often absurd (pennies vs bulk) vs the live page.
+	if id.UPCCount == 0 && id.OfferPrice <= 0 {
 		low := it.LowestRecordedPrice
 		high := it.HighestRecordedPrice
 		if low >= 1.0 && low <= 2500 {
 			if high <= 0 || high/low <= 40 {
-				if id.OfferPrice <= 0 {
-					id.OfferPrice = low
-					id.OfferMerchant = "catalog low"
-					id.OfferCurrency = "USD"
-				}
-				if id.UPCPrice <= 0 {
-					id.UPCPrice = low
-					id.UPCMerchant = "catalog low"
-				}
-				if high >= low && high <= 2500 && high/low <= 40 {
-					if id.UPCCount < 2 {
-						id.UPCMin, id.UPCMax = low, high
-						if high > low {
-							id.UPCCount = 2 // treat as range of recorded extremes
-						} else {
-							id.UPCCount = 1
-						}
-					}
-					// Search-only shop channel can use the same recorded band.
+				id.OfferPrice = low
+				id.OfferMerchant = "catalog low"
+				id.OfferCurrency = "USD"
+				id.UPCPrice = low
+				id.UPCMerchant = "catalog low"
+				if high >= low && high <= 2500 && high/low <= 40 && high > low {
+					id.UPCMin, id.UPCMax, id.UPCCount = low, high, 2
 					if id.ShopCount < 2 && id.ShopPrice <= 0 {
-						id.ShopMin, id.ShopMax, id.ShopCount = id.UPCMin, id.UPCMax, id.UPCCount
+						id.ShopMin, id.ShopMax, id.ShopCount = low, high, 2
 					}
+				} else {
+					id.UPCCount = 1
 				}
 			}
 		}
@@ -1063,10 +1055,13 @@ type channelOfferSet struct {
 	AllCount       int
 }
 
-const maxTopOfferResults = 5
+// maxTopOfferResults caps "top results" used for search-link ranges (Amazon/shop
+// when no product deep-link). UPC identity uses the full offer set (see fullRange).
+const maxTopOfferResults = 8
 
 // collectChannelOffers splits offers into Amazon vs other retail channels and
-// computes min/max across the top (lowest) results in each channel.
+// computes min/max ranges. UPC/catalog uses ALL usable offers; Amazon/shop search
+// ranges use the top score band (up to maxTopOfferResults).
 func collectChannelOffers(offers []upcOffer) channelOfferSet {
 	var out channelOfferSet
 	type scored struct {
@@ -1140,7 +1135,7 @@ func collectChannelOffers(offers []upcOffer) channelOfferSet {
 		all = append(all, scored{price: price, merchant: merch, currency: cur, link: link, score: score, channel: channel})
 	}
 
-	// Prefer USD-ish offers for ranking; keep CAD only if nothing else.
+	// Prefer USD / blank currency for display ranges; keep foreign only if nothing else.
 	filterUSD := func(list []scored) []scored {
 		var usd []scored
 		for _, c := range list {
@@ -1154,7 +1149,46 @@ func collectChannelOffers(offers []upcOffer) channelOfferSet {
 		return list
 	}
 
-	// Top band by score, then take up to N lowest prices.
+	// fullRange: every usable offer — used for UPC identity (matches catalog breadth better).
+	fullRange := func(list []scored) (best scored, min, max float64, n int, ok bool) {
+		list = filterUSD(list)
+		if len(list) == 0 {
+			return scored{}, 0, 0, 0, false
+		}
+		// Sort by price ascending for stable best = lowest among USD.
+		for i := 0; i < len(list); i++ {
+			for j := i + 1; j < len(list); j++ {
+				if list[j].price < list[i].price {
+					list[i], list[j] = list[j], list[i]
+				}
+			}
+		}
+		min, max = list[0].price, list[0].price
+		// Prefer best as lowest USD with a strong merchant score when possible.
+		best = list[0]
+		bestScore := list[0].score
+		for _, c := range list {
+			if c.price < min {
+				min = c.price
+			}
+			if c.price > max {
+				max = c.price
+			}
+			if c.score > bestScore || (c.score == bestScore && c.price < best.price) {
+				bestScore = c.score
+				best = c
+			}
+		}
+		// Among high-score merchants, prefer lowest price as "best" single.
+		for _, c := range list {
+			if c.score >= bestScore-15 && c.price < best.price {
+				best = c
+			}
+		}
+		return best, min, max, len(list), true
+	}
+
+	// topRange: score band + cap — used for Amazon/shop search "top results" ranges.
 	topRange := func(list []scored) (best scored, min, max float64, n int, ok bool) {
 		list = filterUSD(list)
 		if len(list) == 0 {
@@ -1172,7 +1206,6 @@ func collectChannelOffers(offers []upcOffer) channelOfferSet {
 				band = append(band, c)
 			}
 		}
-		// Sort by price ascending
 		for i := 0; i < len(band); i++ {
 			for j := i + 1; j < len(band); j++ {
 				if band[j].price < band[i].price {
@@ -1205,16 +1238,23 @@ func collectChannelOffers(offers []upcOffer) channelOfferSet {
 		}
 	}
 
-	if b, min, max, n, ok := topRange(all); ok {
+	// Catalog / UPC: full offer set so range matches breadth of the UPC identity page.
+	if b, min, max, n, ok := fullRange(all); ok {
 		out.BestPrice, out.BestMerchant, out.BestCurrency, out.BestLink = b.price, b.merchant, b.currency, b.link
 		out.AllMin, out.AllMax, out.AllCount = min, max, n
 	}
+	// Amazon / shop search ranges: top-result band (still useful when no deep-link).
 	if b, min, max, n, ok := topRange(amazonList); ok {
 		out.AmazonPrice, out.AmazonMerchant = b.price, b.merchant
 		out.AmazonMin, out.AmazonMax, out.AmazonCount = min, max, n
 	}
 	if b, min, max, n, ok := topRange(shopList); ok {
 		out.ShopPrice, out.ShopMerchant, out.ShopLink = b.price, b.merchant, b.link
+		out.ShopMin, out.ShopMax, out.ShopCount = min, max, n
+	}
+	// When shop deep-link is missing, shop search range can use full non-Amazon set
+	// so analysts see the same breadth as the UPC dossier for retail search.
+	if _, min, max, n, ok := fullRange(shopList); ok && n > out.ShopCount {
 		out.ShopMin, out.ShopMax, out.ShopCount = min, max, n
 	}
 	return out
