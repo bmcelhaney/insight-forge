@@ -252,10 +252,10 @@ func TestApplyDeterministicUsesRangeWhenNoDirectLink(t *testing.T) {
 			AmazonMax:    49.99,
 			AmazonCount:  3,
 			AmazonPrice:  35.99,
-			UPCMin:       35.99,
-			UPCMax:       52.00,
-			UPCCount:     5,
-			UPCPrice:     35.99,
+			UPCMin:       20.39,
+			UPCMax:       47.77,
+			UPCCount:     12,
+			UPCPrice:     20.39,
 			DeepLinkOK:   true,
 		},
 	}
@@ -267,11 +267,59 @@ func TestApplyDeterministicUsesRangeWhenNoDirectLink(t *testing.T) {
 	if !out[0].PriceShopIsRange || !strings.Contains(out[0].PriceShop, "offers") {
 		t.Fatalf("shop range expected, got %q isRange=%v", out[0].PriceShop, out[0].PriceShopIsRange)
 	}
+	// Prefer widest/most-offer catalog band for search fallbacks when richer.
+	if !strings.Contains(out[0].PriceAmazon, "12 offers") && !strings.Contains(out[0].PriceAmazon, "20.39") {
+		// Amazon may use amazon-only 3-offer band (also OK) or catalog 12
+		if !strings.Contains(out[0].PriceAmazon, "3 offers") {
+			t.Fatalf("amazon range unexpected: %q", out[0].PriceAmazon)
+		}
+	}
 	if !out[0].PriceUPCIsRange {
 		t.Fatalf("upc should be range for multi-offer catalog, got %q range=%v", out[0].PriceUPC, out[0].PriceUPCIsRange)
 	}
 	if out[0].PriceFederal == "" {
 		t.Fatal("expected federal price")
+	}
+}
+
+func TestPickSearchPriceRangePrefersRicherBand(t *testing.T) {
+	min, max, n, ok := pickSearchPriceRange(35.99, 49.99, 3, 20.39, 47.77, 12, 0, 0, 0)
+	if !ok || n != 12 || min != 20.39 || max != 47.77 {
+		t.Fatalf("got min=%v max=%v n=%d ok=%v", min, max, n, ok)
+	}
+}
+
+func TestSearchOnlyAmazonUsesCatalogRangeWhenNoAmazonOffers(t *testing.T) {
+	refs := []models.CommercialReference{
+		{SKU: "14A050", Manufacturer: "WOOSTER", Description: "Paint Roller Cover"},
+	}
+	// No ASIN, no Amazon-channel offers — only overall catalog multi-offer data.
+	resolved := map[int]*productIdentity{
+		0: {
+			Title:      "Wooster Paint Roller Cover",
+			OfferPrice: 8.99,
+			UPCMin:     6.50,
+			UPCMax:     18.25,
+			UPCCount:   9,
+			UPCPrice:   6.50,
+			ShopMin:    7.00,
+			ShopMax:    16.00,
+			ShopCount:  6,
+			ShopPrice:  7.00,
+		},
+	}
+	out := applyDeterministicProductLinks(refs, "8020015964250", resolved, "", "")
+	if strings.Contains(out[0].LinkAmazon, "/dp/") {
+		t.Fatalf("expected amazon search, got %q", out[0].LinkAmazon)
+	}
+	if !out[0].PriceAmazonIsRange {
+		t.Fatalf("search amazon should show range, got %q", out[0].PriceAmazon)
+	}
+	if isDirectProductURL(out[0].LinkShop) {
+		// HD search for paint
+	}
+	if !out[0].PriceShopIsRange {
+		t.Fatalf("search shop should show range, got %q isDirect=%v link=%q", out[0].PriceShop, isDirectProductURL(out[0].LinkShop), out[0].LinkShop)
 	}
 }
 

@@ -369,44 +369,76 @@ func applyDeterministicProductLinks(refs []models.CommercialReference, entityID 
 			strongSearch
 
 		// --- Per-link channel prices (shown next to Amazon / Shop / UPC / AbilityOne) ---
-		// Direct product URL → single price; search-only / multi-merchant → range of top results.
+		// Direct product URL → single listing price.
+		// Search-only (no direct Amazon/shop match) → range of top market results.
 		shopIsDirect := isDirectProductURL(r.LinkShop)
 		if id != nil {
-			if amazonProduct && id.AmazonPrice > 0 {
+			// Prefer shop link from non-Amazon offer when we have one (before pricing).
+			if !shopIsDirect && id.ShopLink != "" && isDirectProductURL(id.ShopLink) {
+				r.LinkShop = id.ShopLink
+				shopIsDirect = true
+			} else if r.LinkShop == "" && id.ShopLink != "" {
+				r.LinkShop = id.ShopLink
+				shopIsDirect = isDirectProductURL(r.LinkShop)
+			}
+
+			// Amazon
+			switch {
+			case amazonProduct && id.AmazonPrice > 0:
+				// Direct /dp/ with an Amazon offer → single price
 				r.PriceAmazon = normalizePriceString(fmt.Sprintf("%.2f", id.AmazonPrice))
 				r.PriceAmazonSrc = "MARKET:" + sanitizeMerchantTag(nonEmpty(id.AmazonMerchant, "AMAZON"))
 				r.PriceAmazonIsRange = false
-			} else if !amazonProduct && id.AmazonCount >= 2 && id.AmazonMin > 0 {
-				r.PriceAmazon = formatPriceRange(id.AmazonMin, id.AmazonMax, id.AmazonCount)
-				r.PriceAmazonSrc = "MARKET_RANGE:AMAZON"
-				r.PriceAmazonIsRange = true
-			} else if id.AmazonPrice > 0 {
-				r.PriceAmazon = normalizePriceString(fmt.Sprintf("%.2f", id.AmazonPrice))
-				r.PriceAmazonSrc = "MARKET:" + sanitizeMerchantTag(nonEmpty(id.AmazonMerchant, "AMAZON"))
+			case !amazonProduct:
+				// Search-only Amazon link → always prefer a multi-offer range when available
+				if min, max, n, ok := pickSearchPriceRange(
+					id.AmazonMin, id.AmazonMax, id.AmazonCount,
+					id.UPCMin, id.UPCMax, id.UPCCount,
+					id.ShopMin, id.ShopMax, id.ShopCount,
+				); ok {
+					r.PriceAmazon = formatPriceRange(min, max, n)
+					r.PriceAmazonSrc = "MARKET_RANGE:TOP_RESULTS"
+					r.PriceAmazonIsRange = n >= 2 && max > min
+				} else if id.AmazonPrice > 0 {
+					r.PriceAmazon = normalizePriceString(fmt.Sprintf("%.2f", id.AmazonPrice))
+					r.PriceAmazonSrc = "MARKET:" + sanitizeMerchantTag(nonEmpty(id.AmazonMerchant, "AMAZON"))
+				} else if id.OfferPrice > 0 {
+					r.PriceAmazon = normalizePriceString(fmt.Sprintf("%.2f", id.OfferPrice))
+					r.PriceAmazonSrc = "MARKET:" + sanitizeMerchantTag(nonEmpty(id.OfferMerchant, "CATALOG"))
+				}
+			case amazonProduct && id.AmazonPrice <= 0 && id.OfferPrice > 0:
+				// Direct /dp/ but no Amazon-tagged offer — leave single unknown; don't invent range on product page
 			}
 
-			if shopIsDirect && id.ShopPrice > 0 {
+			// Shop / retail
+			switch {
+			case shopIsDirect && id.ShopPrice > 0:
 				r.PriceShop = normalizePriceString(fmt.Sprintf("%.2f", id.ShopPrice))
 				r.PriceShopSrc = "MARKET:" + sanitizeMerchantTag(nonEmpty(id.ShopMerchant, "RETAIL"))
 				r.PriceShopIsRange = false
-			} else if !shopIsDirect && id.ShopCount >= 2 && id.ShopMin > 0 {
-				r.PriceShop = formatPriceRange(id.ShopMin, id.ShopMax, id.ShopCount)
-				r.PriceShopSrc = "MARKET_RANGE:RETAIL"
-				r.PriceShopIsRange = true
-			} else if !shopIsDirect && id.UPCCount >= 2 && id.UPCMin > 0 && id.ShopPrice <= 0 {
-				// No shop-channel offers; fall back to overall catalog range for search links.
-				r.PriceShop = formatPriceRange(id.UPCMin, id.UPCMax, id.UPCCount)
-				r.PriceShopSrc = "MARKET_RANGE:CATALOG"
-				r.PriceShopIsRange = true
-			} else if id.ShopPrice > 0 {
-				r.PriceShop = normalizePriceString(fmt.Sprintf("%.2f", id.ShopPrice))
-				r.PriceShopSrc = "MARKET:" + sanitizeMerchantTag(nonEmpty(id.ShopMerchant, "RETAIL"))
-			} else if id.OfferPrice > 0 && id.AmazonPrice <= 0 {
+			case shopIsDirect && id.ShopPrice <= 0 && id.OfferPrice > 0 && id.AmazonPrice <= 0:
 				r.PriceShop = normalizePriceString(fmt.Sprintf("%.2f", id.OfferPrice))
 				r.PriceShopSrc = "MARKET:" + sanitizeMerchantTag(nonEmpty(id.OfferMerchant, "OFFER"))
+			case !shopIsDirect:
+				// Search-only shop (HD/Google/etc.) → range of top market results
+				if min, max, n, ok := pickSearchPriceRange(
+					id.ShopMin, id.ShopMax, id.ShopCount,
+					id.UPCMin, id.UPCMax, id.UPCCount,
+					id.AmazonMin, id.AmazonMax, id.AmazonCount,
+				); ok {
+					r.PriceShop = formatPriceRange(min, max, n)
+					r.PriceShopSrc = "MARKET_RANGE:TOP_RESULTS"
+					r.PriceShopIsRange = n >= 2 && max > min
+				} else if id.ShopPrice > 0 {
+					r.PriceShop = normalizePriceString(fmt.Sprintf("%.2f", id.ShopPrice))
+					r.PriceShopSrc = "MARKET:" + sanitizeMerchantTag(nonEmpty(id.ShopMerchant, "RETAIL"))
+				} else if id.OfferPrice > 0 {
+					r.PriceShop = normalizePriceString(fmt.Sprintf("%.2f", id.OfferPrice))
+					r.PriceShopSrc = "MARKET:" + sanitizeMerchantTag(nonEmpty(id.OfferMerchant, "OFFER"))
+				}
 			}
 
-			// UPC identity is always multi-merchant catalog — prefer range when multiple offers.
+			// UPC identity is always multi-merchant catalog — prefer full offer range.
 			if r.LinkUPC != "" {
 				if id.UPCCount >= 2 && id.UPCMin > 0 {
 					r.PriceUPC = formatPriceRange(id.UPCMin, id.UPCMax, id.UPCCount)
@@ -419,10 +451,6 @@ func applyDeterministicProductLinks(refs []models.CommercialReference, entityID 
 					r.PriceUPC = normalizePriceString(fmt.Sprintf("%.2f", id.OfferPrice))
 					r.PriceUPCSrc = "MARKET:" + sanitizeMerchantTag(nonEmpty(id.OfferMerchant, "CATALOG"))
 				}
-			}
-			// Prefer shop link from non-Amazon offer when we have one.
-			if r.LinkShop == "" && id.ShopLink != "" {
-				r.LinkShop = id.ShopLink
 			}
 		}
 		// AbilityOne.com NSN channel price on the federal link (same NSN for every commercial row).
@@ -1274,6 +1302,39 @@ func formatPriceRange(min, max float64, n int) string {
 		return fmt.Sprintf("%s – %s (%d offers)", lo, hi, n)
 	}
 	return fmt.Sprintf("%s – %s", lo, hi)
+}
+
+// pickSearchPriceRange chooses the best multi-offer band for a search-only link.
+// Prefers the primary channel's range; falls back to catalog / alternate channel
+// so Amazon search and shop search still show a useful top-results spread.
+func pickSearchPriceRange(aMin, aMax float64, aN int, bMin, bMax float64, bN int, cMin, cMax float64, cN int) (min, max float64, n int, ok bool) {
+	type band struct {
+		min, max float64
+		n        int
+	}
+	// Prefer widest useful multi-offer band among candidates (catalog often has most offers).
+	cands := []band{
+		{aMin, aMax, aN},
+		{bMin, bMax, bN},
+		{cMin, cMax, cN},
+	}
+	best := band{}
+	for _, b := range cands {
+		if b.min <= 0 || b.n < 1 {
+			continue
+		}
+		// Prefer multi-offer ranges with more samples; then wider span.
+		if best.n == 0 || b.n > best.n || (b.n == best.n && (b.max-b.min) > (best.max-best.min)) {
+			best = b
+		}
+	}
+	if best.n == 0 || best.min <= 0 {
+		return 0, 0, 0, false
+	}
+	if best.max < best.min {
+		best.max = best.min
+	}
+	return best.min, best.max, best.n, true
 }
 
 // isDirectProductURL is true for product detail pages (not search result pages).
