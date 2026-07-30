@@ -196,7 +196,8 @@ type CommercialReference struct {
 	LinkGSA      string `json:"link_gsa,omitempty"`      // Federal catalog (AbilityOne.com) prefilled with NSN/SKU
 	LinkWebsite  string `json:"link_website,omitempty"`  // Manufacturer homepage when known
 	// Per-destination prices shown next to each commercial tile link.
-	// These may differ (Amazon vs Home Depot vs AbilityOne channel).
+	// Single price when a direct product link is known; otherwise a range from top results
+	// e.g. "$12.99 – $24.50 (5 offers)" when only search pages are available.
 	PriceAmazon   string `json:"price_amazon,omitempty"`
 	PriceAmazonSrc string `json:"price_amazon_source,omitempty"`
 	PriceShop     string `json:"price_shop,omitempty"`
@@ -205,6 +206,10 @@ type CommercialReference struct {
 	PriceUPCSrc   string `json:"price_upc_source,omitempty"`
 	PriceFederal  string `json:"price_federal,omitempty"`
 	PriceFederalSrc string `json:"price_federal_source,omitempty"`
+	// True when the corresponding price_* field is a multi-result range (not a single listing).
+	PriceAmazonIsRange bool `json:"price_amazon_is_range,omitempty"`
+	PriceShopIsRange   bool `json:"price_shop_is_range,omitempty"`
+	PriceUPCIsRange    bool `json:"price_upc_is_range,omitempty"`
 	Context      string `json:"context,omitempty"`       // Short note from source (e.g. "JWOD listing", "substitute")
 	DateAdded    string `json:"date_added,omitempty"`    // ETS mapping date when available
 }

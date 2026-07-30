@@ -213,6 +213,75 @@ func TestCollectChannelOffersSplitsAmazonAndRetail(t *testing.T) {
 	if ch.BestPrice <= 0 {
 		t.Fatal("expected best overall")
 	}
+	if ch.AmazonCount < 2 || ch.AmazonMin != 11.50 || ch.AmazonMax != 12.99 {
+		t.Fatalf("amazon range min=%v max=%v n=%d", ch.AmazonMin, ch.AmazonMax, ch.AmazonCount)
+	}
+}
+
+func TestFormatPriceRange(t *testing.T) {
+	s := formatPriceRange(11.5, 40.35, 5)
+	if !strings.Contains(s, "11.50") || !strings.Contains(s, "40.35") || !strings.Contains(s, "5 offers") {
+		t.Fatalf("range %q", s)
+	}
+	if single := formatPriceRange(11.5, 11.5, 1); !strings.Contains(single, "11.50") || strings.Contains(single, "–") {
+		t.Fatalf("single %q", single)
+	}
+}
+
+func TestApplyDeterministicUsesRangeWhenNoDirectLink(t *testing.T) {
+	refs := []models.CommercialReference{
+		{SKU: "R091", UPC: "071497149299", Manufacturer: "WOOSTER", Description: "Sherlock extension pole"},
+	}
+	resolved := map[int]*productIdentity{
+		0: {
+			Title:        "Wooster Sherlock Extension Pole",
+			UPC:          "071497149299",
+			OfferPrice:   40.35,
+			ShopPrice:    40.35,
+			ShopMerchant: "Home Depot",
+			ShopMin:      38.00,
+			ShopMax:      52.00,
+			ShopCount:    4,
+			AmazonMin:    35.99,
+			AmazonMax:    49.99,
+			AmazonCount:  3,
+			AmazonPrice:  35.99,
+			UPCMin:       35.99,
+			UPCMax:       52.00,
+			UPCCount:     5,
+			UPCPrice:     35.99,
+			DeepLinkOK:   true,
+		},
+	}
+	// No ASIN → Amazon is search; shop is HD search (not a product deep-link) → ranges.
+	out := applyDeterministicProductLinks(refs, "8020015964253", resolved, "$42.62", "ABILITYONE_COM")
+	if !out[0].PriceAmazonIsRange || !strings.Contains(out[0].PriceAmazon, "offers") {
+		t.Fatalf("amazon range expected, got %q isRange=%v", out[0].PriceAmazon, out[0].PriceAmazonIsRange)
+	}
+	if !out[0].PriceShopIsRange || !strings.Contains(out[0].PriceShop, "offers") {
+		t.Fatalf("shop range expected, got %q isRange=%v", out[0].PriceShop, out[0].PriceShopIsRange)
+	}
+	if !out[0].PriceUPCIsRange {
+		t.Fatalf("upc should be range for multi-offer catalog, got %q range=%v", out[0].PriceUPC, out[0].PriceUPCIsRange)
+	}
+	if out[0].PriceFederal == "" {
+		t.Fatal("expected federal price")
+	}
+}
+
+func TestIsDirectProductURL(t *testing.T) {
+	if !isDirectProductURL("https://www.amazon.com/dp/B000DZGQIM") {
+		t.Fatal("amazon dp")
+	}
+	if isDirectProductURL("https://www.amazon.com/s?k=wooster") {
+		t.Fatal("amazon search is not direct")
+	}
+	if isDirectProductURL("https://www.homedepot.com/s/WOOSTER%20pole") {
+		t.Fatal("HD search is not direct")
+	}
+	if !isDirectProductURL("https://www.officedepot.com/a/products/811950/") {
+		t.Fatal("OD product")
+	}
 }
 
 func TestBuildAmazonProductSearchURLUsesTitle(t *testing.T) {

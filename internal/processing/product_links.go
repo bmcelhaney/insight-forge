@@ -35,11 +35,20 @@ type productIdentity struct {
 	// Channel-specific prices from offer rows (shown next to each tile link).
 	AmazonPrice    float64
 	AmazonMerchant string
+	AmazonMin      float64 // top-result range when no single Amazon product page
+	AmazonMax      float64
+	AmazonCount    int
 	ShopPrice      float64
 	ShopMerchant   string
 	ShopLink       string // preferred non-Amazon offer link
+	ShopMin        float64
+	ShopMax        float64
+	ShopCount      int
 	UPCPrice       float64 // best catalog price suitable for UPC identity page
 	UPCMerchant    string
+	UPCMin         float64
+	UPCMax         float64
+	UPCCount       int
 	DeepLinkOK     bool // true when we have a direct product URL (Amazon /dp, retail, offer, or UPC dossier)
 }
 
@@ -360,26 +369,56 @@ func applyDeterministicProductLinks(refs []models.CommercialReference, entityID 
 			strongSearch
 
 		// --- Per-link channel prices (shown next to Amazon / Shop / UPC / AbilityOne) ---
+		// Direct product URL → single price; search-only / multi-merchant → range of top results.
+		shopIsDirect := isDirectProductURL(r.LinkShop)
 		if id != nil {
-			if id.AmazonPrice > 0 {
+			if amazonProduct && id.AmazonPrice > 0 {
+				r.PriceAmazon = normalizePriceString(fmt.Sprintf("%.2f", id.AmazonPrice))
+				r.PriceAmazonSrc = "MARKET:" + sanitizeMerchantTag(nonEmpty(id.AmazonMerchant, "AMAZON"))
+				r.PriceAmazonIsRange = false
+			} else if !amazonProduct && id.AmazonCount >= 2 && id.AmazonMin > 0 {
+				r.PriceAmazon = formatPriceRange(id.AmazonMin, id.AmazonMax, id.AmazonCount)
+				r.PriceAmazonSrc = "MARKET_RANGE:AMAZON"
+				r.PriceAmazonIsRange = true
+			} else if id.AmazonPrice > 0 {
 				r.PriceAmazon = normalizePriceString(fmt.Sprintf("%.2f", id.AmazonPrice))
 				r.PriceAmazonSrc = "MARKET:" + sanitizeMerchantTag(nonEmpty(id.AmazonMerchant, "AMAZON"))
 			}
-			if id.ShopPrice > 0 {
+
+			if shopIsDirect && id.ShopPrice > 0 {
+				r.PriceShop = normalizePriceString(fmt.Sprintf("%.2f", id.ShopPrice))
+				r.PriceShopSrc = "MARKET:" + sanitizeMerchantTag(nonEmpty(id.ShopMerchant, "RETAIL"))
+				r.PriceShopIsRange = false
+			} else if !shopIsDirect && id.ShopCount >= 2 && id.ShopMin > 0 {
+				r.PriceShop = formatPriceRange(id.ShopMin, id.ShopMax, id.ShopCount)
+				r.PriceShopSrc = "MARKET_RANGE:RETAIL"
+				r.PriceShopIsRange = true
+			} else if !shopIsDirect && id.UPCCount >= 2 && id.UPCMin > 0 && id.ShopPrice <= 0 {
+				// No shop-channel offers; fall back to overall catalog range for search links.
+				r.PriceShop = formatPriceRange(id.UPCMin, id.UPCMax, id.UPCCount)
+				r.PriceShopSrc = "MARKET_RANGE:CATALOG"
+				r.PriceShopIsRange = true
+			} else if id.ShopPrice > 0 {
 				r.PriceShop = normalizePriceString(fmt.Sprintf("%.2f", id.ShopPrice))
 				r.PriceShopSrc = "MARKET:" + sanitizeMerchantTag(nonEmpty(id.ShopMerchant, "RETAIL"))
 			} else if id.OfferPrice > 0 && id.AmazonPrice <= 0 {
-				// Single overall offer that isn't Amazon-tagged → treat as shop/retail.
 				r.PriceShop = normalizePriceString(fmt.Sprintf("%.2f", id.OfferPrice))
 				r.PriceShopSrc = "MARKET:" + sanitizeMerchantTag(nonEmpty(id.OfferMerchant, "OFFER"))
 			}
-			if id.UPCPrice > 0 && r.LinkUPC != "" {
-				r.PriceUPC = normalizePriceString(fmt.Sprintf("%.2f", id.UPCPrice))
-				r.PriceUPCSrc = "MARKET:" + sanitizeMerchantTag(nonEmpty(id.UPCMerchant, "CATALOG"))
-			} else if id.OfferPrice > 0 && r.LinkUPC != "" && r.PriceUPC == "" {
-				// UPC dossier aggregates multi-merchant offers — show best overall.
-				r.PriceUPC = normalizePriceString(fmt.Sprintf("%.2f", id.OfferPrice))
-				r.PriceUPCSrc = "MARKET:" + sanitizeMerchantTag(nonEmpty(id.OfferMerchant, "CATALOG"))
+
+			// UPC identity is always multi-merchant catalog — prefer range when multiple offers.
+			if r.LinkUPC != "" {
+				if id.UPCCount >= 2 && id.UPCMin > 0 {
+					r.PriceUPC = formatPriceRange(id.UPCMin, id.UPCMax, id.UPCCount)
+					r.PriceUPCSrc = "MARKET_RANGE:CATALOG"
+					r.PriceUPCIsRange = true
+				} else if id.UPCPrice > 0 {
+					r.PriceUPC = normalizePriceString(fmt.Sprintf("%.2f", id.UPCPrice))
+					r.PriceUPCSrc = "MARKET:" + sanitizeMerchantTag(nonEmpty(id.UPCMerchant, "CATALOG"))
+				} else if id.OfferPrice > 0 {
+					r.PriceUPC = normalizePriceString(fmt.Sprintf("%.2f", id.OfferPrice))
+					r.PriceUPCSrc = "MARKET:" + sanitizeMerchantTag(nonEmpty(id.OfferMerchant, "CATALOG"))
+				}
 			}
 			// Prefer shop link from non-Amazon offer when we have one.
 			if r.LinkShop == "" && id.ShopLink != "" {
@@ -940,7 +979,7 @@ func upcitemdbFetch(ctx context.Context, endpoint, preferSKU string) (id product
 	// Direct retailer product page from image CDN patterns (Office Depot, etc.).
 	id.RetailURL = extractRetailProductURL(it.Images)
 
-	// Select overall + channel-specific offer prices (Amazon vs retail vs catalog).
+	// Select overall + channel-specific offer prices (Amazon vs retail vs catalog ranges).
 	ch := collectChannelOffers(it.Offers)
 	if ch.BestPrice > 0 {
 		id.OfferPrice = ch.BestPrice
@@ -950,27 +989,45 @@ func upcitemdbFetch(ctx context.Context, endpoint, preferSKU string) (id product
 	}
 	id.AmazonPrice = ch.AmazonPrice
 	id.AmazonMerchant = ch.AmazonMerchant
+	id.AmazonMin, id.AmazonMax, id.AmazonCount = ch.AmazonMin, ch.AmazonMax, ch.AmazonCount
 	id.ShopPrice = ch.ShopPrice
 	id.ShopMerchant = ch.ShopMerchant
 	id.ShopLink = ch.ShopLink
+	id.ShopMin, id.ShopMax, id.ShopCount = ch.ShopMin, ch.ShopMax, ch.ShopCount
 	id.UPCPrice = ch.BestPrice
 	id.UPCMerchant = ch.BestMerchant
+	id.UPCMin, id.UPCMax, id.UPCCount = ch.AllMin, ch.AllMax, ch.AllCount
 	if id.OfferLink == "" && ch.ShopLink != "" {
 		id.OfferLink = ch.ShopLink
 	}
-	// Fallback: sane lowest_recorded_price when offer rows are empty/noisy.
-	if id.OfferPrice <= 0 {
+	// Fallback: recorded low/high as a catalog range when offer rows are empty/noisy.
+	if id.OfferPrice <= 0 || id.UPCCount < 2 {
 		low := it.LowestRecordedPrice
 		high := it.HighestRecordedPrice
 		if low >= 1.0 && low <= 2500 {
-			// Reject absurd spans (often bad historical min pennies vs bulk max).
 			if high <= 0 || high/low <= 40 {
-				id.OfferPrice = low
-				id.OfferMerchant = "catalog low"
-				id.OfferCurrency = "USD"
+				if id.OfferPrice <= 0 {
+					id.OfferPrice = low
+					id.OfferMerchant = "catalog low"
+					id.OfferCurrency = "USD"
+				}
 				if id.UPCPrice <= 0 {
 					id.UPCPrice = low
 					id.UPCMerchant = "catalog low"
+				}
+				if high >= low && high <= 2500 && high/low <= 40 {
+					if id.UPCCount < 2 {
+						id.UPCMin, id.UPCMax = low, high
+						if high > low {
+							id.UPCCount = 2 // treat as range of recorded extremes
+						} else {
+							id.UPCCount = 1
+						}
+					}
+					// Search-only shop channel can use the same recorded band.
+					if id.ShopCount < 2 && id.ShopPrice <= 0 {
+						id.ShopMin, id.ShopMax, id.ShopCount = id.UPCMin, id.UPCMax, id.UPCCount
+					}
 				}
 			}
 		}
@@ -984,20 +1041,32 @@ func upcitemdbFetch(ctx context.Context, endpoint, preferSKU string) (id product
 	return id, true, false
 }
 
-// channelOfferSet holds the best price per commercial destination.
+// channelOfferSet holds the best price per commercial destination plus top-result ranges.
 type channelOfferSet struct {
-	BestPrice    float64
-	BestMerchant string
-	BestCurrency string
-	BestLink     string
-	AmazonPrice  float64
+	BestPrice      float64
+	BestMerchant   string
+	BestCurrency   string
+	BestLink       string
+	AmazonPrice    float64
 	AmazonMerchant string
-	ShopPrice    float64
-	ShopMerchant string
-	ShopLink     string
+	AmazonMin      float64
+	AmazonMax      float64
+	AmazonCount    int
+	ShopPrice      float64
+	ShopMerchant   string
+	ShopLink       string
+	ShopMin        float64
+	ShopMax        float64
+	ShopCount      int
+	AllMin         float64
+	AllMax         float64
+	AllCount       int
 }
 
-// collectChannelOffers splits offers into Amazon vs other retail channels.
+const maxTopOfferResults = 5
+
+// collectChannelOffers splits offers into Amazon vs other retail channels and
+// computes min/max across the top (lowest) results in each channel.
 func collectChannelOffers(offers []upcOffer) channelOfferSet {
 	var out channelOfferSet
 	type scored struct {
@@ -1070,46 +1139,127 @@ func collectChannelOffers(offers []upcOffer) channelOfferSet {
 		}
 		all = append(all, scored{price: price, merchant: merch, currency: cur, link: link, score: score, channel: channel})
 	}
-	// Best overall among USD-ish top band.
-	pickBest := func(filter func(scored) bool) (scored, bool) {
-		var cands []scored
-		for _, c := range all {
-			if filter != nil && !filter(c) {
-				continue
+
+	// Prefer USD-ish offers for ranking; keep CAD only if nothing else.
+	filterUSD := func(list []scored) []scored {
+		var usd []scored
+		for _, c := range list {
+			if c.currency == "USD" || c.currency == "" {
+				usd = append(usd, c)
 			}
-			cands = append(cands, c)
 		}
-		if len(cands) == 0 {
-			return scored{}, false
+		if len(usd) > 0 {
+			return usd
 		}
-		bestScore := cands[0].score
-		for _, c := range cands {
+		return list
+	}
+
+	// Top band by score, then take up to N lowest prices.
+	topRange := func(list []scored) (best scored, min, max float64, n int, ok bool) {
+		list = filterUSD(list)
+		if len(list) == 0 {
+			return scored{}, 0, 0, 0, false
+		}
+		bestScore := list[0].score
+		for _, c := range list {
 			if c.score > bestScore {
 				bestScore = c.score
 			}
 		}
-		best := cands[0]
-		best.price = 0
-		for _, c := range cands {
-			if c.score < bestScore-15 {
-				continue
-			}
-			if best.price == 0 || c.price < best.price {
-				best = c
+		var band []scored
+		for _, c := range list {
+			if c.score >= bestScore-15 {
+				band = append(band, c)
 			}
 		}
-		return best, best.price > 0
+		// Sort by price ascending
+		for i := 0; i < len(band); i++ {
+			for j := i + 1; j < len(band); j++ {
+				if band[j].price < band[i].price {
+					band[i], band[j] = band[j], band[i]
+				}
+			}
+		}
+		if len(band) > maxTopOfferResults {
+			band = band[:maxTopOfferResults]
+		}
+		min, max = band[0].price, band[0].price
+		for _, c := range band {
+			if c.price < min {
+				min = c.price
+			}
+			if c.price > max {
+				max = c.price
+			}
+		}
+		return band[0], min, max, len(band), true
 	}
-	if b, ok := pickBest(nil); ok {
+
+	var amazonList, shopList []scored
+	for _, c := range all {
+		switch c.channel {
+		case "amazon":
+			amazonList = append(amazonList, c)
+		default:
+			shopList = append(shopList, c)
+		}
+	}
+
+	if b, min, max, n, ok := topRange(all); ok {
 		out.BestPrice, out.BestMerchant, out.BestCurrency, out.BestLink = b.price, b.merchant, b.currency, b.link
+		out.AllMin, out.AllMax, out.AllCount = min, max, n
 	}
-	if b, ok := pickBest(func(c scored) bool { return c.channel == "amazon" }); ok {
+	if b, min, max, n, ok := topRange(amazonList); ok {
 		out.AmazonPrice, out.AmazonMerchant = b.price, b.merchant
+		out.AmazonMin, out.AmazonMax, out.AmazonCount = min, max, n
 	}
-	if b, ok := pickBest(func(c scored) bool { return c.channel == "shop" }); ok {
+	if b, min, max, n, ok := topRange(shopList); ok {
 		out.ShopPrice, out.ShopMerchant, out.ShopLink = b.price, b.merchant, b.link
+		out.ShopMin, out.ShopMax, out.ShopCount = min, max, n
 	}
 	return out
+}
+
+// formatPriceRange renders "$12.99 – $24.50 (5 offers)" for multi-result search pricing.
+func formatPriceRange(min, max float64, n int) string {
+	if min <= 0 {
+		return ""
+	}
+	lo := normalizePriceString(fmt.Sprintf("%.2f", min))
+	if max <= min || n < 2 {
+		return lo
+	}
+	hi := normalizePriceString(fmt.Sprintf("%.2f", max))
+	if n > 0 {
+		return fmt.Sprintf("%s – %s (%d offers)", lo, hi, n)
+	}
+	return fmt.Sprintf("%s – %s", lo, hi)
+}
+
+// isDirectProductURL is true for product detail pages (not search result pages).
+func isDirectProductURL(u string) bool {
+	u = strings.ToLower(strings.TrimSpace(u))
+	if u == "" {
+		return false
+	}
+	switch {
+	case strings.Contains(u, "amazon.com/dp/"), strings.Contains(u, "amazon.com/gp/product/"):
+		return true
+	case strings.Contains(u, "officedepot.com/a/products/"):
+		return true
+	case strings.Contains(u, "walmart.com/ip/"):
+		return true
+	case strings.Contains(u, "upcitemdb.com/norob/"):
+		return true // affiliate deep-link to a specific merchant listing
+	case strings.Contains(u, "/product/"), strings.Contains(u, "/p/"):
+		// generic retailer product paths (Home Depot /p/, etc.)
+		if strings.Contains(u, "/search") || strings.Contains(u, "tbm=shop") || strings.Contains(u, "/s?") || strings.Contains(u, "/s/") {
+			return false
+		}
+		return true
+	default:
+		return false
+	}
 }
 
 // pickBestMarketOffer chooses a displayable commercial offer price and optional product link.
