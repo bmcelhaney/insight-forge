@@ -173,6 +173,18 @@ func enrichProductLinksWithFederal(ctx context.Context, refs []models.Commercial
 			defer func() { <-sem }()
 
 			id, ok := resolveProductIdentity(probeCtx, c.sku, c.upc, c.mfr, c.title)
+			// SerpAPI Google Shopping: fill prices/ranges/links for search tiles and
+			// enrich weak UPCItemDB hits (paid; key via ConfigureSerpAPI).
+			if SerpAPIEnabled() && ( !ok || needsSerpEnrich(id) ) {
+				if sid, sok := resolveViaSerpShopping(probeCtx, c.sku, c.upc, c.mfr, c.title); sok {
+					if ok {
+						id = mergeProductIdentity(id, sid)
+					} else {
+						id = sid
+					}
+					ok = true
+				}
+			}
 			if !ok {
 				return
 			}
@@ -818,6 +830,21 @@ func productCacheKey(sku, upc string) string {
 		return "upc:" + u
 	}
 	return "sku:" + strings.ToUpper(strings.TrimSpace(sku))
+}
+
+// needsSerpEnrich is true when UPCItemDB identity is missing deep links or multi-offer ranges.
+func needsSerpEnrich(id productIdentity) bool {
+	if id.ASIN == "" && id.RetailURL == "" && id.OfferLink == "" {
+		return true
+	}
+	if id.OfferPrice <= 0 && id.UPCCount < 2 && id.ShopCount < 2 && id.AmazonCount < 2 {
+		return true
+	}
+	// Have a product page but no usable prices yet.
+	if id.AmazonPrice <= 0 && id.ShopPrice <= 0 && id.OfferPrice <= 0 {
+		return true
+	}
+	return false
 }
 
 func resolveProductIdentity(ctx context.Context, sku, upc, mfr, title string) (productIdentity, bool) {

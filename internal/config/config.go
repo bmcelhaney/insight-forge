@@ -33,6 +33,11 @@ type Config struct {
 	PartsBaseOAuthGrantType  string
 	PartsBaseOAuthScope      string
 	PartsBaseTimeoutSeconds  int
+	// SerpAPI (Google Shopping) for commercial product prices/links
+	SerpAPIEnabled    bool
+	SerpAPIConfigured bool
+	SerpAPIKey        string
+	SerpAPINum        int // shopping results to request (top N)
 }
 
 func Load() (*Config, error) {
@@ -41,6 +46,7 @@ func Load() (*Config, error) {
 	loadedFiles := loadOptionalEnvFiles(
 		".env",
 		".env.partsbase",
+		".env.serpapi",
 		".env.local",
 	)
 
@@ -62,6 +68,8 @@ func Load() (*Config, error) {
 	viper.SetDefault("PARTSBASE_OAUTH_GRANT_TYPE", "password")
 	viper.SetDefault("PARTSBASE_OAUTH_SCOPE", "api")
 	viper.SetDefault("PARTSBASE_TIMEOUT_SECONDS", 30)
+	viper.SetDefault("SERPAPI_ENABLED", true)
+	viper.SetDefault("SERPAPI_NUM", 8)
 
 	partsBaseClientID := getConfiguredValue("PARTSBASE_CLIENT_ID")
 	partsBaseClientSecret := getConfiguredValue("PARTSBASE_CLIENT_SECRET")
@@ -71,6 +79,19 @@ func Load() (*Config, error) {
 		partsBaseClientSecret != "" &&
 		partsBaseUsername != "" &&
 		partsBasePassword != ""
+
+	serpKey := getConfiguredValue("SERPAPI_KEY")
+	if serpKey == "" {
+		// Also accept unprefixed SERPAPI_KEY from dotenv files.
+		serpKey = strings.TrimSpace(os.Getenv("SERPAPI_KEY"))
+	}
+	serpNum := viper.GetInt("SERPAPI_NUM")
+	if serpNum <= 0 {
+		serpNum = 8
+	}
+	if serpNum > 20 {
+		serpNum = 20
+	}
 
 	cfg := &Config{
 		Env:                      viper.GetString("ENV"),
@@ -93,6 +114,10 @@ func Load() (*Config, error) {
 		PartsBaseOAuthGrantType:  strings.TrimSpace(viper.GetString("PARTSBASE_OAUTH_GRANT_TYPE")),
 		PartsBaseOAuthScope:      strings.TrimSpace(viper.GetString("PARTSBASE_OAUTH_SCOPE")),
 		PartsBaseTimeoutSeconds:  viper.GetInt("PARTSBASE_TIMEOUT_SECONDS"),
+		SerpAPIEnabled:           viper.GetBool("SERPAPI_ENABLED"),
+		SerpAPIConfigured:        serpKey != "",
+		SerpAPIKey:               serpKey,
+		SerpAPINum:               serpNum,
 	}
 
 	levelStr := viper.GetString("LOG_LEVEL")

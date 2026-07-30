@@ -53,6 +53,16 @@ func main() {
 	}
 	extractorReg := extraction.NewDefaultRegistry(samAPIKey, partsBaseCfg)
 
+	// SerpAPI Google Shopping for commercial market prices / better product links.
+	if cfg.SerpAPIEnabled && cfg.SerpAPIConfigured {
+		processing.ConfigureSerpAPI(cfg.SerpAPIKey, cfg.SerpAPINum)
+		fmt.Printf("SerpAPI: enabled (Google Shopping, num=%d)\n", cfg.SerpAPINum)
+	} else if cfg.SerpAPIEnabled {
+		fmt.Printf("SerpAPI: enabled but IF_SERPAPI_KEY missing — place key in .env.serpapi (gitignored)\n")
+	} else {
+		fmt.Printf("SerpAPI: disabled\n")
+	}
+
 	// Surface PartsBase credential status without leaking secrets.
 	if cfg.PartsBaseEnabled && cfg.PartsBaseConfigured {
 		fmt.Printf("PartsBase: enabled (credentials loaded")
@@ -100,6 +110,9 @@ func main() {
 			"partsbase_configured": cfg.PartsBaseConfigured,
 			"partsbase_registered": extractorReg.PartsBaseRegistered(),
 			"partsbase_env_files":  cfg.PartsBaseEnvFilesLoaded,
+			"serpapi_enabled":      cfg.SerpAPIEnabled,
+			"serpapi_configured":   cfg.SerpAPIConfigured && processing.SerpAPIEnabled(),
+			"serpapi_num":          cfg.SerpAPINum,
 		}
 		// Last observed PartsBase fetch outcome (for UI source-status banner).
 		if st, ok := extractorReg.PartsBaseLastStatus(); ok {
