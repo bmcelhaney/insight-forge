@@ -17,6 +17,8 @@
     .insight-text { line-height: 1.6; }
     .score-bar { height: 10px; background-color: #18181b; border-radius: 9999px; overflow: hidden; }
     .score-fill { height: 100%; transition: width 0.4s cubic-bezier(0.2, 0, 0, 1); }
+    .price-spread-bar { transition: width 0.35s ease; }
+    .price-spread-row:hover { background: rgba(245, 158, 11, 0.08); }
   </style>
   <script>
     function initTailwind() {
@@ -1353,6 +1355,16 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
             });
             moreBtnHost.appendChild(moreBtn);
           }
+          // Keep price-spread chart in sync with filters / expand
+          if (typeof paintPriceSpread === 'function') paintPriceSpread();
+        }
+
+        // Pricing spread graphic across ETS / commercial candidates (after tiles)
+        const spreadHost = document.createElement('div');
+        spreadHost.id = 'ets-price-spread-host';
+        spreadHost.className = 'mt-4';
+        function paintPriceSpread() {
+          renderEtsPricingSpread(spreadHost, filteredComms(), result);
         }
 
         filterDefs.forEach(f => {
@@ -1365,7 +1377,9 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
 
         commWrapper.appendChild(innerGrid);
         commWrapper.appendChild(moreBtnHost);
+        commWrapper.appendChild(spreadHost);
         paintCommercialGrid();
+
         relEl.appendChild(commWrapper);
       }
 
@@ -1472,6 +1486,241 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
 
       const genAt = document.getElementById('generated-at');
       if (genAt) genAt.textContent = new Date().toLocaleString();
+    }
+
+    // --- ETS / commercial price-spread graphic ---
+    // Parses single prices and ranges from commercial tile fields into plot points.
+    function parsePriceNumber(raw) {
+      if (raw == null || raw === '') return null;
+      const s = String(raw).trim();
+      // Range: "$20.39 – $47.77 (12 offers)" or "from $69.59 (search results)"
+      const rangeMatch = s.match(/\$?\s*([\d,]+(?:\.\d+)?)\s*[–—-]\s*\$?\s*([\d,]+(?:\.\d+)?)/);
+      if (rangeMatch) {
+        const lo = parseFloat(rangeMatch[1].replace(/,/g, ''));
+        const hi = parseFloat(rangeMatch[2].replace(/,/g, ''));
+        if (!isNaN(lo) && !isNaN(hi) && lo > 0 && hi > 0) {
+          return { min: Math.min(lo, hi), max: Math.max(lo, hi), mid: (lo + hi) / 2, isRange: true };
+        }
+      }
+      const fromMatch = s.match(/from\s*\$?\s*([\d,]+(?:\.\d+)?)/i);
+      if (fromMatch) {
+        const v = parseFloat(fromMatch[1].replace(/,/g, ''));
+        if (!isNaN(v) && v > 0) return { min: v, max: v, mid: v, isRange: false, isEstimate: true };
+      }
+      const single = s.match(/\$?\s*([\d,]+(?:\.\d+)?)/);
+      if (single) {
+        const v = parseFloat(single[1].replace(/,/g, ''));
+        if (!isNaN(v) && v > 0) return { min: v, max: v, mid: v, isRange: false };
+      }
+      return null;
+    }
+
+    function commercialCandidatePricePoint(c) {
+      // Prefer channel-specific market signals, then primary tile price.
+      const candidates = [
+        c.price_shop || c.priceShop,
+        c.price_amazon || c.priceAmazon,
+        c.price_upc || c.priceUpc,
+        c.price,
+      ];
+      let best = null;
+      for (const raw of candidates) {
+        const p = parsePriceNumber(raw);
+        if (!p) continue;
+        // Prefer points with a real span when available, else first usable.
+        if (!best) best = p;
+        else if (p.isRange && !best.isRange) best = p;
+        else if (p.isRange && best.isRange && (p.max - p.min) > (best.max - best.min)) best = p;
+      }
+      if (!best) return null;
+      const mfr = (c.manufacturer || '').trim();
+      const sku = (c.sku || '').trim();
+      const label = [mfr, sku].filter(Boolean).join(' · ') || 'Commercial ref';
+      return {
+        label,
+        sku,
+        mfr,
+        source: (c.source || '').toUpperCase(),
+        mid: best.mid,
+        min: best.min,
+        max: best.max,
+        isRange: !!best.isRange,
+        isEstimate: !!best.isEstimate,
+        display: c.price || c.price_shop || c.price_amazon || c.price_upc || '',
+      };
+    }
+
+    function renderEtsPricingSpread(host, comms, result) {
+      if (!host) return;
+      host.innerHTML = '';
+      const points = (comms || [])
+        .map(commercialCandidatePricePoint)
+        .filter(Boolean)
+        .sort((a, b) => a.mid - b.mid);
+      if (points.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'text-[11px] text-zinc-500 border border-zinc-800 rounded-2xl px-3 py-2';
+        empty.textContent = 'No priced ETS/commercial candidates yet — price spread chart will appear when market or channel prices are available.';
+        host.appendChild(empty);
+        return;
+      }
+
+      const mids = points.map(p => p.mid);
+      const mins = points.map(p => p.min);
+      const maxs = points.map(p => p.max);
+      const globalMin = Math.min(...mins);
+      const globalMax = Math.max(...maxs);
+      const span = Math.max(globalMax - globalMin, globalMin * 0.05, 1);
+      // Pad axis slightly
+      const axisMin = Math.max(0, globalMin - span * 0.05);
+      const axisMax = globalMax + span * 0.08;
+      const axisSpan = axisMax - axisMin || 1;
+      const sortedMids = mids.slice().sort((a, b) => a - b);
+      const median = sortedMids.length % 2
+        ? sortedMids[(sortedMids.length - 1) / 2]
+        : (sortedMids[sortedMids.length / 2 - 1] + sortedMids[sortedMids.length / 2]) / 2;
+
+      let aoPrice = null;
+      const ao = result && (result.abilityone_channel_price || result.AbilityOneChannelPrice);
+      if (ao) {
+        const ap = parsePriceNumber(ao.price || ao.Price);
+        if (ap) aoPrice = ap.mid;
+      }
+
+      const card = document.createElement('div');
+      card.className = 'bg-zinc-950 border border-amber-900/50 rounded-2xl p-4';
+
+      const header = document.createElement('div');
+      header.className = 'flex flex-wrap items-center justify-between gap-2 mb-3';
+      header.innerHTML = `
+        <div>
+          <div class="text-[10px] text-amber-300/90 uppercase tracking-wide">ETS / commercial price spread</div>
+          <div class="text-xs text-zinc-400 mt-0.5">Market price points across ${points.length} priced candidate${points.length === 1 ? '' : 's'} (midpoint used for ranges)</div>
+        </div>`;
+      card.appendChild(header);
+
+      // Summary metrics
+      const metrics = document.createElement('div');
+      metrics.className = 'flex flex-wrap gap-2 mb-4';
+      const fmt = (v) => '$' + Number(v).toFixed(2);
+      [
+        { label: 'Low', value: fmt(globalMin), cls: 'text-emerald-300' },
+        { label: 'Median', value: fmt(median), cls: 'text-amber-200' },
+        { label: 'High', value: fmt(globalMax), cls: 'text-orange-300' },
+        { label: 'Spread', value: fmt(globalMax - globalMin), cls: 'text-zinc-300' },
+        { label: 'Priced', value: String(points.length), cls: 'text-zinc-300' },
+      ].forEach(m => {
+        if (aoPrice != null && m.label === 'Priced') {
+          // add AO after loop
+        }
+        const pill = document.createElement('div');
+        pill.className = 'text-[11px] bg-zinc-900 border border-zinc-700 rounded-full px-2.5 py-1';
+        pill.innerHTML = `<span class="text-zinc-500">${m.label}:</span> <span class="${m.cls} font-semibold metric">${m.value}</span>`;
+        metrics.appendChild(pill);
+      });
+      if (aoPrice != null) {
+        const pill = document.createElement('div');
+        pill.className = 'text-[11px] bg-amber-950/40 border border-amber-800 rounded-full px-2.5 py-1';
+        pill.innerHTML = `<span class="text-amber-400/90">AbilityOne list:</span> <span class="text-amber-200 font-semibold metric">${fmt(aoPrice)}</span>`;
+        metrics.appendChild(pill);
+      }
+      card.appendChild(metrics);
+
+      // Legend
+      const legend = document.createElement('div');
+      legend.className = 'flex flex-wrap gap-3 text-[10px] text-zinc-500 mb-3';
+      legend.innerHTML = `
+        <span class="inline-flex items-center gap-1.5"><span class="inline-block w-3 h-2 rounded-sm bg-emerald-500/80"></span> Mid / listing</span>
+        <span class="inline-flex items-center gap-1.5"><span class="inline-block w-3 h-1 rounded-sm bg-teal-400/70"></span> Offer range</span>
+        ${aoPrice != null ? '<span class="inline-flex items-center gap-1.5"><span class="inline-block w-3 h-0.5 bg-amber-400"></span> AbilityOne.com list</span>' : ''}
+      `;
+      card.appendChild(legend);
+
+      // Chart rows
+      const chart = document.createElement('div');
+      chart.className = 'space-y-1.5';
+
+      // Axis scale header
+      const axis = document.createElement('div');
+      axis.className = 'flex justify-between text-[10px] text-zinc-600 mb-1 px-1 font-mono';
+      axis.innerHTML = `<span>${fmt(axisMin)}</span><span>${fmt(axisMax)}</span>`;
+      chart.appendChild(axis);
+
+      const trackHeight = 22;
+      points.forEach((p, idx) => {
+        const row = document.createElement('div');
+        row.className = 'price-spread-row grid gap-2 items-center rounded-lg px-1 py-0.5';
+        row.style.gridTemplateColumns = 'minmax(100px, 28%) 1fr minmax(72px, auto)';
+
+        const name = document.createElement('div');
+        name.className = 'text-[11px] text-zinc-300 truncate';
+        name.title = p.label + (p.display ? (' · ' + p.display) : '');
+        name.textContent = p.label;
+        row.appendChild(name);
+
+        const trackWrap = document.createElement('div');
+        trackWrap.className = 'relative h-5 bg-zinc-900/80 border border-zinc-800 rounded-md overflow-hidden';
+        // AbilityOne reference line
+        if (aoPrice != null && aoPrice >= axisMin && aoPrice <= axisMax) {
+          const aoPct = ((aoPrice - axisMin) / axisSpan) * 100;
+          const aoLine = document.createElement('div');
+          aoLine.className = 'absolute top-0 bottom-0 w-0.5 bg-amber-400/90 z-10';
+          aoLine.style.left = aoPct + '%';
+          aoLine.title = 'AbilityOne list ' + fmt(aoPrice);
+          trackWrap.appendChild(aoLine);
+        }
+        // Range whisker
+        if (p.isRange && p.max > p.min) {
+          const left = ((p.min - axisMin) / axisSpan) * 100;
+          const width = ((p.max - p.min) / axisSpan) * 100;
+          const rangeEl = document.createElement('div');
+          rangeEl.className = 'absolute top-1/2 -translate-y-1/2 h-1.5 rounded-full bg-teal-500/50 border border-teal-400/40';
+          rangeEl.style.left = left + '%';
+          rangeEl.style.width = Math.max(width, 0.8) + '%';
+          rangeEl.title = `Range ${fmt(p.min)} – ${fmt(p.max)}`;
+          trackWrap.appendChild(rangeEl);
+        }
+        // Midpoint marker / bar from axis min
+        const midPct = ((p.mid - axisMin) / axisSpan) * 100;
+        const bar = document.createElement('div');
+        bar.className = 'price-spread-bar absolute left-0 top-1 bottom-1 rounded-r-md bg-gradient-to-r from-emerald-800/50 to-emerald-500/70';
+        bar.style.width = Math.max(midPct, 1.5) + '%';
+        bar.title = p.isRange
+          ? `Mid ${fmt(p.mid)} (range ${fmt(p.min)} – ${fmt(p.max)})`
+          : (p.isEstimate ? `From ${fmt(p.mid)} (search estimate)` : fmt(p.mid));
+        trackWrap.appendChild(bar);
+        // Dot at mid
+        const dot = document.createElement('div');
+        dot.className = 'absolute top-1/2 -translate-y-1/2 w-2 h-2 rounded-full bg-emerald-300 border border-emerald-100 shadow z-20';
+        dot.style.left = `calc(${midPct}% - 4px)`;
+        trackWrap.appendChild(dot);
+
+        row.appendChild(trackWrap);
+
+        const val = document.createElement('div');
+        val.className = 'text-[11px] font-semibold text-emerald-300 text-right font-mono whitespace-nowrap';
+        if (p.isRange && p.max > p.min) {
+          val.textContent = `${fmt(p.min)}–${fmt(p.max)}`;
+          val.title = 'Offer range (mid ' + fmt(p.mid) + ')';
+        } else if (p.isEstimate) {
+          val.textContent = 'from ' + fmt(p.mid);
+        } else {
+          val.textContent = fmt(p.mid);
+        }
+        row.appendChild(val);
+
+        chart.appendChild(row);
+      });
+
+      card.appendChild(chart);
+
+      // Footer note
+      const foot = document.createElement('div');
+      foot.className = 'text-[10px] text-zinc-600 mt-3';
+      foot.textContent = 'Bars use listing price or range midpoint. Teal segments show multi-offer ranges. Amber line is AbilityOne.com NSN list price when available. Indicative market data — open tile links to verify live offers.';
+      card.appendChild(foot);
+
+      host.appendChild(card);
     }
 
     function buildCommercialSupplierRollup(comms, commTops) {
