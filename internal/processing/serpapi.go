@@ -158,20 +158,76 @@ func mergeProductIdentity(a, b productIdentity) productIdentity {
 
 func identityFromShoppingHits(hits []shoppingHit, preferSKU, mfr string) productIdentity {
 	prefer := strings.ToUpper(strings.TrimSpace(preferSKU))
-	// Prefer hits whose title mentions the SKU when possible.
-	var ranked []shoppingHit
-	var rest []shoppingHit
-	for _, h := range hits {
-		if prefer != "" && strings.Contains(strings.ToUpper(h.Title), prefer) {
-			ranked = append(ranked, h)
-		} else {
-			rest = append(rest, h)
-		}
+	preferCompact := compactAlnum(prefer)
+	mfrL := strings.ToLower(strings.TrimSpace(mfr))
+
+	// Score hits for relevance; prefer SKU-in-title, then brand, drop loose matches when better ones exist.
+	type scoredHit struct {
+		h     shoppingHit
+		score int
 	}
-	ranked = append(ranked, rest...)
-	if len(ranked) == 0 {
+	var scored []scoredHit
+	for _, h := range hits {
+		if h.Price <= 0 || h.Price > 50000 {
+			continue
+		}
+		titleU := strings.ToUpper(h.Title)
+		titleL := strings.ToLower(h.Title)
+		sc := 0
+		if prefer != "" && strings.Contains(titleU, prefer) {
+			sc += 50
+		}
+		if preferCompact != "" && len(preferCompact) >= 4 && strings.Contains(compactAlnum(titleU), preferCompact) {
+			sc += 40
+		}
+		if mfrL != "" && strings.Contains(titleL, mfrL) {
+			sc += 20
+		}
+		// Soft brand aliases (home depot often drops hyphens)
+		if mfrL != "" {
+			for _, part := range strings.Fields(mfrL) {
+				if len(part) >= 4 && strings.Contains(titleL, part) {
+					sc += 8
+				}
+			}
+		}
+		if isDirectProductURL(h.Link) {
+			sc += 5
+		}
+		scored = append(scored, scoredHit{h: h, score: sc})
+	}
+	if len(scored) == 0 {
 		return productIdentity{}
 	}
+	// Sort by score desc, then price asc
+	for i := 0; i < len(scored); i++ {
+		for j := i + 1; j < len(scored); j++ {
+			if scored[j].score > scored[i].score || (scored[j].score == scored[i].score && scored[j].h.Price < scored[i].h.Price) {
+				scored[i], scored[j] = scored[j], scored[i]
+			}
+		}
+	}
+	// If we have strong SKU matches, use only those; else keep top score band.
+	bestScore := scored[0].score
+	var ranked []shoppingHit
+	if bestScore >= 40 {
+		for _, s := range scored {
+			if s.score >= 40 {
+				ranked = append(ranked, s.h)
+			}
+		}
+	} else {
+		for _, s := range scored {
+			if s.score >= bestScore-15 {
+				ranked = append(ranked, s.h)
+			}
+		}
+	}
+	if len(ranked) == 0 {
+		ranked = []shoppingHit{scored[0].h}
+	}
+	// Drop price outliers so one wrong "related" hit does not blow the range to $6–$600.
+	ranked = filterShoppingPriceOutliers(ranked)
 
 	id := productIdentity{
 		Title: strings.TrimSpace(ranked[0].Title),
@@ -261,6 +317,47 @@ func minMaxFloats(vals []float64) (min, max float64) {
 		}
 	}
 	return min, max
+}
+
+// filterShoppingPriceOutliers removes extreme prices that often come from
+// unrelated Shopping hits (bulk packs, wrong size, accessories).
+func filterShoppingPriceOutliers(hits []shoppingHit) []shoppingHit {
+	if len(hits) < 3 {
+		return hits
+	}
+	prices := make([]float64, 0, len(hits))
+	for _, h := range hits {
+		if h.Price > 0 {
+			prices = append(prices, h.Price)
+		}
+	}
+	if len(prices) < 3 {
+		return hits
+	}
+	// Sort copy for median
+	sorted := append([]float64(nil), prices...)
+	for i := 0; i < len(sorted); i++ {
+		for j := i + 1; j < len(sorted); j++ {
+			if sorted[j] < sorted[i] {
+				sorted[i], sorted[j] = sorted[j], sorted[i]
+			}
+		}
+	}
+	median := sorted[len(sorted)/2]
+	if median <= 0 {
+		return hits
+	}
+	var kept []shoppingHit
+	for _, h := range hits {
+		// Keep prices within ~3x of median (covers normal retail spread).
+		if h.Price >= median/3 && h.Price <= median*3 {
+			kept = append(kept, h)
+		}
+	}
+	if len(kept) >= 2 {
+		return kept
+	}
+	return hits
 }
 
 func serpGoogleShopping(ctx context.Context, query string) ([]shoppingHit, bool) {

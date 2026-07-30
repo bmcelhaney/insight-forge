@@ -7,14 +7,14 @@ import (
 
 func TestIdentityFromShoppingHitsBuildsRangeAndLinks(t *testing.T) {
 	hits := []shoppingHit{
-		{Title: "Wooster Sherlock Extension Pole 4-8", Price: 40.35, Link: "https://www.homedepot.com/p/123", Source: "The Home Depot"},
-		{Title: "Wooster Sherlock Gt Pole", Price: 35.99, Link: "https://www.amazon.com/dp/B000DZGQIM", Source: "Amazon.com"},
-		{Title: "Wooster Extension Pole", Price: 47.77, Link: "https://www.walmart.com/ip/999", Source: "Walmart"},
-		{Title: "Other pole", Price: 22.00, Link: "https://www.acehardware.com/x", Source: "Ace Hardware"},
+		{Title: "Wooster Sherlock Extension Pole 4-8 R091", Price: 40.35, Link: "https://www.homedepot.com/p/123", Source: "The Home Depot"},
+		{Title: "Wooster Sherlock Gt Pole R091", Price: 35.99, Link: "https://www.amazon.com/dp/B000DZGQIM", Source: "Amazon.com"},
+		{Title: "Wooster Extension Pole R091", Price: 47.77, Link: "https://www.walmart.com/ip/999", Source: "Walmart"},
+		{Title: "Unrelated bulk pole kit", Price: 598.00, Link: "https://www.example.com/bulk", Source: "BulkCo"},
 	}
 	id := identityFromShoppingHits(hits, "R091", "WOOSTER")
-	if id.UPCCount < 4 || id.UPCMin != 22.00 || id.UPCMax != 47.77 {
-		t.Fatalf("catalog range min=%v max=%v n=%d", id.UPCMin, id.UPCMax, id.UPCCount)
+	if id.UPCCount < 2 || id.UPCMax > 100 {
+		t.Fatalf("catalog range should drop bulk outlier min=%v max=%v n=%d", id.UPCMin, id.UPCMax, id.UPCCount)
 	}
 	if id.AmazonPrice != 35.99 || id.ASIN != "B000DZGQIM" {
 		t.Fatalf("amazon price=%v asin=%q", id.AmazonPrice, id.ASIN)
