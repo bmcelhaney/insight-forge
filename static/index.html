@@ -1224,6 +1224,11 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
           supplierTitle.textContent = 'Supplier summary';
           supplierBlock.appendChild(supplierTitle);
 
+          const supplierNote = document.createElement('div');
+          supplierNote.className = 'text-[10px] text-zinc-500 mb-2';
+          supplierNote.textContent = 'Per manufacturer: market range from priced mappings; links use the best product identity (desc/SKU/UPC + deep links when known).';
+          supplierBlock.appendChild(supplierNote);
+
           supplierSummary.forEach(s => {
             const row = document.createElement('div');
             row.className = 'text-xs text-zinc-300 border-b border-zinc-800 last:border-b-0 py-1.5';
@@ -1235,10 +1240,43 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
             const skuText = s.skus.length > 0 ? s.skus.slice(0, 8).join(', ') + (s.skus.length > 8 ? '…' : '') : '—';
             const line2 = document.createElement('div');
             line2.className = 'text-[11px] text-zinc-400';
-            line2.textContent = `SKUs: ${skuText}` + (s.examplePrice ? ` | Example: ${s.examplePrice}` : '');
+            line2.textContent = `SKUs: ${skuText}`;
             row.appendChild(line2);
 
-            const links = buildCommercialLinks({ manufacturer: s.name, sku: (s.skus && s.skus[0]) || '' }, currentNSN);
+            // Market range across this manufacturer's priced refs (not a single "example")
+            if (s.priceRange && s.priceRange.display) {
+              const priceLine = document.createElement('div');
+              priceLine.className = 'text-[11px] mt-0.5';
+              const label = document.createElement('span');
+              label.className = 'text-zinc-500';
+              label.textContent = (s.priceRange.label || 'Market') + ': ';
+              priceLine.appendChild(label);
+              const val = document.createElement('span');
+              val.className = s.priceRange.isRange
+                ? 'font-semibold text-teal-300'
+                : 'font-semibold text-emerald-300';
+              val.textContent = s.priceRange.display;
+              const n = s.priceRange.count || 0;
+              if (n > 1) {
+                val.title = `Across ${n} priced commercial/ETS mapping${n === 1 ? '' : 's'} for this manufacturer (min–max of observed market/listing prices)`;
+              } else {
+                val.title = s.priceRange.isEstimate
+                  ? 'Indicative search floor — open links to compare live offers'
+                  : 'Observed listing/market price for this manufacturer';
+              }
+              priceLine.appendChild(val);
+              if (n > 1) {
+                const meta = document.createElement('span');
+                meta.className = 'text-zinc-600 ml-1';
+                meta.textContent = `(${n} priced)`;
+                priceLine.appendChild(meta);
+              }
+              row.appendChild(priceLine);
+            }
+
+            // Prefer richest commercial row for this mfr (server deep links + desc/UPC), not bare name+SKU
+            const ref = buildSupplierLinkRef(s);
+            const links = buildCommercialLinks(ref, currentNSN, result);
             appendCommercialLinkRow(row, links);
 
             supplierBlock.appendChild(row);
@@ -1723,32 +1761,126 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
       host.appendChild(card);
     }
 
-    function buildCommercialSupplierRollup(comms, commTops) {
-      const topSuppliers = Array.isArray(commTops) ? commTops : [];
-      if (topSuppliers.length > 0) {
-        return topSuppliers.map(s => ({
-          name: s.name || s.Name || 'Unknown supplier',
-          count: s.count || s.Count || 0,
-          skus: (s.skus || s.SKUs || []).filter(Boolean),
-          examplePrice: s.example_price || s.ExamplePrice || '',
-        }));
-      }
+    // Score a commercial ref for supplier-summary deep links (prefer product pages + identity).
+    function scoreCommercialRefForLinks(c) {
+      if (!c) return -1;
+      let score = 0;
+      const amazon = c.link_amazon || c.linkAmazon || '';
+      const shop = c.link_shop || c.linkShop || '';
+      if (/amazon\.com\/(?:dp|gp\/product)\//i.test(amazon)) score += 50;
+      else if (amazon) score += 15;
+      if (/officedepot\.com\/a\/products\/|walmart\.com\/ip\/|staples\.com\/.*product/i.test(shop)) score += 40;
+      else if (shop) score += 12;
+      const upc = digitsOnly(c.upc || '');
+      if (upc.length >= 11) score += 20;
+      if (c.description) score += Math.min(18, Math.floor(String(c.description).length / 8));
+      if (c.sku) score += 10;
+      if (c.price || c.price_shop || c.priceShop || c.price_amazon || c.priceAmazon || c.price_upc || c.priceUpc) score += 8;
+      if ((c.source || '').toUpperCase() === 'ABILITYONE_ETS') score += 5;
+      if (c.link_upc || c.linkUpc) score += 4;
+      return score;
+    }
 
+    // Min–max market band across a manufacturer's priced commercial refs.
+    function formatSupplierPriceRange(points) {
+      if (!points || points.length === 0) return null;
+      const lo = Math.min(...points.map(p => p.min));
+      const hi = Math.max(...points.map(p => p.max));
+      const fmt = (v) => '$' + Number(v).toFixed(2);
+      const allEstimate = points.every(p => p.isEstimate);
+      // Treat as a range when span is meaningful (>$0.50 or >2%)
+      if (hi > lo && (hi - lo >= 0.5 || hi > lo * 1.02)) {
+        return {
+          display: `${fmt(lo)}–${fmt(hi)}`,
+          label: 'Market range',
+          min: lo,
+          max: hi,
+          count: points.length,
+          isRange: true,
+          isEstimate: false,
+        };
+      }
+      return {
+        display: allEstimate ? ('from ' + fmt(lo)) : fmt(lo),
+        label: allEstimate ? 'Market from' : 'Market',
+        min: lo,
+        max: hi,
+        count: points.length,
+        isRange: false,
+        isEstimate: !!allEstimate,
+      };
+    }
+
+    // Build the commercial object passed to buildCommercialLinks for a supplier rollup row.
+    function buildSupplierLinkRef(s) {
+      const base = s && s.bestRef ? Object.assign({}, s.bestRef) : {};
+      if (!base.manufacturer) base.manufacturer = (s && s.name) || '';
+      if (!base.sku && s && s.skus && s.skus.length) base.sku = s.skus[0];
+      if (!base.upc && s && s.upcs && s.upcs.length) base.upc = s.upcs[0];
+      // If best ref has thin description, keep it; rollup already preferred richer rows.
+      return base;
+    }
+
+    function buildCommercialSupplierRollup(comms, commTops) {
+      // Always aggregate from full commercial rows so we retain desc/UPC/server deep links
+      // and can compute real market ranges (backend tops alone only had a single "example" price).
       const grouped = new Map();
       (Array.isArray(comms) ? comms : []).forEach(c => {
         const name = (c.manufacturer || 'Unknown supplier').trim() || 'Unknown supplier';
         if (!grouped.has(name)) {
-          grouped.set(name, { name, count: 0, skus: new Set(), examplePrice: '' });
+          grouped.set(name, {
+            name,
+            count: 0,
+            skus: new Set(),
+            upcs: new Set(),
+            prices: [],
+            bestRef: null,
+            bestScore: -1,
+          });
         }
         const item = grouped.get(name);
         item.count += 1;
         if (c.sku) item.skus.add(c.sku);
-        if (!item.examplePrice && c.price) item.examplePrice = c.price;
+        const upc = digitsOnly(c.upc || '');
+        if (upc.length >= 11) item.upcs.add(upc);
+
+        const pt = commercialCandidatePricePoint(c);
+        if (pt) item.prices.push(pt);
+
+        const score = scoreCommercialRefForLinks(c);
+        if (score > item.bestScore) {
+          item.bestScore = score;
+          item.bestRef = c;
+        }
       });
 
-      return Array.from(grouped.values())
-        .map(s => ({ ...s, skus: Array.from(s.skus) }))
-        .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+      let list = Array.from(grouped.values()).map(s => ({
+        name: s.name,
+        count: s.count,
+        skus: Array.from(s.skus),
+        upcs: Array.from(s.upcs),
+        priceRange: formatSupplierPriceRange(s.prices),
+        bestRef: s.bestRef,
+      }));
+
+      // Prefer backend top-supplier order when present; otherwise by ref count.
+      const topSuppliers = Array.isArray(commTops) ? commTops : [];
+      if (topSuppliers.length > 0) {
+        const order = new Map();
+        topSuppliers.forEach((s, i) => {
+          const n = (s.name || s.Name || '').trim();
+          if (n && !order.has(n)) order.set(n, i);
+        });
+        list.sort((a, b) => {
+          const ia = order.has(a.name) ? order.get(a.name) : 999;
+          const ib = order.has(b.name) ? order.get(b.name) : 999;
+          if (ia !== ib) return ia - ib;
+          return b.count - a.count || a.name.localeCompare(b.name);
+        });
+      } else {
+        list.sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+      }
+      return list;
     }
 
     // Homepages only — never SKU deep-links (those 404 frequently).

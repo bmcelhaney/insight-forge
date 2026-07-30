@@ -220,7 +220,11 @@ type CommercialSupplier struct {
 	SKUs        []string `json:"skus,omitempty"`        // Associated SKUs
 	UPCs        []string `json:"upcs,omitempty"`        // Associated UPCs
 	Count       int      `json:"count"`                 // How many times this supplier appeared in cross-refs
+	// ExamplePrice holds the market range (or single observed price) across this
+	// manufacturer's priced commercial/ETS refs, e.g. "$12.50 – $47.00" or "$69.59".
+	// Named for JSON compatibility; UI labels it as "Market range" / "Market".
 	ExamplePrice string  `json:"example_price,omitempty"`
+	PricedCount  int     `json:"priced_count,omitempty"` // How many priced refs fed the market range
 	Source      string   `json:"source,omitempty"`      // Primary source of this data
 }
 

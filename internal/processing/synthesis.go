@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -201,7 +203,11 @@ func Synthesize(ctx context.Context, entityID string, snapshots []models.DataSna
 				supSection += fmt.Sprintf(", SKUs: %s", strings.Join(dedupeTrimmedStrings(sup.SKUs), ", "))
 			}
 			if sup.ExamplePrice != "" {
-				supSection += fmt.Sprintf(", ex. price: %s", sup.ExamplePrice)
+				if sup.PricedCount > 1 {
+					supSection += fmt.Sprintf(", market range: %s (%d priced)", sup.ExamplePrice, sup.PricedCount)
+				} else {
+					supSection += fmt.Sprintf(", market: %s", sup.ExamplePrice)
+				}
 			}
 			supSection += ")\n"
 		}
@@ -810,15 +816,19 @@ func appendCommercialInsights(result *models.InsightResult, refs []models.Commer
 }
 
 // buildTopCommercialSuppliers aggregates the commercial references into a ranked list
-// of top commercial suppliers (by manufacturer), including associated SKUs/UPCs.
-// This is the new "top commercial suppliers based on sku and upc information".
+// of top commercial suppliers (by manufacturer), including associated SKUs/UPCs
+// and a market price range across priced refs (not a single arbitrary "example").
 func buildTopCommercialSuppliers(refs []models.CommercialReference) []models.CommercialSupplier {
 	if len(refs) == 0 {
 		return nil
 	}
 
+	type priceBand struct {
+		min, max float64
+	}
 	// Group by manufacturer (or "Unknown" if missing)
 	groups := make(map[string]*models.CommercialSupplier)
+	bands := make(map[string][]priceBand)
 
 	for _, r := range refs {
 		name := strings.TrimSpace(r.Manufacturer)
@@ -865,14 +875,31 @@ func buildTopCommercialSuppliers(refs []models.CommercialReference) []models.Com
 			}
 		}
 
-		if r.Price != "" && sup.ExamplePrice == "" {
-			sup.ExamplePrice = r.Price
+		// Collect market/listing prices from primary + channel fields for min–max range.
+		for _, raw := range []string{r.Price, r.PriceShop, r.PriceAmazon, r.PriceUPC} {
+			if lo, hi, ok := parseCommercialPriceBand(raw); ok {
+				bands[name] = append(bands[name], priceBand{min: lo, max: hi})
+				break // one band per ref is enough
+			}
 		}
 	}
 
-	// Convert map to slice and sort by count descending
+	// Convert map to slice, attach market ranges, sort by count descending
 	var suppliers []models.CommercialSupplier
-	for _, sup := range groups {
+	for name, sup := range groups {
+		if bs := bands[name]; len(bs) > 0 {
+			lo, hi := bs[0].min, bs[0].max
+			for _, b := range bs[1:] {
+				if b.min < lo {
+					lo = b.min
+				}
+				if b.max > hi {
+					hi = b.max
+				}
+			}
+			sup.PricedCount = len(bs)
+			sup.ExamplePrice = formatSupplierMarketPrice(lo, hi, len(bs))
+		}
 		suppliers = append(suppliers, *sup)
 	}
 
@@ -886,6 +913,56 @@ func buildTopCommercialSuppliers(refs []models.CommercialReference) []models.Com
 	}
 
 	return suppliers
+}
+
+// parseCommercialPriceBand extracts min/max from a price display string
+// (single, range, or "from $X" search estimate).
+func parseCommercialPriceBand(raw string) (lo, hi float64, ok bool) {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return 0, 0, false
+	}
+	// Range: "$20.39 – $47.77 (12 offers)" or "$12.00-$15.00"
+	reRange := regexp.MustCompile(`(?i)\$?\s*([\d,]+(?:\.\d+)?)\s*[–—-]\s*\$?\s*([\d,]+(?:\.\d+)?)`)
+	if m := reRange.FindStringSubmatch(s); len(m) == 3 {
+		a, errA := strconv.ParseFloat(strings.ReplaceAll(m[1], ",", ""), 64)
+		b, errB := strconv.ParseFloat(strings.ReplaceAll(m[2], ",", ""), 64)
+		if errA == nil && errB == nil && a > 0 && b > 0 {
+			if a > b {
+				a, b = b, a
+			}
+			return a, b, true
+		}
+	}
+	// "from $69.59 (search results)" or plain "$69.59"
+	reSingle := regexp.MustCompile(`(?i)(?:from\s*)?\$?\s*([\d,]+(?:\.\d+)?)`)
+	if m := reSingle.FindStringSubmatch(s); len(m) == 2 {
+		v, err := strconv.ParseFloat(strings.ReplaceAll(m[1], ",", ""), 64)
+		if err == nil && v > 0 {
+			return v, v, true
+		}
+	}
+	return 0, 0, false
+}
+
+// formatSupplierMarketPrice formats the aggregated market band for a manufacturer.
+func formatSupplierMarketPrice(lo, hi float64, n int) string {
+	if lo <= 0 && hi <= 0 {
+		return ""
+	}
+	if lo <= 0 {
+		lo = hi
+	}
+	if hi < lo {
+		hi = lo
+	}
+	loS := normalizePriceString(fmt.Sprintf("%.2f", lo))
+	hiS := normalizePriceString(fmt.Sprintf("%.2f", hi))
+	// Meaningful span → range
+	if hi > lo && (hi-lo >= 0.5 || hi > lo*1.02) {
+		return fmt.Sprintf("%s – %s", loS, hiS)
+	}
+	return loS
 }
 
 // min is a small helper (Go <1.21 compatibility)
@@ -4639,7 +4716,11 @@ func appendDeepAnalystExpansion(entityID string, result *models.InsightResult, s
 					line += fmt.Sprintf(", SKUs: %s", skuPreview)
 				}
 				if sup.ExamplePrice != "" {
-					line += fmt.Sprintf(", example price: %s", sup.ExamplePrice)
+					if sup.PricedCount > 1 {
+						line += fmt.Sprintf(", market range: %s (%d priced)", sup.ExamplePrice, sup.PricedCount)
+					} else {
+						line += fmt.Sprintf(", market: %s", sup.ExamplePrice)
+					}
 				}
 				line += ")"
 				b.WriteString(line + "\n")
