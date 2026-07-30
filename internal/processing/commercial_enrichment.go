@@ -647,6 +647,76 @@ func buildCommercialPriceIndex(snaps []models.DataSnapshot) commercialPriceIndex
 
 const maxPartsBasePriceSample = 25
 
+// buildPartsBaseStatus summarizes whether PartsBase contributed live data this run.
+// Always returns a status when any PARTSBASE snapshot is present (including unavailable),
+// or a "not present" status when the extractor produced nothing.
+func buildPartsBaseStatus(snaps []models.DataSnapshot) *models.PartsBaseStatus {
+	// Prefer an explicit unavailable snapshot (findPartsBaseSnapshot skips those).
+	var unavailable *models.DataSnapshot
+	var live *models.DataSnapshot
+	for i := range snaps {
+		s := &snaps[i]
+		if s.SourceCode != "PARTSBASE" {
+			continue
+		}
+		ds := strings.TrimSpace(firstStringFromAny(s.RawResponse["data_source"]))
+		switch ds {
+		case "live_partsbase_govdata":
+			live = s
+		case "partsbase_unavailable":
+			if unavailable == nil {
+				unavailable = s
+			}
+		default:
+			if live == nil && unavailable == nil {
+				unavailable = s
+			}
+		}
+	}
+	if live != nil {
+		rc := intFromAny(live.RawResponse["result_count"])
+		sc := intFromAny(live.RawResponse["supplier_count"])
+		return &models.PartsBaseStatus{
+			OK:            true,
+			Enabled:       true,
+			Configured:    true,
+			Live:          true,
+			DataSource:    "live_partsbase_govdata",
+			ResultCount:   rc,
+			SupplierCount: sc,
+			Message:       "PartsBase GovData is live for this analysis.",
+		}
+	}
+	if unavailable != nil {
+		errText := strings.TrimSpace(firstStringFromAny(unavailable.RawResponse["error"]))
+		msg := "PartsBase API is not working for this analysis. Historical federal transaction prices and PartsBase demand/supplier signals are unavailable."
+		if errText != "" {
+			// Keep message actionable but avoid dumping huge bodies.
+			if len(errText) > 160 {
+				errText = errText[:160] + "…"
+			}
+		}
+		return &models.PartsBaseStatus{
+			OK:         false,
+			Enabled:    true,
+			Configured: true,
+			Live:       false,
+			DataSource: "partsbase_unavailable",
+			Error:      errText,
+			Message:    msg,
+		}
+	}
+	// No PARTSBASE snapshot at all — extractor not registered or credentials missing.
+	return &models.PartsBaseStatus{
+		OK:         false,
+		Enabled:    true,
+		Configured: false,
+		Live:       false,
+		DataSource: "not_registered",
+		Message:    "PartsBase extractor is not active (disabled or credentials not loaded). Federal PartsBase signals are not included.",
+	}
+}
+
 // buildPartsBaseHistoricalPricing extracts historical federal/AbilityOne transaction
 // unit prices from PartsBase GovData for a dedicated UI/API section.
 func buildPartsBaseHistoricalPricing(snaps []models.DataSnapshot) *models.PartsBasePriceSummary {

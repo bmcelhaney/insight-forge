@@ -89,17 +89,41 @@ func main() {
 	// Health (used by reset.sh / test_release.sh gates)
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{
-			"status":                 "ok",
-			"service":                "insight-forge",
-			"commit":                 commit,
-			"buildTime":              buildTime,
-			"version":                "analyst-v2-gated",
-			"note":                   "Award data prefers USAspending.gov (real, public). SAM.gov path is currently disabled.",
-			"partsbase_enabled":      cfg.PartsBaseEnabled,
-			"partsbase_configured":   cfg.PartsBaseConfigured,
-			"partsbase_env_files":    cfg.PartsBaseEnvFilesLoaded,
-		})
+		payload := map[string]any{
+			"status":               "ok",
+			"service":              "insight-forge",
+			"commit":               commit,
+			"buildTime":            buildTime,
+			"version":              "analyst-v2-gated",
+			"note":                 "Award data prefers USAspending.gov (real, public). SAM.gov path is currently disabled.",
+			"partsbase_enabled":    cfg.PartsBaseEnabled,
+			"partsbase_configured": cfg.PartsBaseConfigured,
+			"partsbase_registered": extractorReg.PartsBaseRegistered(),
+			"partsbase_env_files":  cfg.PartsBaseEnvFilesLoaded,
+		}
+		// Last observed PartsBase fetch outcome (for UI source-status banner).
+		if st, ok := extractorReg.PartsBaseLastStatus(); ok {
+			payload["partsbase_ok"] = st.OK
+			payload["partsbase_live"] = st.Live
+			payload["partsbase_data_source"] = st.DataSource
+			payload["partsbase_message"] = st.Message
+			if st.Error != "" {
+				payload["partsbase_error"] = st.Error
+			}
+			if !st.CheckedAt.IsZero() {
+				payload["partsbase_checked_at"] = st.CheckedAt.Format("2006-01-02T15:04:05Z")
+			}
+		} else if cfg.PartsBaseEnabled && !cfg.PartsBaseConfigured {
+			payload["partsbase_ok"] = false
+			payload["partsbase_message"] = "PartsBase is enabled but OAuth credentials are not loaded."
+		} else if !cfg.PartsBaseEnabled {
+			payload["partsbase_ok"] = false
+			payload["partsbase_message"] = "PartsBase integration is disabled."
+		} else {
+			payload["partsbase_ok"] = nil // not yet queried this process
+			payload["partsbase_message"] = "PartsBase registered; awaiting first analysis query."
+		}
+		json.NewEncoder(w).Encode(payload)
 	})
 
 	// Version endpoint for deployment verification
@@ -177,13 +201,19 @@ func main() {
 			}
 		}
 
+		out := map[string]any{
+			"nsn":                  nsn,
+			"data_source":          dataSource,
+			"partsbase_snapshots":  snaps,
+			"partsbase_enabled":    cfg.PartsBaseEnabled,
+			"partsbase_configured": cfg.PartsBaseConfigured,
+			"partsbase_registered": extractorReg.PartsBaseRegistered(),
+		}
+		if st, ok := extractorReg.PartsBaseLastStatus(); ok {
+			out["partsbase_status"] = st
+		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{
-			"nsn":                 nsn,
-			"data_source":         dataSource,
-			"partsbase_snapshots": snaps,
-			"partsbase_enabled":   cfg.PartsBaseEnabled,
-		})
+		json.NewEncoder(w).Encode(out)
 	})
 
 	// Debug commercial / ETS coverage and pricing enrichment

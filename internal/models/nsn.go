@@ -81,6 +81,23 @@ type InsightResult struct {
 	// PartsBase historical federal procurement / AbilityOne transaction prices.
 	// Captured for analyst use but kept separate from commercial/ETS market pricing.
 	PartsBaseHistoricalPricing *PartsBasePriceSummary `json:"partsbase_historical_pricing,omitempty"`
+
+	// PartsBaseStatus reports whether the PartsBase GovData API contributed live data
+	// for this analysis (or why it did not). Used for UI warnings.
+	PartsBaseStatus *PartsBaseStatus `json:"partsbase_status,omitempty"`
+}
+
+// PartsBaseStatus is a user-facing health summary for the PartsBase integration.
+type PartsBaseStatus struct {
+	OK          bool   `json:"ok"`                     // true when live GovData was returned
+	Enabled     bool   `json:"enabled"`                // feature flag
+	Configured  bool   `json:"configured"`             // OAuth credentials present
+	Live        bool   `json:"live"`                   // data_source == live_partsbase_govdata
+	DataSource  string `json:"data_source,omitempty"`  // live_partsbase_govdata | partsbase_unavailable | not_registered | …
+	Error       string `json:"error,omitempty"`        // safe error text (no secrets)
+	Message     string `json:"message"`                // analyst-facing summary
+	ResultCount int    `json:"result_count,omitempty"` // procurement signals when live
+	SupplierCount int  `json:"supplier_count,omitempty"`
 }
 
 // ChannelPrice is a standalone NSN-level catalog price (not a commercial SKU quote).

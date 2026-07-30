@@ -11,6 +11,7 @@ import (
 // Registry holds all active extractors for an Insight Forge instance.
 type Registry struct {
 	extractors map[string]Extractor
+	partsBase  *PartsBaseExtractor // optional; retained for status queries
 }
 
 // NewDefaultRegistry returns the standard set of extractors for Insight Forge.
@@ -66,10 +67,24 @@ func NewDefaultRegistry(samAPIKey string, partsBaseCfg PartsBaseConfig) *Registr
 	if partsBaseCfg.Enabled && partsBaseCfg.HasCredentials() {
 		pb := NewPartsBaseExtractor(partsBaseCfg)
 		r.extractors[pb.SourceCode()] = pb
+		r.partsBase = pb
 	}
 
 	// Future: MCRL, SAM.gov, historical award feeds, technical manuals, bulk PUB LOG integration, etc.
 	return r
+}
+
+// PartsBaseRegistered reports whether the PartsBase extractor is active.
+func (r *Registry) PartsBaseRegistered() bool {
+	return r != nil && r.partsBase != nil
+}
+
+// PartsBaseLastStatus returns the last observed PartsBase fetch outcome.
+func (r *Registry) PartsBaseLastStatus() (PartsBaseRuntimeStatus, bool) {
+	if r == nil || r.partsBase == nil {
+		return PartsBaseRuntimeStatus{}, false
+	}
+	return r.partsBase.LastStatus(), true
 }
 
 // FetchAll runs all (or selected) extractors in parallel for the given entity.

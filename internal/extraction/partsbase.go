@@ -72,6 +72,22 @@ type PartsBaseExtractor struct {
 	tokenMu        sync.RWMutex
 	accessToken    string
 	tokenExpiresAt time.Time
+
+	// lastStatus is updated after each Fetch for /health and UI warnings.
+	statusMu   sync.RWMutex
+	lastStatus PartsBaseRuntimeStatus
+}
+
+// PartsBaseRuntimeStatus is the last observed runtime outcome of the extractor.
+type PartsBaseRuntimeStatus struct {
+	OK            bool      `json:"ok"`
+	Live          bool      `json:"live"`
+	DataSource    string    `json:"data_source,omitempty"`
+	Error         string    `json:"error,omitempty"`
+	ResultCount   int       `json:"result_count,omitempty"`
+	SupplierCount int       `json:"supplier_count,omitempty"`
+	CheckedAt     time.Time `json:"checked_at,omitempty"`
+	Message       string    `json:"message,omitempty"`
 }
 
 func NewPartsBaseExtractor(cfg PartsBaseConfig) *PartsBaseExtractor {
@@ -139,10 +155,36 @@ func NewPartsBaseExtractor(cfg PartsBaseConfig) *PartsBaseExtractor {
 		client: &http.Client{
 			Timeout: time.Duration(timeoutSeconds) * time.Second,
 		},
+		lastStatus: PartsBaseRuntimeStatus{
+			OK:         false,
+			DataSource: "not_checked",
+			Message:    "PartsBase has not been queried yet in this process.",
+		},
 	}
 }
 
 func (p *PartsBaseExtractor) SourceCode() string { return "PARTSBASE" }
+
+// LastStatus returns the most recent fetch outcome (for /health and UI banners).
+func (p *PartsBaseExtractor) LastStatus() PartsBaseRuntimeStatus {
+	p.statusMu.RLock()
+	defer p.statusMu.RUnlock()
+	return p.lastStatus
+}
+
+func (p *PartsBaseExtractor) setStatus(st PartsBaseRuntimeStatus) {
+	st.CheckedAt = time.Now().UTC()
+	p.statusMu.Lock()
+	p.lastStatus = st
+	p.statusMu.Unlock()
+}
+
+func (p *PartsBaseExtractor) clearAccessToken() {
+	p.tokenMu.Lock()
+	p.accessToken = ""
+	p.tokenExpiresAt = time.Time{}
+	p.tokenMu.Unlock()
+}
 
 func (p *PartsBaseExtractor) Fetch(ctx context.Context, entityID string, params map[string]string) ([]models.DataSnapshot, error) {
 	select {
@@ -155,6 +197,11 @@ func (p *PartsBaseExtractor) Fetch(ctx context.Context, entityID string, params 
 		strings.TrimSpace(p.clientSecret) == "" ||
 		strings.TrimSpace(p.username) == "" ||
 		strings.TrimSpace(p.password) == "" {
+		p.setStatus(PartsBaseRuntimeStatus{
+			OK:         false,
+			DataSource: "not_configured",
+			Message:    "PartsBase API is enabled but OAuth credentials are missing.",
+		})
 		return []models.DataSnapshot{}, nil
 	}
 
@@ -162,6 +209,10 @@ func (p *PartsBaseExtractor) Fetch(ctx context.Context, entityID string, params 
 	requestURL, err := p.buildGovDataURL(query, params)
 	if err != nil {
 		snap := p.unavailableSnapshot(entityID, query, "", err)
+		p.setStatus(PartsBaseRuntimeStatus{
+			OK: false, DataSource: "partsbase_unavailable",
+			Error: err.Error(), Message: "PartsBase GovData URL could not be built.",
+		})
 		return []models.DataSnapshot{snap}, nil
 	}
 
@@ -171,15 +222,30 @@ func (p *PartsBaseExtractor) Fetch(ctx context.Context, entityID string, params 
 			return nil, ctx.Err()
 		}
 		snap := p.unavailableSnapshot(entityID, query, requestURL, err)
+		p.setStatus(PartsBaseRuntimeStatus{
+			OK: false, DataSource: "partsbase_unavailable",
+			Error: err.Error(), Message: "PartsBase authentication failed. Federal procurement signals from PartsBase are unavailable.",
+		})
 		return []models.DataSnapshot{snap}, nil
 	}
 
 	payload, err := p.fetchGovData(ctx, requestURL, accessToken)
+	// On auth/permission failures, drop cached token and retry once with a fresh token.
+	if err != nil && isPartsBaseAuthzError(err) {
+		p.clearAccessToken()
+		if token2, err2 := p.getAccessToken(ctx); err2 == nil {
+			payload, err = p.fetchGovData(ctx, requestURL, token2)
+		}
+	}
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
 		snap := p.unavailableSnapshot(entityID, query, requestURL, err)
+		p.setStatus(PartsBaseRuntimeStatus{
+			OK: false, DataSource: "partsbase_unavailable",
+			Error: err.Error(), Message: "PartsBase API is not responding successfully. Historical federal/AbilityOne transaction prices from PartsBase are unavailable for this run.",
+		})
 		return []models.DataSnapshot{snap}, nil
 	}
 
@@ -208,7 +274,23 @@ func (p *PartsBaseExtractor) Fetch(ctx context.Context, entityID string, params 
 		CreatedBy:    "partsbase-extractor-v0.2",
 	}
 
+	p.setStatus(PartsBaseRuntimeStatus{
+		OK: true, Live: true, DataSource: "live_partsbase_govdata",
+		ResultCount: signal.ResultCount, SupplierCount: signal.SupplierCount,
+		Message: "PartsBase GovData is live.",
+	})
 	return []models.DataSnapshot{snap}, nil
+}
+
+func isPartsBaseAuthzError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "returned 401") ||
+		strings.Contains(s, "returned 403") ||
+		strings.Contains(s, "unauthorized") ||
+		strings.Contains(s, "forbidden")
 }
 
 func buildPartsBaseQuery(entityID string, params map[string]string) string {

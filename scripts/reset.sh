@@ -91,10 +91,15 @@ fi
 
 # 4. Start the new binary
 echo "==> Gate passed. Starting new binary..."
+# Always start from the repo root so .env.partsbase / static / migrations resolve.
+# (Do not `source` .env.partsbase in shell — passwords may contain & and other metacharacters;
+#  the Go config loader reads the dotenv file safely.)
+cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 nohup "${BINARY_PATH}" > "${LOG_FILE}" 2>&1 &
 NEW_PID=$!
 echo "    PID: ${NEW_PID}"
 echo "    Logs: ${LOG_FILE}"
+echo "    CWD:  $(pwd)"
 
 # 5. Wait for health
 echo "==> Waiting for health..."

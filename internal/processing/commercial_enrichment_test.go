@@ -109,6 +109,54 @@ func TestLooksLikeProductSKU(t *testing.T) {
 	}
 }
 
+func TestBuildPartsBaseStatusUnavailable(t *testing.T) {
+	snaps := []models.DataSnapshot{
+		{
+			SourceCode: "PARTSBASE",
+			RawResponse: map[string]any{
+				"data_source": "partsbase_unavailable",
+				"error":       "partsbase returned 403: ",
+			},
+		},
+	}
+	st := buildPartsBaseStatus(snaps)
+	if st == nil {
+		t.Fatal("expected status")
+	}
+	if st.OK {
+		t.Fatal("expected ok=false")
+	}
+	if st.DataSource != "partsbase_unavailable" {
+		t.Fatalf("data_source %q", st.DataSource)
+	}
+	if st.Message == "" {
+		t.Fatal("expected user message")
+	}
+	if !strings.Contains(st.Error, "403") {
+		t.Fatalf("error %q", st.Error)
+	}
+}
+
+func TestBuildPartsBaseStatusLive(t *testing.T) {
+	snaps := []models.DataSnapshot{
+		{
+			SourceCode: "PARTSBASE",
+			RawResponse: map[string]any{
+				"data_source":    "live_partsbase_govdata",
+				"result_count":   12,
+				"supplier_count": 3,
+			},
+		},
+	}
+	st := buildPartsBaseStatus(snaps)
+	if st == nil || !st.OK || !st.Live {
+		t.Fatalf("expected live ok status: %+v", st)
+	}
+	if st.ResultCount != 12 || st.SupplierCount != 3 {
+		t.Fatalf("counts %+v", st)
+	}
+}
+
 func TestExtractExcludesPartsBaseFromCommercialList(t *testing.T) {
 	snaps := []models.DataSnapshot{
 		{

@@ -117,27 +117,52 @@ func Load() (*Config, error) {
 // loadOptionalEnvFiles loads KEY=VALUE pairs from dotenv-style files if present.
 // Existing process environment variables are never overwritten.
 // Returns the list of files that were successfully read (not necessarily ones that set keys).
+// Searches CWD, executable directory, and common sprite paths so deploys that start
+// the binary outside the repo root still pick up .env.partsbase.
 func loadOptionalEnvFiles(names ...string) []string {
 	var loaded []string
+	seen := map[string]bool{}
 	for _, name := range names {
-		path := name
-		if !filepath.IsAbs(path) {
-			// Prefer CWD (sprite/deploy runs from repo root).
-			if _, err := os.Stat(path); err != nil {
+		for _, path := range resolveEnvFileCandidates(name) {
+			if seen[path] {
 				continue
 			}
-		}
-		n, err := loadEnvFile(path)
-		if err != nil {
-			// Missing files are fine; parse errors are non-fatal (log via stderr).
-			fmt.Fprintf(os.Stderr, "config: skip env file %s: %v\n", path, err)
-			continue
-		}
-		if n >= 0 {
-			loaded = append(loaded, path)
+			seen[path] = true
+			n, err := loadEnvFile(path)
+			if err != nil {
+				if !os.IsNotExist(err) {
+					fmt.Fprintf(os.Stderr, "config: skip env file %s: %v\n", path, err)
+				}
+				continue
+			}
+			if n >= 0 {
+				loaded = append(loaded, path)
+			}
 		}
 	}
 	return loaded
+}
+
+func resolveEnvFileCandidates(name string) []string {
+	if filepath.IsAbs(name) {
+		return []string{name}
+	}
+	var out []string
+	// 1) Current working directory (reset.sh / local dev).
+	out = append(out, name)
+	// 2) Directory of the running executable (nohup ./insight-forge from any cwd).
+	if exe, err := os.Executable(); err == nil {
+		if resolved, err := filepath.EvalSymlinks(exe); err == nil {
+			exe = resolved
+		}
+		out = append(out, filepath.Join(filepath.Dir(exe), name))
+	}
+	// 3) Common sprite deploy locations.
+	out = append(out,
+		filepath.Join("/home/sprite/insight-forge", name),
+		filepath.Join("/home/sprite", name),
+	)
+	return out
 }
 
 // loadEnvFile parses a simple dotenv file and sets unset environment variables.

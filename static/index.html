@@ -97,6 +97,8 @@
           </button>
         </form>
         <div class="text-[10px] text-zinc-500 mt-1.5 px-1">Multi-source extraction from WebFLIS, USAspending, and GSA Advantage</div>
+        <!-- PartsBase source-status banner (shown when API is down / misconfigured) -->
+        <div id="partsbase-status-banner" class="hidden mt-3 rounded-2xl border px-4 py-3 text-sm"></div>
       </div>
 
       <!-- Visible Error Banner -->
@@ -300,11 +302,79 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
           el.textContent = 'build: unknown (check /health on server)';
           el.title = 'Could not read commit from server response. Run curl http://localhost:8080/version on the sprite.';
         }
+        // Global PartsBase source banner from last known health status.
+        if (data) {
+          updatePartsBaseBannerFromHealth(data);
+        }
       } catch (e) {
         el.textContent = 'build: fetch error';
         el.title = 'Error fetching version: ' + (e.message || e);
         console.error('loadVersionInfo error:', e);
       }
+    }
+
+    function updatePartsBaseBannerFromHealth(health) {
+      // Only show a global warning when we know PartsBase is broken/misconfigured.
+      // null/undefined partsbase_ok means "not checked yet" — no banner.
+      if (!health) return;
+      const ok = health.partsbase_ok;
+      const configured = health.partsbase_configured;
+      const enabled = health.partsbase_enabled;
+      const registered = health.partsbase_registered;
+      if (ok === true) {
+        setPartsBaseBanner(null);
+        return;
+      }
+      if (ok === false || enabled === false || configured === false || registered === false) {
+        const msg = health.partsbase_message
+          || (configured === false
+            ? 'PartsBase API credentials are not loaded. Federal PartsBase signals are unavailable.'
+            : 'PartsBase API is not working. Historical federal transaction prices may be missing.');
+        setPartsBaseBanner(msg, health.partsbase_error || '');
+      }
+    }
+
+    function setPartsBaseBanner(message, detail) {
+      const el = document.getElementById('partsbase-status-banner');
+      if (!el) return;
+      if (!message) {
+        el.className = 'hidden mt-3 rounded-2xl border px-4 py-3 text-sm';
+        el.innerHTML = '';
+        return;
+      }
+      el.className = 'mt-3 rounded-2xl border border-amber-700 bg-amber-950/50 text-amber-100 px-4 py-3 text-sm flex gap-3 items-start';
+      const detailHtml = detail
+        ? `<div class="text-[11px] text-amber-200/80 mt-1 font-mono break-all">${escapeHtml(detail)}</div>`
+        : '';
+      el.innerHTML = `
+        <div class="text-amber-400 mt-0.5"><i class="fa-solid fa-triangle-exclamation"></i></div>
+        <div class="flex-1">
+          <div class="font-semibold text-amber-200">PartsBase API warning</div>
+          <div class="text-[13px] text-amber-100/90 mt-0.5">${escapeHtml(message)}</div>
+          ${detailHtml}
+          <div class="text-[10px] text-amber-200/70 mt-1.5">Other sources (AbilityOne, ETS, commercial links) still run. Re-analyze after PartsBase is restored for federal transaction price history.</div>
+        </div>`;
+    }
+
+    function escapeHtml(s) {
+      return String(s || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+
+    function applyPartsBaseStatusFromResult(result) {
+      const st = result && (result.partsbase_status || result.PartsBaseStatus);
+      if (!st) return;
+      if (st.ok || st.OK) {
+        setPartsBaseBanner(null);
+        return;
+      }
+      const msg = st.message || st.Message
+        || 'PartsBase API is not working. Historical federal transaction prices are unavailable for this analysis.';
+      const err = st.error || st.Error || '';
+      setPartsBaseBanner(msg, err);
     }
 
     function showError(msg) {
@@ -418,6 +488,9 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
     function renderFullAnalysis(result, nsn) {
       const resultsEl = document.getElementById('results');
       if (resultsEl) resultsEl.classList.remove('hidden');
+
+      // PartsBase API status → warning banner when unavailable this run
+      applyPartsBaseStatusFromResult(result);
 
       // === CRITICAL: Always restore the exact NSN the user typed into the input ===
       const inputEl = document.getElementById('nsn-input');
@@ -1134,7 +1207,24 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
 
       // PartsBase historical federal/AbilityOne transaction prices — last (after commercial/ETS)
       const pbHist = result.partsbase_historical_pricing || result.PartsBaseHistoricalPricing || null;
-      if (pbHist && ((pbHist.signal_count || pbHist.SignalCount || 0) > 0 || (pbHist.sample || pbHist.Sample || []).length > 0)) {
+      const pbStatus = result.partsbase_status || result.PartsBaseStatus || null;
+      const pbDown = pbStatus && !(pbStatus.ok || pbStatus.OK);
+      if (pbDown && !(pbHist && ((pbHist.signal_count || pbHist.SignalCount || 0) > 0))) {
+        // Explicit section note when PartsBase failed and no historical prices were returned.
+        const pbWrap = document.createElement('div');
+        pbWrap.style.cssText = 'grid-column: 1 / -1; margin-top: 8px;';
+        const pbHeader = document.createElement('div');
+        pbHeader.style.cssText = 'font-size:10px; color:#64748b; margin-bottom:6px; text-transform:uppercase; letter-spacing:0.5px;';
+        pbHeader.textContent = 'PartsBase Historical Federal Prices (GovData transactions)';
+        pbWrap.appendChild(pbHeader);
+        const card = document.createElement('div');
+        card.className = 'bg-amber-950/40 border border-amber-700 rounded-2xl p-4 text-sm text-amber-100';
+        card.innerHTML = `<div class="font-semibold text-amber-200 mb-1"><i class="fa-solid fa-triangle-exclamation mr-1"></i>PartsBase API not working</div>
+          <div>${escapeHtml(pbStatus.message || pbStatus.Message || 'PartsBase GovData was unavailable for this run.')}</div>
+          <div class="text-[11px] text-amber-200/70 mt-2">No historical federal transaction unit prices from PartsBase are shown. AbilityOne channel price and commercial/ETS rows above may still be available.</div>`;
+        pbWrap.appendChild(card);
+        relEl.appendChild(pbWrap);
+      } else if (pbHist && ((pbHist.signal_count || pbHist.SignalCount || 0) > 0 || (pbHist.sample || pbHist.Sample || []).length > 0)) {
         const pbWrap = document.createElement('div');
         pbWrap.style.cssText = 'grid-column: 1 / -1; margin-top: 8px;';
         const pbHeader = document.createElement('div');

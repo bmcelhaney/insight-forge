@@ -157,6 +157,8 @@ func Synthesize(ctx context.Context, entityID string, snapshots []models.DataSna
 	result.AbilityOneChannelPrice = buildAbilityOneChannelPrice(snapshots, entityID)
 	// PartsBase historical federal/AbilityOne transaction unit prices.
 	result.PartsBaseHistoricalPricing = buildPartsBaseHistoricalPricing(snapshots)
+	// Surface PartsBase API health for UI warnings (live vs unavailable).
+	result.PartsBaseStatus = buildPartsBaseStatus(snapshots)
 
 	// === Commercial SKUs / UPCs (ETS + GSA; WebFLIS + PartsBase excluded from this list) ===
 	commercialRefs := extractCommercialReferences(snapshots)
