@@ -234,6 +234,55 @@ func TestFormatPriceRange(t *testing.T) {
 	}
 }
 
+func TestFormatSearchMarketPriceNeverBareSingle(t *testing.T) {
+	// Multi different prices
+	d, isR := formatSearchMarketPrice(34.99, 59.92, 7)
+	if !isR || !strings.Contains(d, "34.99") || !strings.Contains(d, "59.92") || !strings.Contains(d, "7 offers") {
+		t.Fatalf("multi %q isR=%v", d, isR)
+	}
+	// Multi same price
+	d, isR = formatSearchMarketPrice(69.59, 69.59, 3)
+	if !isR || !strings.Contains(d, "69.59") || !strings.Contains(d, "3 offers") {
+		t.Fatalf("same multi %q isR=%v", d, isR)
+	}
+	// Single hit on a search page must NOT look like a verified listing
+	d, isR = formatSearchMarketPrice(69.59, 69.59, 1)
+	if !isR || !strings.Contains(strings.ToLower(d), "search") || !strings.Contains(d, "69.59") {
+		t.Fatalf("single search %q isR=%v", d, isR)
+	}
+	if d == "$69.59" || d == "69.59" {
+		t.Fatalf("bare single price is misleading for search destinations: %q", d)
+	}
+}
+
+func TestSearchLinksNeverGetBareSinglePrice(t *testing.T) {
+	refs := []models.CommercialReference{
+		{SKU: "140757648", Manufacturer: "PURDY", Description: "QuickFit Poles 4-8'"},
+	}
+	// Identity as if Serp returned one collapsed price but no product deep-link.
+	resolved := map[int]*productIdentity{
+		0: {
+			Title: "Purdy QuickFit Pole", OfferPrice: 69.59, OfferMerchant: "Google Shopping",
+			ShopPrice: 69.59, ShopMerchant: "Google Shopping", ShopCount: 1, ShopMin: 69.59, ShopMax: 69.59,
+			UPCMin: 69.59, UPCMax: 69.59, UPCCount: 1, UPCPrice: 69.59,
+		},
+	}
+	out := applyDeterministicProductLinks(refs, "8020015964253", resolved, "$42.62", "ABILITYONE_COM", nsnMarketBand{})
+	if isDirectProductURL(out[0].LinkAmazon) || isDirectProductURL(out[0].LinkShop) {
+		// amazon/shop should be search builders
+	}
+	if !out[0].PriceAmazonIsRange || !strings.Contains(strings.ToLower(out[0].PriceAmazon), "search") {
+		t.Fatalf("amazon search price must be honest search label, got %q range=%v", out[0].PriceAmazon, out[0].PriceAmazonIsRange)
+	}
+	if !out[0].PriceShopIsRange {
+		t.Fatalf("shop search price must be marked range/search, got %q", out[0].PriceShop)
+	}
+	// Primary tile price should not claim a hard $69.59 listing either
+	if out[0].Price == "$69.59" || out[0].Price == "69.59" {
+		t.Fatalf("primary price still bare single: %q src=%q", out[0].Price, out[0].PriceSource)
+	}
+}
+
 func TestApplyDeterministicUsesRangeWhenNoDirectLink(t *testing.T) {
 	refs := []models.CommercialReference{
 		{SKU: "R091", UPC: "071497149299", Manufacturer: "WOOSTER", Description: "Sherlock extension pole"},

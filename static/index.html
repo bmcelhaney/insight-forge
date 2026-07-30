@@ -1755,11 +1755,11 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
             : 'text-[11px] font-semibold text-emerald-300';
           p.textContent = price;
           let tip = priceSrc ? ('Source: ' + priceSrc) : '';
-          if (isRange) {
+          if (isRange || /search results|offers\)|MARKET_RANGE/i.test(String(price || '') + String(priceSrc || ''))) {
             const nsnBand = /NSN_TOP_RESULTS/i.test(String(priceSrc || ''));
             tip = (tip ? tip + ' · ' : '') + (nsnBand
-              ? 'Price range from top market offers resolved for this NSN (shared across ETS rows without their own match)'
-              : 'Price range across top market results (no single product deep-link for this destination)');
+              ? 'Indicative market band from offers resolved for this NSN (not a single product listing price)'
+              : 'Indicative prices from search/top market results — not a verified single-listing price. Open the link to compare live offers.');
           }
           if (tip) p.title = tip;
           line.appendChild(p);

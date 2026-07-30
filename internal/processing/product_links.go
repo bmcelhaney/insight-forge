@@ -444,29 +444,28 @@ func applyDeterministicProductLinks(refs []models.CommercialReference, entityID 
 			// Amazon
 			switch {
 			case amazonProduct && id.AmazonPrice > 0:
-				// Direct /dp/ with an Amazon offer → single price
+				// Direct /dp/ with an Amazon offer → single verified listing price
 				r.PriceAmazon = normalizePriceString(fmt.Sprintf("%.2f", id.AmazonPrice))
 				r.PriceAmazonSrc = "MARKET:" + sanitizeMerchantTag(nonEmpty(id.AmazonMerchant, "AMAZON"))
 				r.PriceAmazonIsRange = false
 			case !amazonProduct:
-				// Search-only Amazon link → always prefer a multi-offer range when available
+				// Search page: NEVER show a bare single price (misleading vs multi-result pages).
 				if min, max, n, ok := pickSearchPriceRange(
 					id.AmazonMin, id.AmazonMax, id.AmazonCount,
 					id.UPCMin, id.UPCMax, id.UPCCount,
 					id.ShopMin, id.ShopMax, id.ShopCount,
 				); ok {
-					r.PriceAmazon = formatPriceRange(min, max, n)
+					r.PriceAmazon, r.PriceAmazonIsRange = formatSearchMarketPrice(min, max, n)
 					r.PriceAmazonSrc = "MARKET_RANGE:TOP_RESULTS"
-					r.PriceAmazonIsRange = n >= 2 && max > min
 				} else if id.AmazonPrice > 0 {
-					r.PriceAmazon = normalizePriceString(fmt.Sprintf("%.2f", id.AmazonPrice))
-					r.PriceAmazonSrc = "MARKET:" + sanitizeMerchantTag(nonEmpty(id.AmazonMerchant, "AMAZON"))
+					r.PriceAmazon, r.PriceAmazonIsRange = formatSearchMarketPrice(id.AmazonPrice, id.AmazonPrice, 1)
+					r.PriceAmazonSrc = "MARKET_RANGE:TOP_RESULTS"
 				} else if id.OfferPrice > 0 {
-					r.PriceAmazon = normalizePriceString(fmt.Sprintf("%.2f", id.OfferPrice))
-					r.PriceAmazonSrc = "MARKET:" + sanitizeMerchantTag(nonEmpty(id.OfferMerchant, "CATALOG"))
+					r.PriceAmazon, r.PriceAmazonIsRange = formatSearchMarketPrice(id.OfferPrice, id.OfferPrice, 1)
+					r.PriceAmazonSrc = "MARKET_RANGE:TOP_RESULTS"
 				}
 			case amazonProduct && id.AmazonPrice <= 0 && id.OfferPrice > 0:
-				// Direct /dp/ but no Amazon-tagged offer — leave single unknown; don't invent range on product page
+				// Direct /dp/ but no Amazon-tagged offer — leave blank; don't invent a search range on a product page
 			}
 
 			// Shop / retail
@@ -478,22 +477,22 @@ func applyDeterministicProductLinks(refs []models.CommercialReference, entityID 
 			case shopIsDirect && id.ShopPrice <= 0 && id.OfferPrice > 0 && id.AmazonPrice <= 0:
 				r.PriceShop = normalizePriceString(fmt.Sprintf("%.2f", id.OfferPrice))
 				r.PriceShopSrc = "MARKET:" + sanitizeMerchantTag(nonEmpty(id.OfferMerchant, "OFFER"))
+				r.PriceShopIsRange = false
 			case !shopIsDirect:
-				// Search-only shop (HD/Google/etc.) → range of top market results
+				// Search page (HD/Google Shopping/etc.): always range / "from $X (search results)"
 				if min, max, n, ok := pickSearchPriceRange(
 					id.ShopMin, id.ShopMax, id.ShopCount,
 					id.UPCMin, id.UPCMax, id.UPCCount,
 					id.AmazonMin, id.AmazonMax, id.AmazonCount,
 				); ok {
-					r.PriceShop = formatPriceRange(min, max, n)
+					r.PriceShop, r.PriceShopIsRange = formatSearchMarketPrice(min, max, n)
 					r.PriceShopSrc = "MARKET_RANGE:TOP_RESULTS"
-					r.PriceShopIsRange = n >= 2 && max > min
 				} else if id.ShopPrice > 0 {
-					r.PriceShop = normalizePriceString(fmt.Sprintf("%.2f", id.ShopPrice))
-					r.PriceShopSrc = "MARKET:" + sanitizeMerchantTag(nonEmpty(id.ShopMerchant, "RETAIL"))
+					r.PriceShop, r.PriceShopIsRange = formatSearchMarketPrice(id.ShopPrice, id.ShopPrice, 1)
+					r.PriceShopSrc = "MARKET_RANGE:TOP_RESULTS"
 				} else if id.OfferPrice > 0 {
-					r.PriceShop = normalizePriceString(fmt.Sprintf("%.2f", id.OfferPrice))
-					r.PriceShopSrc = "MARKET:" + sanitizeMerchantTag(nonEmpty(id.OfferMerchant, "OFFER"))
+					r.PriceShop, r.PriceShopIsRange = formatSearchMarketPrice(id.OfferPrice, id.OfferPrice, 1)
+					r.PriceShopSrc = "MARKET_RANGE:TOP_RESULTS"
 				}
 			}
 
@@ -515,17 +514,31 @@ func applyDeterministicProductLinks(refs []models.CommercialReference, entityID 
 
 		// Search-only tiles that never got their own product resolve still show the
 		// NSN-level multi-offer band (from other ETS rows that did resolve).
-		if nsnBand.Count >= 2 && nsnBand.Min > 0 {
-			band := formatPriceRange(nsnBand.Min, nsnBand.Max, nsnBand.Count)
+		if nsnBand.Count >= 1 && nsnBand.Min > 0 {
+			band, isR := formatSearchMarketPrice(nsnBand.Min, nsnBand.Max, nsnBand.Count)
 			if !amazonProduct && r.PriceAmazon == "" && r.LinkAmazon != "" {
 				r.PriceAmazon = band
 				r.PriceAmazonSrc = "MARKET_RANGE:NSN_TOP_RESULTS"
-				r.PriceAmazonIsRange = true
+				r.PriceAmazonIsRange = isR
 			}
 			if !shopIsDirect && r.PriceShop == "" && r.LinkShop != "" {
 				r.PriceShop = band
 				r.PriceShopSrc = "MARKET_RANGE:NSN_TOP_RESULTS"
-				r.PriceShopIsRange = true
+				r.PriceShopIsRange = isR
+			}
+		}
+
+		// Primary tile price: if both commercial destinations are search pages, prefer
+		// an honest range string over a single-offer headline that disagrees with the link.
+		if !amazonProduct && !shopIsDirect {
+			if r.PriceShopIsRange && r.PriceShop != "" {
+				r.Price = r.PriceShop
+				r.PriceSource = r.PriceShopSrc
+				r.PriceAsOf = time.Now().UTC().Format("2006-01-02")
+			} else if r.PriceAmazonIsRange && r.PriceAmazon != "" {
+				r.Price = r.PriceAmazon
+				r.PriceSource = r.PriceAmazonSrc
+				r.PriceAsOf = time.Now().UTC().Format("2006-01-02")
 			}
 		}
 		// AbilityOne.com NSN channel price on the federal link (same NSN for every commercial row).
@@ -1381,7 +1394,7 @@ func collectChannelOffers(offers []upcOffer) channelOfferSet {
 	return out
 }
 
-// formatPriceRange renders "$12.99 – $24.50 (5 offers)" for multi-result search pricing.
+// formatPriceRange renders "$12.99 – $24.50 (5 offers)" for multi-result catalog pricing.
 func formatPriceRange(min, max float64, n int) string {
 	if min <= 0 {
 		return ""
@@ -1395,6 +1408,32 @@ func formatPriceRange(min, max float64, n int) string {
 		return fmt.Sprintf("%s – %s (%d offers)", lo, hi, n)
 	}
 	return fmt.Sprintf("%s – %s", lo, hi)
+}
+
+// formatSearchMarketPrice formats prices for SEARCH destinations (not product pages).
+// Always returns isRange=true so the UI never treats a search hit as a single verified listing.
+// Examples: "$34.99 – $59.92 (7 offers)", "$69.59 (3 offers)", "from $69.59 (search results)".
+func formatSearchMarketPrice(min, max float64, n int) (display string, isRange bool) {
+	if min <= 0 && max <= 0 {
+		return "", false
+	}
+	if min <= 0 {
+		min = max
+	}
+	if max < min {
+		max = min
+	}
+	lo := normalizePriceString(fmt.Sprintf("%.2f", min))
+	hi := normalizePriceString(fmt.Sprintf("%.2f", max))
+	if n >= 2 && max > min {
+		return fmt.Sprintf("%s – %s (%d offers)", lo, hi, n), true
+	}
+	if n >= 2 {
+		// Multiple hits at the same price — still not a single deep-link listing.
+		return fmt.Sprintf("%s (%d offers)", lo, n), true
+	}
+	// Only one priced hit observed for this query, but the URL is still a search page.
+	return fmt.Sprintf("from %s (search results)", lo), true
 }
 
 // pickSearchPriceRange chooses the best multi-offer band for a search-only link.
@@ -1436,6 +1475,19 @@ func isDirectProductURL(u string) bool {
 	if u == "" {
 		return false
 	}
+	// Explicit search / multi-result UIs — never treat as a single listing.
+	if strings.Contains(u, "google.com/search") ||
+		strings.Contains(u, "ibp=oshop") ||
+		strings.Contains(u, "tbm=shop") ||
+		strings.Contains(u, "udm=28") ||
+		strings.Contains(u, "amazon.com/s?") ||
+		strings.Contains(u, "amazon.com/s/") ||
+		strings.Contains(u, "homedepot.com/s/") ||
+		strings.Contains(u, "walmart.com/search") ||
+		strings.Contains(u, "/search?") ||
+		strings.Contains(u, "/search/") {
+		return false
+	}
 	switch {
 	case strings.Contains(u, "amazon.com/dp/"), strings.Contains(u, "amazon.com/gp/product/"):
 		return true
@@ -1445,11 +1497,9 @@ func isDirectProductURL(u string) bool {
 		return true
 	case strings.Contains(u, "upcitemdb.com/norob/"):
 		return true // affiliate deep-link to a specific merchant listing
+	case strings.Contains(u, "homedepot.com/p/"):
+		return true
 	case strings.Contains(u, "/product/"), strings.Contains(u, "/p/"):
-		// generic retailer product paths (Home Depot /p/, etc.)
-		if strings.Contains(u, "/search") || strings.Contains(u, "tbm=shop") || strings.Contains(u, "/s?") || strings.Contains(u, "/s/") {
-			return false
-		}
 		return true
 	default:
 		return false

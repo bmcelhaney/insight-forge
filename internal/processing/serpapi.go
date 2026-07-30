@@ -287,18 +287,17 @@ func identityFromShoppingHits(hits []shoppingHit, preferSKU, mfr string) product
 		id.ShopMin, id.ShopMax, id.ShopCount = minP, maxP, len(shopPrices)
 		if bestShop.Link != "" {
 			id.ShopLink = bestShop.Link
-			id.OfferLink = bestShop.Link
+			// Only promote to OfferLink/RetailURL when it is a real product page.
+			// Google Shopping result URLs are multi-result UIs and must stay "search".
 			if isDirectProductURL(bestShop.Link) {
+				id.OfferLink = bestShop.Link
 				id.RetailURL = bestShop.Link
 			}
 		}
-	} else if bestShop.Link == "" && ranked[0].Link != "" {
-		// Fall back to first hit link as shop destination.
+	} else if ranked[0].Link != "" && isDirectProductURL(ranked[0].Link) {
 		id.ShopLink = ranked[0].Link
 		id.OfferLink = ranked[0].Link
-		if isDirectProductURL(ranked[0].Link) {
-			id.RetailURL = ranked[0].Link
-		}
+		id.RetailURL = ranked[0].Link
 	}
 	if id.ASIN != "" || id.RetailURL != "" || id.OfferLink != "" || id.OfferPrice > 0 {
 		id.DeepLinkOK = true
