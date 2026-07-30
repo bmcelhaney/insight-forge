@@ -82,21 +82,41 @@
 
       <!-- Search Bar -->
       <div class="mb-8">
-        <form id="analyze-form" class="flex gap-3">
-          <div class="flex-1">
+        <form id="analyze-form" class="flex flex-col sm:flex-row gap-3">
+          <div class="flex-1 min-w-0">
             <div class="relative">
               <input id="nsn-input" type="text" value="7920014487052"
                      class="w-full bg-zinc-900 border border-zinc-700 focus:border-emerald-500 font-mono text-2xl px-5 py-3.5 rounded-2xl placeholder:text-zinc-500"
-                     placeholder="Enter 13-digit NSN or NIIN">
+                     placeholder="Enter 13-digit NSN or NIIN"
+                     autocomplete="off"
+                     list="recent-nsn-datalist">
+              <datalist id="recent-nsn-datalist"></datalist>
             </div>
           </div>
-          <button type="submit"
-                  class="px-10 py-3.5 bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 transition font-semibold rounded-2xl flex items-center gap-2 text-lg">
-            <i class="fa-solid fa-magnifying-glass"></i>
-            <span>ANALYZE</span>
-          </button>
+          <div class="flex gap-3 sm:w-auto w-full">
+            <div class="relative flex-1 sm:flex-none sm:min-w-[220px]">
+              <label for="recent-nsn-select" class="sr-only">Recent searches</label>
+              <select id="recent-nsn-select"
+                      class="w-full h-full bg-zinc-900 border border-zinc-700 focus:border-emerald-500 text-sm text-zinc-200 px-3 py-3.5 rounded-2xl appearance-none cursor-pointer"
+                      title="Select a recently analyzed NSN">
+                <option value="">Recent searches…</option>
+              </select>
+              <i class="fa-solid fa-chevron-down pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-zinc-500 text-xs"></i>
+            </div>
+            <button type="submit"
+                    class="px-8 sm:px-10 py-3.5 bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 transition font-semibold rounded-2xl flex items-center gap-2 text-lg shrink-0">
+              <i class="fa-solid fa-magnifying-glass"></i>
+              <span>ANALYZE</span>
+            </button>
+          </div>
         </form>
-        <div class="text-[10px] text-zinc-500 mt-1.5 px-1">Multi-source extraction from WebFLIS, USAspending, and GSA Advantage</div>
+        <div class="flex flex-wrap items-center gap-x-3 gap-y-1 mt-1.5 px-1">
+          <div class="text-[10px] text-zinc-500">Multi-source extraction from WebFLIS, USAspending, and GSA Advantage</div>
+          <button type="button" id="clear-recent-nsns"
+                  class="hidden text-[10px] text-zinc-500 hover:text-amber-300 underline">
+            Clear recent searches
+          </button>
+        </div>
         <!-- PartsBase source-status banner (shown when API is down / misconfigured) -->
         <div id="partsbase-status-banner" class="hidden mt-3 rounded-2xl border px-4 py-3 text-sm"></div>
       </div>
@@ -270,6 +290,115 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
     let currentResult = null;
     let currentNSN = '';
 
+    // --- Recent NSN searches (browser-local; most-recent first) ---
+    const RECENT_NSN_KEY = 'insightforge.recent_nsns';
+    const RECENT_NSN_MAX = 20;
+
+    function digitsOnlyNSN(value) {
+      return String(value || '').replace(/\D/g, '');
+    }
+
+    function formatDashedNSNDisplay(nsn) {
+      const d = digitsOnlyNSN(nsn);
+      if (d.length >= 13) {
+        const n = d.slice(-13);
+        return n.slice(0, 4) + '-' + n.slice(4, 6) + '-' + n.slice(6, 9) + '-' + n.slice(9, 13);
+      }
+      if (d.length === 9) {
+        return d.slice(0, 2) + '-' + d.slice(2, 5) + '-' + d.slice(5, 9);
+      }
+      return d;
+    }
+
+    function loadRecentNSNs() {
+      try {
+        const raw = localStorage.getItem(RECENT_NSN_KEY);
+        if (!raw) return [];
+        const parsed = JSON.parse(raw);
+        if (!Array.isArray(parsed)) return [];
+        return parsed
+          .map((e) => {
+            if (typeof e === 'string') return { nsn: digitsOnlyNSN(e), label: '', at: 0 };
+            return {
+              nsn: digitsOnlyNSN(e.nsn || e.id || ''),
+              label: String(e.label || e.name || e.item_name || '').trim(),
+              at: Number(e.at) || 0,
+            };
+          })
+          .filter((e) => e.nsn.length >= 9);
+      } catch (_) {
+        return [];
+      }
+    }
+
+    function saveRecentNSNs(list) {
+      try {
+        localStorage.setItem(RECENT_NSN_KEY, JSON.stringify(list.slice(0, RECENT_NSN_MAX)));
+      } catch (_) { /* quota / private mode */ }
+    }
+
+    function rememberRecentNSN(nsn, itemName) {
+      const id = digitsOnlyNSN(nsn);
+      if (id.length < 9) return;
+      let label = String(itemName || '').trim();
+      const prior = loadRecentNSNs();
+      const existing = prior.find((e) => e.nsn === id);
+      if (!label && existing && existing.label) label = existing.label;
+      const list = prior.filter((e) => e.nsn !== id);
+      list.unshift({ nsn: id, label, at: Date.now() });
+      saveRecentNSNs(list);
+      paintRecentNSNSelect();
+    }
+
+    function clearRecentNSNs() {
+      try { localStorage.removeItem(RECENT_NSN_KEY); } catch (_) {}
+      paintRecentNSNSelect();
+    }
+
+    function paintRecentNSNSelect() {
+      const sel = document.getElementById('recent-nsn-select');
+      const dl = document.getElementById('recent-nsn-datalist');
+      const clearBtn = document.getElementById('clear-recent-nsns');
+      const list = loadRecentNSNs();
+      if (sel) {
+        const prev = sel.value;
+        sel.innerHTML = '';
+        const placeholder = document.createElement('option');
+        placeholder.value = '';
+        placeholder.textContent = list.length
+          ? `Recent searches (${list.length})`
+          : 'Recent searches…';
+        sel.appendChild(placeholder);
+        list.forEach((e) => {
+          const opt = document.createElement('option');
+          opt.value = e.nsn;
+          const dashed = formatDashedNSNDisplay(e.nsn);
+          opt.textContent = e.label ? `${dashed} — ${e.label.slice(0, 48)}` : dashed;
+          sel.appendChild(opt);
+        });
+        // Reset to placeholder after paint (selection triggers analysis).
+        sel.value = '';
+        if (prev && list.some((e) => e.nsn === prev)) {
+          // keep placeholder; user already ran that NSN
+        }
+      }
+      if (dl) {
+        dl.innerHTML = '';
+        list.forEach((e) => {
+          const opt = document.createElement('option');
+          opt.value = e.nsn;
+          opt.label = e.label
+            ? `${formatDashedNSNDisplay(e.nsn)} — ${e.label.slice(0, 48)}`
+            : formatDashedNSNDisplay(e.nsn);
+          dl.appendChild(opt);
+        });
+      }
+      if (clearBtn) {
+        if (list.length > 0) clearBtn.classList.remove('hidden');
+        else clearBtn.classList.add('hidden');
+      }
+    }
+
     async function loadVersionInfo() {
       const el = document.getElementById('version-info');
       if (!el) return;
@@ -414,6 +543,7 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
     (function attachUI() {
       try {
         loadVersionInfo();
+        paintRecentNSNSelect();
 
         const input = document.getElementById('nsn-input');
         if (input) {
@@ -437,6 +567,27 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
           });
         } else {
           console.error('analyze-form not found in DOM');
+        }
+
+        const recentSel = document.getElementById('recent-nsn-select');
+        if (recentSel) {
+          recentSel.addEventListener('change', async () => {
+            const nsn = digitsOnlyNSN(recentSel.value);
+            if (!nsn) return;
+            const nsnInput = document.getElementById('nsn-input');
+            if (nsnInput) nsnInput.value = nsn;
+            // Reset select to placeholder after pick so the same NSN can be re-chosen later.
+            recentSel.value = '';
+            await performAnalysis(nsn);
+          });
+        }
+
+        const clearBtn = document.getElementById('clear-recent-nsns');
+        if (clearBtn) {
+          clearBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            clearRecentNSNs();
+          });
         }
 
         // Subtle quick example NSNs — clicking populates the input and runs analysis
@@ -479,6 +630,10 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
         }
         const data = await res.json();
         currentResult = data.result || data;
+
+        // Persist successful search for the recent-searches dropdown.
+        const itemName = (currentResult && (currentResult.item_name || currentResult.ItemName)) || '';
+        rememberRecentNSN(nsn, itemName);
 
         try {
           renderFullAnalysis(currentResult, nsn);
