@@ -168,23 +168,46 @@ func main() {
 
 		snaps, _ := extractorReg.FetchAll(r.Context(), req.NSN, nil, nil)
 		result, _ := processing.Synthesize(r.Context(), req.NSN, snaps)
+		dataCapture := processing.BuildDataCaptureDocument(result, snaps, processing.DataCaptureMeta{
+			Commit:    commit,
+			BuildTime: buildTime,
+		})
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{
-			"nsn":    req.NSN,
-			"result": result,
+			"nsn":          req.NSN,
+			"result":       result,
+			"data_capture": dataCapture, // hit inventory for downstream apps (not pricing-tool export)
 		})
 	})
 
-	// JSON export for pricing tool
+	// JSON export for pricing tool (full InsightResult narrative + scores)
 	r.Get("/api/export/json/{nsn}", func(w http.ResponseWriter, r *http.Request) {
 		nsn := chi.URLParam(r, "nsn")
 		snaps, _ := extractorReg.FetchAll(r.Context(), nsn, nil, nil)
 		result, _ := processing.Synthesize(r.Context(), nsn, snaps)
 
 		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="insight-forge-%s.json"`, nsn))
+		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="insight-forge-pricing-%s.json"`, nsn))
 		json.NewEncoder(w).Encode(result)
+	})
+
+	// Data-capture export: machine-readable hit inventory for downstream apps
+	// (NSN/SKU/UPC/ETS/commercial/procurement/web hits). Schema: insight-forge.data-capture.v1
+	r.Get("/api/export/data/{nsn}", func(w http.ResponseWriter, r *http.Request) {
+		nsn := chi.URLParam(r, "nsn")
+		snaps, _ := extractorReg.FetchAll(r.Context(), nsn, nil, nil)
+		result, _ := processing.Synthesize(r.Context(), nsn, snaps)
+		doc := processing.BuildDataCaptureDocument(result, snaps, processing.DataCaptureMeta{
+			Commit:    commit,
+			BuildTime: buildTime,
+		})
+
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="insight-forge-data-%s.json"`, nsn))
+		enc := json.NewEncoder(w)
+		enc.SetIndent("", "  ")
+		enc.Encode(doc)
 	})
 
 	// Debug endpoint for real award data (FPDS path)
