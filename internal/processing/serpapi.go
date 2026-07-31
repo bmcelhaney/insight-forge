@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/bmcelhaney/insight-forge/internal/models"
 )
 
 // SerpAPI Google Shopping integration for commercial product prices and links.
@@ -147,6 +149,10 @@ func mergeProductIdentity(a, b productIdentity) productIdentity {
 	if b.ShopCount > out.ShopCount {
 		out.ShopMin, out.ShopMax, out.ShopCount = b.ShopMin, b.ShopMax, b.ShopCount
 	}
+	// Preserve atomic offer rows from both UPCItemDB and Serp for data-capture.
+	if len(b.Offers) > 0 {
+		out.Offers = appendMarketOffers(out.Offers, b.Offers...)
+	}
 	if b.DeepLinkOK {
 		out.DeepLinkOK = true
 	}
@@ -243,7 +249,9 @@ func identityFromShoppingHits(hits []shoppingHit, preferSKU, mfr string) product
 		}
 		allPrices = append(allPrices, h.Price)
 		src := strings.ToLower(h.Source + " " + h.Link)
+		channel := "shop"
 		if strings.Contains(src, "amazon") {
+			channel = "amazon"
 			amazonPrices = append(amazonPrices, h.Price)
 			if bestAmazon.Price <= 0 || h.Price < bestAmazon.Price {
 				bestAmazon = h
@@ -263,6 +271,16 @@ func identityFromShoppingHits(hits []shoppingHit, preferSKU, mfr string) product
 				bestShop = h
 			}
 		}
+		// Atomic offer for data-capture export (one price hit, quantity 1).
+		id.Offers = append(id.Offers, models.MarketOffer{
+			UnitPrice: h.Price,
+			Quantity:  1,
+			Currency:  "USD",
+			Channel:   channel,
+			Merchant:  nonEmpty(h.Source, "Google Shopping"),
+			Source:    "SERPAPI",
+			Link:      h.Link,
+		})
 	}
 
 	if len(allPrices) > 0 {

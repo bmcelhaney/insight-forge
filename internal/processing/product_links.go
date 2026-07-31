@@ -50,6 +50,8 @@ type productIdentity struct {
 	UPCMax         float64
 	UPCCount       int
 	DeepLinkOK     bool // true when we have a direct product URL (Amazon /dp, retail, offer, or UPC dossier)
+	// Offers are atomic unit-price observations for data-capture export (not ranges).
+	Offers []models.MarketOffer
 }
 
 type cachedProductIdentity struct {
@@ -545,6 +547,38 @@ func applyDeterministicProductLinks(refs []models.CommercialReference, entityID 
 		if fedPrice != "" && r.LinkGSA != "" {
 			r.PriceFederal = normalizePriceString(fedPrice)
 			r.PriceFederalSrc = fedSrc
+		}
+
+		// Atomic market offers for data-capture export (unit_price + quantity, no ranges).
+		asOf := time.Now().UTC().Format("2006-01-02")
+		if id != nil && len(id.Offers) > 0 {
+			for i := range id.Offers {
+				if id.Offers[i].AsOf == "" {
+					id.Offers[i].AsOf = asOf
+				}
+				if id.Offers[i].Quantity <= 0 {
+					id.Offers[i].Quantity = 1
+				}
+			}
+			r.MarketOffers = appendMarketOffers(r.MarketOffers, id.Offers...)
+		}
+		// Single-price channels still get an atomic offer when offer rows were empty.
+		if len(r.MarketOffers) == 0 {
+			r.MarketOffers = appendMarketOffers(r.MarketOffers, singlePriceMarketOffers(*r, asOf)...)
+		} else {
+			// Always include AbilityOne federal list as its own atomic observation when present.
+			if up, ok := parseSingleUnitPrice(r.PriceFederal); ok {
+				r.MarketOffers = appendMarketOffers(r.MarketOffers, models.MarketOffer{
+					UnitPrice: up,
+					Quantity:  1,
+					Currency:  "USD",
+					Channel:   "federal",
+					Merchant:  "AbilityOne.com",
+					Source:    nonEmpty(r.PriceFederalSrc, "ABILITYONE_COM"),
+					Link:      r.LinkGSA,
+					AsOf:      asOf,
+				})
+			}
 		}
 
 		// Primary tile price: prefer shop, then amazon, then upc, then existing GSA/row price.
@@ -1131,6 +1165,9 @@ func upcitemdbFetch(ctx context.Context, endpoint, preferSKU string) (id product
 	id.UPCPrice = ch.BestPrice
 	id.UPCMerchant = ch.BestMerchant
 	id.UPCMin, id.UPCMax, id.UPCCount = ch.AllMin, ch.AllMax, ch.AllCount
+	if len(ch.Offers) > 0 {
+		id.Offers = append(id.Offers, ch.Offers...)
+	}
 	if id.OfferLink == "" && ch.ShopLink != "" {
 		id.OfferLink = ch.ShopLink
 	}
@@ -1187,6 +1224,8 @@ type channelOfferSet struct {
 	AllMin         float64
 	AllMax         float64
 	AllCount       int
+	// Offers is every usable atomic price row (qty=1) for data-capture export.
+	Offers []models.MarketOffer
 }
 
 // maxTopOfferResults caps "top results" used for search-link ranges (Amazon/shop
@@ -1390,6 +1429,31 @@ func collectChannelOffers(offers []upcOffer) channelOfferSet {
 	// so analysts see the same breadth as the UPC dossier for retail search.
 	if _, min, max, n, ok := fullRange(shopList); ok && n > out.ShopCount {
 		out.ShopMin, out.ShopMax, out.ShopCount = min, max, n
+	}
+	// Atomic offer rows for data-capture (one hit per merchant price; quantity = 1).
+	usdAll := filterUSD(all)
+	for _, c := range usdAll {
+		ch := c.channel
+		if ch == "" {
+			ch = "shop"
+		}
+		if ch == "amazon" {
+			// keep
+		} else {
+			ch = "catalog"
+			if c.channel == "shop" {
+				ch = "shop"
+			}
+		}
+		out.Offers = append(out.Offers, models.MarketOffer{
+			UnitPrice: c.price,
+			Quantity:  1,
+			Currency:  nonEmpty(c.currency, "USD"),
+			Channel:   ch,
+			Merchant:  c.merchant,
+			Source:    "UPCITEMDB",
+			Link:      c.link,
+		})
 	}
 	return out
 }
@@ -1827,4 +1891,125 @@ func clearProductIDCache() {
 	productIDCacheMu.Lock()
 	productIDCache = map[string]cachedProductIdentity{}
 	productIDCacheMu.Unlock()
+}
+
+// parseSingleUnitPrice extracts a single unit price. Returns false for ranges /
+// "from $X" search estimates so data-capture never invents atomic rows from bands.
+func parseSingleUnitPrice(raw string) (float64, bool) {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return 0, false
+	}
+	lower := strings.ToLower(s)
+	if strings.Contains(s, "–") || strings.Contains(s, "—") ||
+		strings.Contains(s, " - ") || strings.Contains(lower, "from ") ||
+		strings.Contains(lower, "offers") {
+		// Explicit multi-offer / range display — skip for atomic export.
+		// Also reject " $12.00-$15.00 " style.
+		if strings.Contains(s, "–") || strings.Contains(s, "—") || strings.Contains(s, "-") && strings.Count(s, "$") >= 2 {
+			return 0, false
+		}
+		if strings.Contains(lower, "from ") || strings.Contains(lower, "offers") {
+			return 0, false
+		}
+	}
+	// Single $12.50 or 12.50
+	s = strings.ReplaceAll(s, ",", "")
+	s = strings.TrimPrefix(s, "$")
+	// Strip trailing notes like " (3 offers)" already handled; leftover junk → fail
+	fields := strings.Fields(s)
+	if len(fields) == 0 {
+		return 0, false
+	}
+	v, err := strconv.ParseFloat(fields[0], 64)
+	if err != nil || v <= 0 || v > 500000 {
+		return 0, false
+	}
+	return v, true
+}
+
+// appendMarketOffers de-dupes by channel+merchant+price and appends.
+func appendMarketOffers(dst []models.MarketOffer, more ...models.MarketOffer) []models.MarketOffer {
+	seen := map[string]struct{}{}
+	for _, o := range dst {
+		key := marketOfferKey(o)
+		seen[key] = struct{}{}
+	}
+	for _, o := range more {
+		if o.UnitPrice <= 0 {
+			continue
+		}
+		if o.Quantity <= 0 {
+			o.Quantity = 1
+		}
+		if o.Currency == "" {
+			o.Currency = "USD"
+		}
+		key := marketOfferKey(o)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		dst = append(dst, o)
+	}
+	return dst
+}
+
+func marketOfferKey(o models.MarketOffer) string {
+	return fmt.Sprintf("%s|%s|%.4f|%d|%s",
+		strings.ToLower(o.Channel),
+		strings.ToLower(o.Merchant),
+		o.UnitPrice,
+		o.Quantity,
+		o.Source,
+	)
+}
+
+// singlePriceMarketOffers builds atomic offers from non-range channel price strings.
+func singlePriceMarketOffers(r models.CommercialReference, asOf string) []models.MarketOffer {
+	var out []models.MarketOffer
+	type cand struct {
+		raw, channel, merchant, source, link string
+	}
+	cands := []cand{
+		{r.PriceShop, "shop", "", r.PriceShopSrc, r.LinkShop},
+		{r.PriceAmazon, "amazon", "", r.PriceAmazonSrc, r.LinkAmazon},
+		{r.PriceUPC, "catalog", "", r.PriceUPCSrc, r.LinkUPC},
+		{r.PriceFederal, "federal", "AbilityOne.com", r.PriceFederalSrc, r.LinkGSA},
+		{r.Price, "listing", "", r.PriceSource, r.PriceURL},
+	}
+	for _, c := range cands {
+		if c.raw == "" {
+			continue
+		}
+		// Skip known range flags / range strings
+		if c.channel == "shop" && r.PriceShopIsRange {
+			continue
+		}
+		if c.channel == "amazon" && r.PriceAmazonIsRange {
+			continue
+		}
+		if c.channel == "catalog" && r.PriceUPCIsRange {
+			continue
+		}
+		up, ok := parseSingleUnitPrice(c.raw)
+		if !ok {
+			continue
+		}
+		src := c.source
+		if src == "" {
+			src = "MARKET"
+		}
+		out = append(out, models.MarketOffer{
+			UnitPrice: up,
+			Quantity:  1,
+			Currency:  "USD",
+			Channel:   c.channel,
+			Merchant:  c.merchant,
+			Source:    src,
+			Link:      c.link,
+			AsOf:      asOf,
+		})
+	}
+	return out
 }

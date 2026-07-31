@@ -2,6 +2,7 @@ package processing
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -17,6 +18,9 @@ type DataCaptureMeta struct {
 // BuildDataCaptureDocument assembles a machine-readable hit inventory from a
 // synthesized InsightResult and the underlying snapshots. Suitable as an input
 // payload for other applications (not the pricing-tool narrative export).
+//
+// Pricing policy (schema 1.1): every price is an atomic observation with
+// unit_price + quantity. Analysis UI ranges are not exported.
 func BuildDataCaptureDocument(result models.InsightResult, snaps []models.DataSnapshot, meta DataCaptureMeta) models.DataCaptureDocument {
 	nsn := digitsOnlyString(firstNonEmpty(result.EntityID, ""))
 	if len(nsn) > 13 {
@@ -33,7 +37,7 @@ func BuildDataCaptureDocument(result models.InsightResult, snaps []models.DataSn
 	doc := models.DataCaptureDocument{
 		Schema:        models.DataCaptureSchemaID,
 		SchemaVersion: models.DataCaptureSchemaVersion,
-		Purpose:       "Machine-readable inventory of NSN/SKU/UPC/ETS/commercial/procurement hits for downstream applications. Not the pricing-tool narrative export.",
+		Purpose:       "Machine-readable inventory of NSN/SKU/UPC/ETS/commercial/procurement hits for downstream applications. Price hits are atomic (unit_price + quantity); no market ranges. Not the pricing-tool narrative export.",
 		ExportedAt:    time.Now().UTC(),
 		Generator: models.DataCaptureGenerator{
 			Name:        "insight-forge",
@@ -57,7 +61,7 @@ func BuildDataCaptureDocument(result models.InsightResult, snaps []models.DataSn
 		Sources: buildDataCaptureSources(snaps),
 	}
 
-	// 1) Item-master identity (one hit when we have a name/description)
+	// 1) Item-master identity (no price)
 	if result.ItemName != "" || result.TechnicalCharacteristics != "" {
 		doc.Hits = append(doc.Hits, models.DataCaptureHit{
 			HitID:   "item-master-1",
@@ -75,43 +79,29 @@ func BuildDataCaptureDocument(result models.InsightResult, snaps []models.DataSn
 		})
 	}
 
-	// 2) Commercial / ETS / GSA references — primary product hits
+	// 2) Commercial / ETS / GSA product identity hits + atomic price_observation rows
+	priceSeq := 0
 	for i, c := range result.CommercialReferences {
 		hitType := commercialHitType(c.Source)
+		parentID := fmt.Sprintf("%s-%d", hitType, i+1)
+		ids := models.DataCaptureIdentifiers{
+			NSN:          nsn,
+			NIIN:         niin,
+			FSC:          fsc,
+			SKU:          strings.TrimSpace(c.SKU),
+			UPC:          digitsOnlyString(c.UPC),
+			GTIN:         digitsOnlyString(c.GTIN),
+			Manufacturer: strings.TrimSpace(c.Manufacturer),
+		}
 		hit := models.DataCaptureHit{
-			HitID:   fmt.Sprintf("%s-%d", hitType, i+1),
-			HitType: hitType,
-			Source:  firstNonEmpty(c.Source, "COMMERCIAL"),
-			Identifiers: models.DataCaptureIdentifiers{
-				NSN:          nsn,
-				NIIN:         niin,
-				FSC:          fsc,
-				SKU:          strings.TrimSpace(c.SKU),
-				UPC:          digitsOnlyString(c.UPC),
-				GTIN:         digitsOnlyString(c.GTIN),
-				Manufacturer: strings.TrimSpace(c.Manufacturer),
-			},
+			HitID:       parentID,
+			HitType:     hitType,
+			Source:      firstNonEmpty(c.Source, "COMMERCIAL"),
+			Identifiers: ids,
 			Description: strings.TrimSpace(c.Description),
 			Context:     strings.TrimSpace(c.Context),
 			DateAdded:   strings.TrimSpace(c.DateAdded),
-		}
-		if hasAnyPrice(c) {
-			hit.Pricing = &models.DataCapturePricing{
-				Primary:       c.Price,
-				PrimarySource: c.PriceSource,
-				AsOf:          c.PriceAsOf,
-				Amazon:        c.PriceAmazon,
-				AmazonSource:  c.PriceAmazonSrc,
-				AmazonIsRange: c.PriceAmazonIsRange,
-				Shop:          c.PriceShop,
-				ShopSource:    c.PriceShopSrc,
-				ShopIsRange:   c.PriceShopIsRange,
-				UPC:           c.PriceUPC,
-				UPCSource:     c.PriceUPCSrc,
-				UPCIsRange:    c.PriceUPCIsRange,
-				Federal:       c.PriceFederal,
-				FederalSource: c.PriceFederalSrc,
-			}
+			// Identity hits intentionally omit Pricing (ranges live only in UI/analysis).
 		}
 		if hasAnyLink(c) {
 			hit.Links = &models.DataCaptureLinks{
@@ -124,40 +114,94 @@ func BuildDataCaptureDocument(result models.InsightResult, snaps []models.DataSn
 			}
 		}
 		doc.Hits = append(doc.Hits, hit)
+
+		// Prefer resolved MarketOffers (one row per observed offer).
+		offers := c.MarketOffers
+		if len(offers) == 0 {
+			// Fallback: only single (non-range) channel prices.
+			offers = singlePriceMarketOffers(c, c.PriceAsOf)
+		}
+		for _, o := range offers {
+			if o.UnitPrice <= 0 {
+				continue
+			}
+			qty := o.Quantity
+			if qty <= 0 {
+				qty = 1
+			}
+			priceSeq++
+			cur := o.Currency
+			if cur == "" {
+				cur = "USD"
+			}
+			priceHit := models.DataCaptureHit{
+				HitID:       fmt.Sprintf("price-obs-%d", priceSeq),
+				HitType:     "price_observation",
+				Source:      firstNonEmpty(o.Source, c.Source, "MARKET"),
+				Identifiers: ids,
+				Description: strings.TrimSpace(c.Description),
+				Pricing: &models.DataCapturePricing{
+					UnitPrice:   roundMoney(o.UnitPrice),
+					Quantity:    qty,
+					Currency:    cur,
+					Channel:     o.Channel,
+					Merchant:    o.Merchant,
+					PriceSource: firstNonEmpty(o.Source, c.PriceSource),
+					AsOf:        firstNonEmpty(o.AsOf, c.PriceAsOf),
+				},
+				Attributes: map[string]any{
+					"parent_hit_id": parentID,
+					"parent_type":   hitType,
+				},
+			}
+			if o.Link != "" {
+				priceHit.Links = &models.DataCaptureLinks{URL: o.Link, PriceURL: o.Link}
+			}
+			doc.Hits = append(doc.Hits, priceHit)
+		}
 	}
 
-	// 3) AbilityOne.com NSN channel price
-	if ao := result.AbilityOneChannelPrice; ao != nil && strings.TrimSpace(ao.Price) != "" {
-		doc.Hits = append(doc.Hits, models.DataCaptureHit{
-			HitID:   "channel-price-abilityone-1",
-			HitType: "channel_price",
-			Source:  firstNonEmpty(ao.Source, "ABILITYONE_COM"),
-			Identifiers: models.DataCaptureIdentifiers{
-				NSN:   nsn,
-				NIIN:  niin,
-				FSC:   fsc,
-				SKU:   strings.TrimSpace(ao.SKU),
-				Brand: strings.TrimSpace(ao.Brand),
-			},
-			Description: strings.TrimSpace(ao.Name),
-			Pricing: &models.DataCapturePricing{
-				Primary:       ao.Price,
-				PrimarySource: firstNonEmpty(ao.Source, "ABILITYONE_COM"),
-				AsOf:          ao.AsOf,
-				Federal:       ao.Price,
-				FederalSource: firstNonEmpty(ao.Source, "ABILITYONE_COM"),
-			},
-			Links: &models.DataCaptureLinks{
-				Federal: ao.URL,
-				URL:     ao.URL,
-			},
-			Context: strings.TrimSpace(ao.Note),
-		})
+	// 3) AbilityOne.com NSN channel price — atomic federal observation
+	if ao := result.AbilityOneChannelPrice; ao != nil {
+		if up, ok := parseSingleUnitPrice(ao.Price); ok {
+			priceSeq++
+			doc.Hits = append(doc.Hits, models.DataCaptureHit{
+				HitID:   fmt.Sprintf("price-obs-%d", priceSeq),
+				HitType: "price_observation",
+				Source:  firstNonEmpty(ao.Source, "ABILITYONE_COM"),
+				Identifiers: models.DataCaptureIdentifiers{
+					NSN:   nsn,
+					NIIN:  niin,
+					FSC:   fsc,
+					SKU:   strings.TrimSpace(ao.SKU),
+					Brand: strings.TrimSpace(ao.Brand),
+				},
+				Description: strings.TrimSpace(ao.Name),
+				Pricing: &models.DataCapturePricing{
+					UnitPrice:   roundMoney(up),
+					Quantity:    1,
+					Currency:    "USD",
+					Channel:     "federal",
+					Merchant:    "AbilityOne.com",
+					PriceSource: firstNonEmpty(ao.Source, "ABILITYONE_COM"),
+					AsOf:        ao.AsOf,
+				},
+				Links: &models.DataCaptureLinks{
+					Federal: ao.URL,
+					URL:     ao.URL,
+				},
+				Context: strings.TrimSpace(ao.Note),
+				Attributes: map[string]any{
+					"catalog": "abilityone.com",
+				},
+			})
+		}
 	}
 
-	// 4) PartsBase historical transaction samples + summary
+	// 4) PartsBase historical transactions — each sample is already atomic
 	if pb := result.PartsBaseHistoricalPricing; pb != nil {
-		if pb.SignalCount > 0 || pb.MinUnitPrice != "" || pb.MaxUnitPrice != "" {
+		// Summary counts only (no min/max range pricing).
+		if pb.SignalCount > 0 || pb.SupplierCount > 0 {
 			doc.Hits = append(doc.Hits, models.DataCaptureHit{
 				HitID:   "partsbase-summary-1",
 				HitType: "partsbase_summary",
@@ -167,42 +211,55 @@ func BuildDataCaptureDocument(result models.InsightResult, snaps []models.DataSn
 					NIIN: niin,
 					FSC:  fsc,
 				},
-				Pricing: &models.DataCapturePricing{
-					Min:    pb.MinUnitPrice,
-					Max:    pb.MaxUnitPrice,
-					Median: pb.MedianUnitPrice,
-					AsOf:   pb.LastUpdated,
-				},
 				Context: strings.TrimSpace(pb.Note),
 				Attributes: map[string]any{
 					"signal_count":   pb.SignalCount,
 					"supplier_count": pb.SupplierCount,
+					"last_updated":   pb.LastUpdated,
 				},
 			})
 		}
 		for i, row := range pb.Sample {
+			up, ok := parseSingleUnitPrice(row.UnitPrice)
+			if !ok {
+				// try bare number
+				if v, err := strconv.ParseFloat(strings.TrimSpace(strings.TrimPrefix(strings.ReplaceAll(row.UnitPrice, ",", ""), "$")), 64); err == nil && v > 0 {
+					up, ok = v, true
+				}
+			}
+			if !ok {
+				continue
+			}
+			qty := row.Quantity
+			if qty <= 0 {
+				qty = 1
+			}
+			priceSeq++
 			doc.Hits = append(doc.Hits, models.DataCaptureHit{
-				HitID:   fmt.Sprintf("partsbase-tx-%d", i+1),
-				HitType: "partsbase_transaction",
+				HitID:   fmt.Sprintf("price-obs-%d", priceSeq),
+				HitType: "price_observation",
 				Source:  firstNonEmpty(pb.Source, "PARTSBASE"),
 				Identifiers: models.DataCaptureIdentifiers{
-					NSN:      nsn,
-					NIIN:     niin,
-					FSC:      fsc,
+					NSN:          nsn,
+					NIIN:         niin,
+					FSC:          fsc,
 					Manufacturer: strings.TrimSpace(row.Supplier),
-					Contract: strings.TrimSpace(row.ContractNumber),
+					Contract:     strings.TrimSpace(row.ContractNumber),
 				},
 				Pricing: &models.DataCapturePricing{
-					UnitPrice: row.UnitPrice,
-					Primary:   row.UnitPrice,
-					Quantity:  row.Quantity,
-					AsOf:      row.AwardDate,
+					UnitPrice:   roundMoney(up),
+					Quantity:    qty,
+					Currency:    "USD",
+					Channel:     "partsbase",
+					Merchant:    strings.TrimSpace(row.Supplier),
+					PriceSource: "PARTSBASE",
+					AsOf:        row.AwardDate,
 				},
 				Context: strings.TrimSpace(row.Context),
 				Attributes: map[string]any{
 					"condition_code": row.ConditionCode,
 					"award_date":     row.AwardDate,
-					"supplier":       row.Supplier,
+					"sample_index":   i + 1,
 				},
 			})
 		}
@@ -226,15 +283,15 @@ func BuildDataCaptureDocument(result models.InsightResult, snaps []models.DataSn
 		})
 	}
 
-	// 6) Federal award suppliers (aggregated)
+	// 6) Federal award suppliers (no prices)
 	for i, s := range result.SupplierData.TopSuppliers {
 		doc.Hits = append(doc.Hits, models.DataCaptureHit{
 			HitID:   fmt.Sprintf("federal-supplier-%d", i+1),
 			HitType: "federal_supplier",
 			Source:  "FPDS",
 			Identifiers: models.DataCaptureIdentifiers{
-				NSN:  nsn,
-				CAGE: strings.TrimSpace(s.CAGE),
+				NSN:          nsn,
+				CAGE:         strings.TrimSpace(s.CAGE),
 				Manufacturer: strings.TrimSpace(s.Name),
 			},
 			Attributes: map[string]any{
@@ -247,17 +304,9 @@ func BuildDataCaptureDocument(result models.InsightResult, snaps []models.DataSn
 		})
 	}
 
-	// 7) Commercial supplier rollup (from SKU/UPC concentration)
+	// 7) Commercial supplier rollup (identity only — no example/range prices)
 	for i, s := range result.TopCommercialSuppliers {
-		attrs := map[string]any{
-			"reference_count": s.Count,
-			"skus":            s.SKUs,
-			"upcs":            s.UPCs,
-		}
-		if s.PricedCount > 0 {
-			attrs["priced_count"] = s.PricedCount
-		}
-		hit := models.DataCaptureHit{
+		doc.Hits = append(doc.Hits, models.DataCaptureHit{
 			HitID:   fmt.Sprintf("commercial-supplier-%d", i+1),
 			HitType: "commercial_supplier",
 			Source:  firstNonEmpty(s.Source, "COMMERCIAL"),
@@ -265,21 +314,18 @@ func BuildDataCaptureDocument(result models.InsightResult, snaps []models.DataSn
 				NSN:          nsn,
 				Manufacturer: strings.TrimSpace(s.Name),
 			},
-			Attributes: attrs,
-		}
-		if s.ExamplePrice != "" {
-			hit.Pricing = &models.DataCapturePricing{
-				Primary:       s.ExamplePrice,
-				PrimarySource: "MARKET_RANGE",
-			}
-		}
-		doc.Hits = append(doc.Hits, hit)
+			Attributes: map[string]any{
+				"reference_count": s.Count,
+				"skus":            s.SKUs,
+				"upcs":            s.UPCs,
+				"priced_count":    s.PricedCount,
+			},
+		})
 	}
 
-	// 8) Web search results from snapshots (not already commercial tiles)
+	// 8) Web search results
 	doc.Hits = append(doc.Hits, webSearchHitsFromSnapshots(snaps, nsn, niin, fsc)...)
 
-	// 9) Optional scores context
 	doc.Scores = &models.DataCaptureScores{
 		SourcingAttractiveness: result.SourcingAttractiveness,
 		SupplyRisk:             result.SupplyRisk,
@@ -305,10 +351,6 @@ func commercialHitType(source string) string {
 	default:
 		return "commercial_reference"
 	}
-}
-
-func hasAnyPrice(c models.CommercialReference) bool {
-	return c.Price != "" || c.PriceAmazon != "" || c.PriceShop != "" || c.PriceUPC != "" || c.PriceFederal != ""
 }
 
 func hasAnyLink(c models.CommercialReference) bool {
@@ -358,7 +400,6 @@ func webSearchHitsFromSnapshots(snaps []models.DataSnapshot, nsn, niin, fsc stri
 		if !ok {
 			continue
 		}
-		// results may be []map[string]any or []any
 		switch rows := rawResults.(type) {
 		case []map[string]any:
 			for _, row := range rows {
@@ -443,8 +484,11 @@ func computeDataCaptureCounts(hits []models.DataCaptureHit) models.DataCaptureCo
 		if m := strings.TrimSpace(h.Identifiers.Manufacturer); m != "" {
 			mfrs[m] = struct{}{}
 		}
-		if hitHasPrice(h) {
+		if h.Pricing != nil && h.Pricing.UnitPrice > 0 {
 			c.PricedHits++
+		}
+		if h.HitType == "price_observation" {
+			c.PriceObservations++
 		}
 	}
 	c.UniqueSKUs = len(skus)
@@ -453,21 +497,11 @@ func computeDataCaptureCounts(hits []models.DataCaptureHit) models.DataCaptureCo
 	return c
 }
 
-func hitHasPrice(h models.DataCaptureHit) bool {
-	if h.Pricing == nil {
-		return false
-	}
-	p := h.Pricing
-	return p.Primary != "" || p.Amazon != "" || p.Shop != "" || p.UPC != "" ||
-		p.Federal != "" || p.UnitPrice != "" || p.Min != "" || p.Max != "" || p.Median != ""
-}
-
 func formatDashedNSNLocal(nsn string) string {
 	d := digitsOnlyString(nsn)
 	if len(d) != 13 {
 		return d
 	}
-	// FSC-NIIN group: 1234-00-123-4567
 	return d[:4] + "-" + d[4:6] + "-" + d[6:9] + "-" + d[9:]
 }
 
@@ -478,4 +512,9 @@ func firstNonEmpty(vals ...string) string {
 		}
 	}
 	return ""
+}
+
+func roundMoney(v float64) float64 {
+	// Two decimal places without importing math for simple rounding.
+	return float64(int(v*100+0.5)) / 100
 }

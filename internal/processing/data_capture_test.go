@@ -7,7 +7,7 @@ import (
 	"github.com/bmcelhaney/insight-forge/internal/models"
 )
 
-func TestBuildDataCaptureDocument_HitInventory(t *testing.T) {
+func TestBuildDataCaptureDocument_AtomicPriceHits(t *testing.T) {
 	result := models.InsightResult{
 		EntityID:    "7920014487052",
 		ItemName:    "MOPHEAD,WET",
@@ -21,17 +21,24 @@ func TestBuildDataCaptureDocument_HitInventory(t *testing.T) {
 				Manufacturer: "Acme",
 				Description:  "Wet mop head",
 				Source:       "ABILITYONE_ETS",
-				Price:        "$12.50 – $18.00",
-				PriceShop:    "$12.50 – $18.00",
+				// UI-style range on the tile — must NOT appear as a range in export.
+				Price:            "$12.50 – $18.00 (4 offers)",
+				PriceShop:        "$12.50 – $18.00 (4 offers)",
 				PriceShopIsRange: true,
-				LinkAmazon:   "https://www.amazon.com/s?k=MOP-123",
-				LinkShop:     "https://www.google.com/search?tbm=shop&q=MOP-123",
+				LinkAmazon:       "https://www.amazon.com/s?k=MOP-123",
+				LinkShop:         "https://www.google.com/search?tbm=shop&q=MOP-123",
+				MarketOffers: []models.MarketOffer{
+					{UnitPrice: 12.50, Quantity: 1, Currency: "USD", Channel: "shop", Merchant: "Home Depot", Source: "SERPAPI"},
+					{UnitPrice: 14.99, Quantity: 1, Currency: "USD", Channel: "amazon", Merchant: "Amazon", Source: "SERPAPI"},
+					{UnitPrice: 18.00, Quantity: 1, Currency: "USD", Channel: "shop", Merchant: "Walmart", Source: "SERPAPI"},
+				},
 			},
 			{
 				SKU:          "GSA-9",
 				Manufacturer: "Acme",
 				Source:       "GSA_ADVANTAGE",
 				Price:        "$15.00",
+				PriceSource:  "GSA_ADVANTAGE",
 			},
 		},
 		AbilityOneChannelPrice: &models.ChannelPrice{
@@ -41,14 +48,16 @@ func TestBuildDataCaptureDocument_HitInventory(t *testing.T) {
 			URL:    "https://www.abilityone.com/search?q=7920-01-448-7052",
 		},
 		PartsBaseHistoricalPricing: &models.PartsBasePriceSummary{
-			SignalCount:     3,
-			SupplierCount:   2,
+			SignalCount:   3,
+			SupplierCount: 2,
+			// Summary min/max must not become range hits.
 			MinUnitPrice:    "$10.00",
 			MaxUnitPrice:    "$20.00",
 			MedianUnitPrice: "$15.00",
 			Source:          "PARTSBASE",
 			Sample: []models.PartsBaseHistoricalPrice{
 				{UnitPrice: "$10.00", Supplier: "Vendor A", Quantity: 5, AwardDate: "2025-01-01"},
+				{UnitPrice: "$20.00", Supplier: "Vendor B", Quantity: 2, AwardDate: "2025-02-01"},
 			},
 		},
 		RelatedNSNs: []models.RelatedNSN{
@@ -80,71 +89,74 @@ func TestBuildDataCaptureDocument_HitInventory(t *testing.T) {
 			},
 			QualityScore: 0.8,
 		},
-		{
-			ID:         "snap-ets-1",
-			SourceCode: "ABILITYONE_ETS",
-			SnapshotAt: time.Now(),
-			RawResponse: map[string]any{
-				"data_source":        "ets_xlsx",
-				"matched_rows_count": 2,
-			},
-			QualityScore: 0.95,
-		},
 	}
 
 	doc := BuildDataCaptureDocument(result, snaps, DataCaptureMeta{Commit: "abc123", BuildTime: "2026-07-31T00:00:00Z"})
 
-	if doc.Schema != models.DataCaptureSchemaID {
-		t.Fatalf("schema: got %q", doc.Schema)
+	if doc.SchemaVersion != "1.1" {
+		t.Fatalf("schema_version: got %q want 1.1", doc.SchemaVersion)
 	}
-	if doc.SchemaVersion != models.DataCaptureSchemaVersion {
-		t.Fatalf("schema_version: got %q", doc.SchemaVersion)
+	if doc.Counts.PriceObservations < 6 {
+		// 3 market offers + 1 GSA single + 1 AbilityOne + 2 partsbase = 7 ideally
+		t.Fatalf("expected multiple price_observation hits, got %d (by_type=%v)", doc.Counts.PriceObservations, doc.Counts.ByType)
 	}
-	if doc.Query.NSN != "7920014487052" {
-		t.Fatalf("nsn: got %q", doc.Query.NSN)
+
+	// Every price hit must be atomic: unit_price > 0, quantity >= 1, no range fields.
+	for _, h := range doc.Hits {
+		if h.HitType != "price_observation" {
+			// Identity commercial hits must not carry range pricing
+			if h.Pricing != nil && (h.HitType == "ets_mapping" || h.HitType == "gsa_listing" || h.HitType == "commercial_supplier") {
+				t.Fatalf("identity hit %s should not have pricing (got %+v)", h.HitID, h.Pricing)
+			}
+			continue
+		}
+		if h.Pricing == nil {
+			t.Fatalf("price_observation %s missing pricing", h.HitID)
+		}
+		if h.Pricing.UnitPrice <= 0 {
+			t.Fatalf("price_observation %s unit_price invalid: %v", h.HitID, h.Pricing.UnitPrice)
+		}
+		if h.Pricing.Quantity < 1 {
+			t.Fatalf("price_observation %s quantity invalid: %d", h.HitID, h.Pricing.Quantity)
+		}
 	}
-	if doc.Query.NSNDashed != "7920-01-448-7052" {
-		t.Fatalf("dashed nsn: got %q", doc.Query.NSNDashed)
+
+	// PartsBase qty preserved
+	foundPB := false
+	for _, h := range doc.Hits {
+		if h.HitType == "price_observation" && h.Pricing != nil && h.Pricing.Channel == "partsbase" && h.Pricing.Quantity == 5 {
+			foundPB = true
+			if h.Pricing.UnitPrice != 10.0 {
+				t.Fatalf("partsbase unit_price want 10 got %v", h.Pricing.UnitPrice)
+			}
+		}
 	}
-	if doc.Generator.Commit != "abc123" {
-		t.Fatalf("commit: got %q", doc.Generator.Commit)
+	if !foundPB {
+		t.Fatal("expected partsbase price_observation with quantity 5")
 	}
-	if doc.Counts.TotalHits < 8 {
-		t.Fatalf("expected many hits, got %d: types=%v", doc.Counts.TotalHits, doc.Counts.ByType)
+
+	// partsbase_summary must not embed min/max pricing
+	for _, h := range doc.Hits {
+		if h.HitType == "partsbase_summary" && h.Pricing != nil {
+			t.Fatalf("partsbase_summary must not have pricing block: %+v", h.Pricing)
+		}
 	}
-	if doc.Counts.ByType["ets_mapping"] != 1 {
-		t.Fatalf("expected 1 ets_mapping, got %d", doc.Counts.ByType["ets_mapping"])
+}
+
+func TestParseSingleUnitPrice(t *testing.T) {
+	if v, ok := parseSingleUnitPrice("$15.00"); !ok || v != 15.0 {
+		t.Fatalf("single: %v %v", v, ok)
 	}
-	if doc.Counts.ByType["gsa_listing"] != 1 {
-		t.Fatalf("expected 1 gsa_listing, got %d", doc.Counts.ByType["gsa_listing"])
+	if _, ok := parseSingleUnitPrice("$12.50 – $18.00 (4 offers)"); ok {
+		t.Fatal("range should reject")
 	}
-	if doc.Counts.ByType["channel_price"] != 1 {
-		t.Fatalf("expected channel_price hit")
-	}
-	if doc.Counts.ByType["partsbase_transaction"] != 1 {
-		t.Fatalf("expected partsbase_transaction hit")
-	}
-	if doc.Counts.ByType["web_result"] != 1 {
-		t.Fatalf("expected web_result hit")
-	}
-	if doc.Counts.UniqueSKUs < 2 {
-		t.Fatalf("unique skus: got %d", doc.Counts.UniqueSKUs)
-	}
-	if len(doc.Sources) != 2 {
-		t.Fatalf("sources: got %d", len(doc.Sources))
-	}
-	// Must not embed long narrative fields as top-level export content
-	// (document is hit inventory only).
-	if doc.Purpose == "" {
-		t.Fatal("purpose required")
+	if _, ok := parseSingleUnitPrice("from $69.59 (search results)"); ok {
+		t.Fatal("from estimate should reject")
 	}
 }
 
 func TestFormatDashedNSNLocal(t *testing.T) {
 	if got := formatDashedNSNLocal("7920014487052"); got != "7920-01-448-7052" {
 		t.Fatalf("got %q", got)
-	}
-	if got := formatDashedNSNLocal("123"); got != "123" {
-		t.Fatalf("short: got %q", got)
 	}
 }

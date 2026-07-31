@@ -210,8 +210,24 @@ type CommercialReference struct {
 	PriceAmazonIsRange bool `json:"price_amazon_is_range,omitempty"`
 	PriceShopIsRange   bool `json:"price_shop_is_range,omitempty"`
 	PriceUPCIsRange    bool `json:"price_upc_is_range,omitempty"`
+	// MarketOffers are discrete observed prices (unit price + quantity) from catalog /
+	// shopping resolution. Used by the data-capture export — never collapsed into ranges.
+	MarketOffers []MarketOffer `json:"market_offers,omitempty"`
 	Context      string `json:"context,omitempty"`       // Short note from source (e.g. "JWOD listing", "substitute")
 	DateAdded    string `json:"date_added,omitempty"`    // ETS mapping date when available
+}
+
+// MarketOffer is one atomic commercial/market price observation (not a min–max range).
+// Quantity is the sell/pack quantity when known; retail list prices default to 1.
+type MarketOffer struct {
+	UnitPrice float64 `json:"unit_price"`           // USD unit price for Quantity units
+	Quantity  int     `json:"quantity"`             // units covered by UnitPrice (default 1)
+	Currency  string  `json:"currency,omitempty"`   // e.g. USD
+	Channel   string  `json:"channel,omitempty"`    // amazon | shop | catalog | federal | gsa | partsbase
+	Merchant  string  `json:"merchant,omitempty"`
+	Source    string  `json:"source,omitempty"`     // e.g. UPCITEMDB, SERPAPI, GSA_ADVANTAGE
+	Link      string  `json:"link,omitempty"`
+	AsOf      string  `json:"as_of,omitempty"`      // ISO date when known
 }
 
 // CommercialSupplier represents an aggregated commercial supplier derived from SKU/UPC data.

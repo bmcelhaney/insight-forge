@@ -15,7 +15,7 @@ High-fidelity prototype actively used for NIB analyst work.
 - Strong Analyst Recommendation and Key Insights powered by curated AbilityOne data + live sources
 - Two JSON export modes:
   - Pricing tool: full InsightResult (`/api/export/json/{nsn}`)
-  - Data capture: machine-readable hit inventory for downstream apps (`/api/export/data/{nsn}`, schema `insight-forge.data-capture.v1`)
+  - Data capture: machine-readable hit inventory for downstream apps (`/api/export/data/{nsn}`, schema `insight-forge.data-capture.v1` / v1.1). Price hits are atomic (`unit_price` + `quantity`); analysis UI ranges are not exported.
 - Hardened deployment with commit embedding and functional gates
 
 ## Quick Start (Dedicated Sprite)
