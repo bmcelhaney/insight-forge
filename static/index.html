@@ -272,17 +272,17 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
 
         <!-- Actions -->
         <div class="flex flex-wrap gap-3 pt-2">
+          <button onclick="exportDataCaptureJSON()"
+                  class="px-5 py-2.5 bg-amber-600 hover:bg-amber-500 text-zinc-950 font-medium rounded-2xl text-sm flex items-center gap-2"
+                  title="Download the hit inventory from this analysis (NSN/SKU/UPC/ETS/market/PartsBase prices) for other applications">
+            <i class="fa-solid fa-database"></i>
+            <span>Export JSON (Data Capture)</span>
+          </button>
           <button onclick="exportPricingJSON()"
                   class="px-5 py-2.5 bg-zinc-800 hover:bg-zinc-700 rounded-2xl text-sm flex items-center gap-2"
                   title="Full InsightResult: scores, narrative report, commercial tiles — for the fair-market pricing tool">
             <i class="fa-solid fa-file-export"></i>
             <span>Export JSON (Pricing Tool)</span>
-          </button>
-          <button onclick="exportDataCaptureJSON()"
-                  class="px-5 py-2.5 bg-amber-950/50 hover:bg-amber-900/40 border border-amber-800 rounded-2xl text-sm flex items-center gap-2 text-amber-100"
-                  title="Same JSON as POST /api/analyze — hit inventory for other applications">
-            <i class="fa-solid fa-database"></i>
-            <span>Export JSON (Data Capture)</span>
           </button>
           <button onclick="window.location.reload()"
                   class="px-5 py-2.5 text-sm text-zinc-400 hover:text-white ml-auto">New Analysis</button>
@@ -2338,37 +2338,13 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
     // Backward-compatible alias
     function exportJSON() { exportPricingJSON(); }
 
-    // Data Capture export — same JSON as POST /api/analyze and GET /api/export/data/{nsn}.
-    // Always the server BuildDataCaptureDocument (never a client-side rebuild).
-    async function exportDataCaptureJSON() {
+    // Export JSON (Data Capture) — primary way to take hit inventory out of the app.
+    // Uses the server-built document from THIS analysis run (currentDataCapture),
+    // not a second API re-run, so the file matches what the UI just found.
+    function exportDataCaptureJSON() {
       const nsn = String(currentNSN || '').replace(/\D/g, '');
-      if (!nsn && !currentDataCapture) return;
-
-      // Prefer re-download from the machine export endpoint so the file is
-      // produced by the same writer as POST /api/analyze (indent, field set).
-      // Fall back to in-session data_capture only if the network call fails.
-      try {
-        if (nsn) {
-          const res = await fetch('/api/export/data/' + encodeURIComponent(nsn));
-          if (!res.ok) throw new Error('export HTTP ' + res.status);
-          const text = await res.text();
-          const blob = new Blob([text], { type: 'application/json' });
-          const url = URL.createObjectURL(blob);
-          const a = document.createElement('a');
-          a.href = url;
-          a.download = `insight-forge-data-${nsn}.json`;
-          a.click();
-          URL.revokeObjectURL(url);
-          // Keep session copy in sync with what was just exported.
-          try { currentDataCapture = JSON.parse(text); } catch (_) {}
-          return;
-        }
-      } catch (err) {
-        console.warn('Server data-capture export failed, using session document:', err);
-      }
-
       if (!currentDataCapture) {
-        showError('No data-capture document available. Run an analysis first.');
+        showError('No data-capture document yet. Run an analysis first, then export.');
         return;
       }
       downloadJSONBlob(currentDataCapture, `insight-forge-data-${nsn || 'export'}.json`);
