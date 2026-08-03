@@ -52,9 +52,30 @@ curl http://127.0.0.1:8080/health
 
 Both return `commit` and `buildTime`. The `commit` value must match `git rev-parse --short origin/main`.
 
+### Public URL auth (Sprites gateway)
+
+Insight Forge itself has **no API key**. Auth (if any) is enforced by the **Sprites URL gateway**, not the Go app.
+
+| Mode | Command | Behavior |
+|------|---------|----------|
+| `sprite` (default) | `sprite url update --auth sprite -s nib-insightforge` | Org members / Bearer org token only |
+| `public` | `sprite url update --auth public -s nib-insightforge` | Anyone with the URL (Windmill, curl, etc.) |
+
+For Windmill / open machine API access, use **public** mode (current preference for integration work).
+
+```bash
+sprite url update --auth public -s nib-insightforge
+# Verify unauthenticated:
+curl -s -X POST https://nib-insightforge-bsmmx.sprites.app/api/analyze \
+  -H 'Content-Type: application/json' \
+  -d '{"nsn":"7530011245660"}' | head -c 200
+```
+
+When auth is `sprite`, anonymous calls get 401/302 to login — that is **not** an Insight Forge bug.
+
 ### From a local machine (via the sprite CLI)
 
-The public URL (https://nib-insightforge-bsmmx.sprites.app/) is gated behind sprites.dev auth, so an anonymous `curl` to `/version` returns an auth **redirect**, not JSON. Do not use the public URL for automated verification.
+If the URL is still in `sprite` auth mode, anonymous `curl` returns an auth **redirect**, not JSON. For automated verification without public auth, run the check inside the sprite:
 
 Instead, run the check inside the sprite from your machine using `sprite exec`:
 
