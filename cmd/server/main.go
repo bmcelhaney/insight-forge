@@ -157,6 +157,7 @@ func main() {
 	})
 
 	// runAnalyze synthesizes an NSN and builds the data-capture document.
+	// One builder for UI export, POST /api/analyze, and GET /api/export/data.
 	runAnalyze := func(ctx context.Context, nsn string) (models.InsightResult, models.DataCaptureDocument) {
 		snaps, _ := extractorReg.FetchAll(ctx, nsn, nil, nil)
 		result, _ := processing.Synthesize(ctx, nsn, snaps)
@@ -167,9 +168,21 @@ func main() {
 		return result, doc
 	}
 
-	// Primary machine API: returns the data-capture hit inventory only
-	// (schema insight-forge.data-capture.v1 / v1.1). Not the narrative analysis.
-	// Use POST /api/insight for the full InsightResult used by the web UI / pricing tool.
+	// writeDataCaptureJSON writes the data-capture document with the same
+	// encoding used by the UI "Export JSON (Data Capture)" download path.
+	writeDataCaptureJSON := func(w http.ResponseWriter, doc models.DataCaptureDocument, nsn string, asAttachment bool) {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		if asAttachment {
+			w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="insight-forge-data-%s.json"`, nsn))
+		}
+		enc := json.NewEncoder(w)
+		enc.SetIndent("", "  ")
+		enc.SetEscapeHTML(false)
+		_ = enc.Encode(doc)
+	}
+
+	// Primary machine API: data-capture document only — identical body to
+	// GET /api/export/data/{nsn} and to the UI Data Capture export (same builder).
 	r.Post("/api/analyze", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			NSN string `json:"nsn"`
@@ -182,15 +195,11 @@ func main() {
 		}
 
 		_, doc := runAnalyze(r.Context(), req.NSN)
-
-		w.Header().Set("Content-Type", "application/json")
-		enc := json.NewEncoder(w)
-		enc.SetIndent("", "  ")
-		enc.Encode(doc)
+		writeDataCaptureJSON(w, doc, req.NSN, false)
 	})
 
 	// Full insight payload for the Insight Forge UI and pricing-tool consumers.
-	// Returns narrative analysis (result) plus data_capture for convenience.
+	// data_capture is the same document type as POST /api/analyze (same builder).
 	r.Post("/api/insight", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			NSN string `json:"nsn"`
@@ -204,8 +213,11 @@ func main() {
 
 		result, doc := runAnalyze(r.Context(), req.NSN)
 
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		enc := json.NewEncoder(w)
+		enc.SetEscapeHTML(false)
+		// data_capture is embedded for the UI export button — same struct as /api/analyze.
+		_ = enc.Encode(map[string]any{
 			"nsn":          req.NSN,
 			"result":       result,
 			"data_capture": doc,
@@ -222,17 +234,11 @@ func main() {
 		json.NewEncoder(w).Encode(result)
 	})
 
-	// Data-capture export download (same document as POST /api/analyze)
-	// Schema: insight-forge.data-capture.v1 / v1.1
+	// Data-capture file download — same JSON body as POST /api/analyze.
 	r.Get("/api/export/data/{nsn}", func(w http.ResponseWriter, r *http.Request) {
 		nsn := chi.URLParam(r, "nsn")
 		_, doc := runAnalyze(r.Context(), nsn)
-
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="insight-forge-data-%s.json"`, nsn))
-		enc := json.NewEncoder(w)
-		enc.SetIndent("", "  ")
-		enc.Encode(doc)
+		writeDataCaptureJSON(w, doc, nsn, true)
 	})
 
 	// Debug endpoint for real award data (FPDS path)

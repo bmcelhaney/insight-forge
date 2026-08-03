@@ -50,10 +50,12 @@ Open http://localhost:8080
   - Analyst Recommendation
   - Full narrative report
 - Clean APIs for external tools:
-  - `POST /api/analyze` — **primary machine API**: data-capture document only (`insight-forge.data-capture.v1` / v1.1). Atomic price hits, no narrative analysis.
-  - `POST /api/insight` — full InsightResult + `data_capture` (web UI / pricing consumers)
-  - `GET /api/export/data/{nsn}` — same data-capture document as a download
+  - `POST /api/analyze` — **primary machine API**: data-capture document only (`insight-forge.data-capture.v1` / v1.1)
+  - `GET /api/export/data/{nsn}` — **identical JSON body** to `POST /api/analyze` (file download; also used by UI “Export JSON (Data Capture)”)
+  - `POST /api/insight` — full InsightResult + embedded `data_capture` (web UI / pricing consumers)
   - `GET /api/export/json/{nsn}` — full InsightResult download for pricing tools
+
+Data Capture is always built by `BuildDataCaptureDocument` on the server — there is no separate client-side schema.
 
 See `ARCHITECTURE.md` for more details on the extractor + synthesis model.
 

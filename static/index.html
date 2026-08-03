@@ -280,7 +280,7 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
           </button>
           <button onclick="exportDataCaptureJSON()"
                   class="px-5 py-2.5 bg-amber-950/50 hover:bg-amber-900/40 border border-amber-800 rounded-2xl text-sm flex items-center gap-2 text-amber-100"
-                  title="Machine-readable hit inventory (NSN/SKU/UPC/ETS/commercial/procurement) for other applications">
+                  title="Same JSON as POST /api/analyze — hit inventory for other applications">
             <i class="fa-solid fa-database"></i>
             <span>Export JSON (Data Capture)</span>
           </button>
@@ -2338,19 +2338,44 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
     // Backward-compatible alias
     function exportJSON() { exportPricingJSON(); }
 
-    // Data-capture export: hit inventory (schema insight-forge.data-capture.v1)
-    // for other applications. Prefer server-built payload from analyze response.
-    function exportDataCaptureJSON() {
-      if (!currentResult && !currentDataCapture) return;
-      let doc = currentDataCapture;
-      if (!doc) {
-        // Fallback if older server omitted data_capture
-        doc = buildClientDataCapture(currentResult, currentNSN);
+    // Data Capture export — same JSON as POST /api/analyze and GET /api/export/data/{nsn}.
+    // Always the server BuildDataCaptureDocument (never a client-side rebuild).
+    async function exportDataCaptureJSON() {
+      const nsn = String(currentNSN || '').replace(/\D/g, '');
+      if (!nsn && !currentDataCapture) return;
+
+      // Prefer re-download from the machine export endpoint so the file is
+      // produced by the same writer as POST /api/analyze (indent, field set).
+      // Fall back to in-session data_capture only if the network call fails.
+      try {
+        if (nsn) {
+          const res = await fetch('/api/export/data/' + encodeURIComponent(nsn));
+          if (!res.ok) throw new Error('export HTTP ' + res.status);
+          const text = await res.text();
+          const blob = new Blob([text], { type: 'application/json' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = `insight-forge-data-${nsn}.json`;
+          a.click();
+          URL.revokeObjectURL(url);
+          // Keep session copy in sync with what was just exported.
+          try { currentDataCapture = JSON.parse(text); } catch (_) {}
+          return;
+        }
+      } catch (err) {
+        console.warn('Server data-capture export failed, using session document:', err);
       }
-      downloadJSONBlob(doc, `insight-forge-data-${currentNSN || 'export'}.json`);
+
+      if (!currentDataCapture) {
+        showError('No data-capture document available. Run an analysis first.');
+        return;
+      }
+      downloadJSONBlob(currentDataCapture, `insight-forge-data-${nsn || 'export'}.json`);
     }
 
     function downloadJSONBlob(obj, filename) {
+      // Match server writeDataCaptureJSON: 2-space indent.
       const blob = new Blob([JSON.stringify(obj, null, 2)], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -2358,197 +2383,6 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
       a.download = filename;
       a.click();
       URL.revokeObjectURL(url);
-    }
-
-    // Parse single unit price only — rejects ranges / "from $X" (analysis UI may still show those).
-    function parseClientSingleUnitPrice(raw) {
-      if (raw == null || raw === '') return null;
-      const s = String(raw).trim();
-      const lower = s.toLowerCase();
-      if (lower.includes('from ') || lower.includes('offers') || s.includes('–') || s.includes('—')) return null;
-      if (s.includes('-') && (s.match(/\$/g) || []).length >= 2) return null;
-      const m = s.replace(/,/g, '').match(/\$?\s*([\d]+(?:\.\d+)?)/);
-      if (!m) return null;
-      const v = parseFloat(m[1]);
-      return (!isNaN(v) && v > 0) ? v : null;
-    }
-
-    // Client-side fallback builder (subset of server BuildDataCaptureDocument v1.1).
-    // Atomic price hits only: unit_price + quantity (no ranges).
-    function buildClientDataCapture(result, nsnRaw) {
-      const nsn = String(nsnRaw || result.entity_id || result.EntityID || '').replace(/\D/g, '');
-      const fsc = nsn.length === 13 ? nsn.slice(0, 4) : '';
-      const niin = nsn.length === 13 ? nsn.slice(4) : (nsn.length === 9 ? nsn : '');
-      const dashed = nsn.length === 13 ? `${nsn.slice(0,4)}-${nsn.slice(4,6)}-${nsn.slice(6,9)}-${nsn.slice(9)}` : nsn;
-      const hits = [];
-      let priceSeq = 0;
-      const itemName = result.item_name || result.ItemName || '';
-      if (itemName) {
-        hits.push({
-          hit_id: 'item-master-1',
-          hit_type: 'item_master',
-          source: 'SYNTHESIS',
-          identifiers: { nsn, niin, fsc },
-          description: itemName,
-          attributes: { unit_of_issue: result.unit_of_issue || result.UnitOfIssue || '' },
-        });
-      }
-      const comms = result.commercial_references || result.CommercialReferences || [];
-      comms.forEach((c, i) => {
-        const src = (c.source || c.Source || 'COMMERCIAL').toUpperCase();
-        let hitType = 'commercial_reference';
-        if (src === 'ABILITYONE_ETS') hitType = 'ets_mapping';
-        else if (src === 'GSA_ADVANTAGE') hitType = 'gsa_listing';
-        else if (src === 'ABILITYONE_COMMERCE') hitType = 'abilityone_commerce';
-        const parentId = `${hitType}-${i + 1}`;
-        const ids = {
-          nsn, niin, fsc,
-          sku: c.sku || c.SKU || '',
-          upc: String(c.upc || c.UPC || '').replace(/\D/g, ''),
-          gtin: String(c.gtin || c.GTIN || '').replace(/\D/g, ''),
-          manufacturer: c.manufacturer || c.Manufacturer || '',
-        };
-        hits.push({
-          hit_id: parentId,
-          hit_type: hitType,
-          source: src,
-          identifiers: ids,
-          description: c.description || c.Description || '',
-          links: {
-            shop: c.link_shop || c.LinkShop || '',
-            amazon: c.link_amazon || c.LinkAmazon || '',
-            upc: c.link_upc || c.LinkUPC || '',
-            federal: c.link_gsa || c.LinkGSA || '',
-            website: c.link_website || c.LinkWebsite || '',
-            price_url: c.price_url || c.PriceURL || '',
-          },
-          context: c.context || c.Context || '',
-          date_added: c.date_added || c.DateAdded || '',
-        });
-        const offers = c.market_offers || c.MarketOffers || [];
-        if (offers.length > 0) {
-          offers.forEach(o => {
-            const up = Number(o.unit_price != null ? o.unit_price : o.UnitPrice);
-            if (!(up > 0)) return;
-            priceSeq += 1;
-            hits.push({
-              hit_id: `price-obs-${priceSeq}`,
-              hit_type: 'price_observation',
-              source: o.source || o.Source || src,
-              identifiers: ids,
-              description: c.description || c.Description || '',
-              pricing: {
-                unit_price: Math.round(up * 100) / 100,
-                quantity: (o.quantity || o.Quantity || 1) > 0 ? (o.quantity || o.Quantity || 1) : 1,
-                currency: o.currency || o.Currency || 'USD',
-                channel: o.channel || o.Channel || '',
-                merchant: o.merchant || o.Merchant || '',
-                price_source: o.source || o.Source || '',
-                as_of: o.as_of || o.AsOf || c.price_as_of || c.PriceAsOf || '',
-              },
-              links: (o.link || o.Link) ? { url: o.link || o.Link, price_url: o.link || o.Link } : undefined,
-              attributes: { parent_hit_id: parentId, parent_type: hitType },
-            });
-          });
-        } else {
-          // Single (non-range) channel prices only
-          [
-            { raw: c.price_shop || c.PriceShop, ch: 'shop', src: c.price_shop_source || c.PriceShopSrc, skip: c.price_shop_is_range || c.PriceShopIsRange, link: c.link_shop || c.LinkShop },
-            { raw: c.price_amazon || c.PriceAmazon, ch: 'amazon', src: c.price_amazon_source || c.PriceAmazonSrc, skip: c.price_amazon_is_range || c.PriceAmazonIsRange, link: c.link_amazon || c.LinkAmazon },
-            { raw: c.price_federal || c.PriceFederal, ch: 'federal', src: c.price_federal_source || c.PriceFederalSrc, skip: false, link: c.link_gsa || c.LinkGSA },
-            { raw: c.price || c.Price, ch: 'listing', src: c.price_source || c.PriceSource, skip: false, link: c.price_url || c.PriceURL },
-          ].forEach(row => {
-            if (row.skip || !row.raw) return;
-            const up = parseClientSingleUnitPrice(row.raw);
-            if (up == null) return;
-            priceSeq += 1;
-            hits.push({
-              hit_id: `price-obs-${priceSeq}`,
-              hit_type: 'price_observation',
-              source: row.src || src,
-              identifiers: ids,
-              pricing: { unit_price: up, quantity: 1, currency: 'USD', channel: row.ch, price_source: row.src || '', as_of: c.price_as_of || c.PriceAsOf || '' },
-              links: row.link ? { url: row.link } : undefined,
-              attributes: { parent_hit_id: parentId, parent_type: hitType },
-            });
-          });
-        }
-      });
-      const ao = result.abilityone_channel_price || result.AbilityOneChannelPrice;
-      if (ao) {
-        const up = parseClientSingleUnitPrice(ao.price || ao.Price);
-        if (up != null) {
-          priceSeq += 1;
-          hits.push({
-            hit_id: `price-obs-${priceSeq}`,
-            hit_type: 'price_observation',
-            source: ao.source || ao.Source || 'ABILITYONE_COM',
-            identifiers: { nsn, niin, fsc, sku: ao.sku || ao.SKU || '', brand: ao.brand || ao.Brand || '' },
-            description: ao.name || ao.Name || '',
-            pricing: { unit_price: up, quantity: 1, currency: 'USD', channel: 'federal', merchant: 'AbilityOne.com', price_source: ao.source || ao.Source || 'ABILITYONE_COM', as_of: ao.as_of || ao.AsOf || '' },
-            links: { federal: ao.url || ao.URL || '', url: ao.url || ao.URL || '' },
-          });
-        }
-      }
-      const pb = result.partsbase_historical_pricing || result.PartsBaseHistoricalPricing;
-      if (pb) {
-        (pb.sample || pb.Sample || []).forEach((row) => {
-          const up = parseClientSingleUnitPrice(row.unit_price || row.UnitPrice);
-          if (up == null) return;
-          const qty = row.quantity || row.Quantity || 1;
-          priceSeq += 1;
-          hits.push({
-            hit_id: `price-obs-${priceSeq}`,
-            hit_type: 'price_observation',
-            source: pb.source || pb.Source || 'PARTSBASE',
-            identifiers: { nsn, niin, fsc, manufacturer: row.supplier || row.Supplier || '', contract: row.contract_number || row.ContractNumber || '' },
-            pricing: { unit_price: up, quantity: qty > 0 ? qty : 1, currency: 'USD', channel: 'partsbase', merchant: row.supplier || row.Supplier || '', price_source: 'PARTSBASE', as_of: row.award_date || row.AwardDate || '' },
-            attributes: { condition_code: row.condition_code || row.ConditionCode || '', award_date: row.award_date || row.AwardDate || '' },
-          });
-        });
-      }
-      const byType = {}, bySource = {};
-      const skus = new Set(), upcs = new Set(), mfrs = new Set();
-      let priced = 0, priceObs = 0;
-      hits.forEach(h => {
-        byType[h.hit_type] = (byType[h.hit_type] || 0) + 1;
-        bySource[h.source] = (bySource[h.source] || 0) + 1;
-        if (h.identifiers && h.identifiers.sku) skus.add(h.identifiers.sku);
-        if (h.identifiers && h.identifiers.upc && String(h.identifiers.upc).length >= 11) upcs.add(h.identifiers.upc);
-        if (h.identifiers && h.identifiers.manufacturer) mfrs.add(h.identifiers.manufacturer);
-        if (h.pricing && h.pricing.unit_price > 0) priced += 1;
-        if (h.hit_type === 'price_observation') priceObs += 1;
-      });
-      return {
-        schema: 'insight-forge.data-capture.v1',
-        schema_version: '1.1',
-        purpose: 'Machine-readable inventory of NSN/SKU/UPC/ETS/commercial/procurement hits for downstream applications. Price hits are atomic (unit_price + quantity); no market ranges. Not the pricing-tool narrative export.',
-        exported_at: new Date().toISOString(),
-        generator: { name: 'insight-forge', generated_by: 'client-fallback' },
-        query: { nsn, nsn_dashed: dashed, niin, fsc, entity_id: result.entity_id || result.EntityID || nsn },
-        item: {
-          name: itemName,
-          unit_of_issue: result.unit_of_issue || result.UnitOfIssue || '',
-          technical_characteristics: result.technical_characteristics || result.TechnicalCharacteristics || '',
-        },
-        hits,
-        counts: {
-          total_hits: hits.length,
-          by_type: byType,
-          by_source: bySource,
-          unique_skus: skus.size,
-          unique_upcs: upcs.size,
-          unique_manufacturers: mfrs.size,
-          priced_hits: priced,
-          price_observations: priceObs,
-        },
-        scores: {
-          sourcing_attractiveness: result.sourcing_attractiveness || result.SourcingAttractiveness || 0,
-          supply_risk: result.supply_risk || result.SupplyRisk || 0,
-          viability_score: result.viability_score || result.ViabilityScore || 0,
-          risk_score: result.risk_score || result.RiskScore || 0,
-        },
-      };
     }
 
   </script>
