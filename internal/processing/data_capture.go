@@ -19,8 +19,15 @@ type DataCaptureMeta struct {
 // synthesized InsightResult and the underlying snapshots. Suitable as an input
 // payload for other applications (not the pricing-tool narrative export).
 //
-// Pricing policy (schema 1.1): every price is an atomic observation with
+// maxDataCapturePartsBaseSignals is how many historical PartsBase unit-price
+// signals to export. The UI sample stays small (25); the machine API aims for
+// near-complete hit inventory without unbounded multi-MB payloads.
+const maxDataCapturePartsBaseSignals = 2000
+
+// Pricing policy (schema 1.1+): every price is an atomic observation with
 // unit_price + quantity. Analysis UI ranges are not exported.
+// PartsBase historical signals are pulled from the live snapshot (not the
+// 25-row UI sample) up to maxDataCapturePartsBaseSignals.
 func BuildDataCaptureDocument(result models.InsightResult, snaps []models.DataSnapshot, meta DataCaptureMeta) models.DataCaptureDocument {
 	nsn := digitsOnlyString(firstNonEmpty(result.EntityID, ""))
 	if len(nsn) > 13 {
@@ -116,6 +123,8 @@ func BuildDataCaptureDocument(result models.InsightResult, snaps []models.DataSn
 		doc.Hits = append(doc.Hits, hit)
 
 		// Prefer resolved MarketOffers (one row per observed offer).
+		// Skip channel=federal here — AbilityOne list price is emitted once below
+		// (was previously duplicated onto every commercial row).
 		offers := c.MarketOffers
 		if len(offers) == 0 {
 			// Fallback: only single (non-range) channel prices.
@@ -123,6 +132,9 @@ func BuildDataCaptureDocument(result models.InsightResult, snaps []models.DataSn
 		}
 		for _, o := range offers {
 			if o.UnitPrice <= 0 {
+				continue
+			}
+			if strings.EqualFold(strings.TrimSpace(o.Channel), "federal") {
 				continue
 			}
 			qty := o.Quantity
@@ -198,9 +210,51 @@ func BuildDataCaptureDocument(result models.InsightResult, snaps []models.DataSn
 		}
 	}
 
-	// 4) PartsBase historical transactions — each sample is already atomic
-	if pb := result.PartsBaseHistoricalPricing; pb != nil {
-		// Summary counts only (no min/max range pricing).
+	// 4) PartsBase historical transactions — full price_signals from snapshot
+	// (not the UI's 25-row sample), capped for payload size.
+	pbExported, pbTotal, pbTruncated := 0, 0, false
+	if pbHits, total, truncated := partsBasePriceHitsFromSnapshots(snaps, nsn, niin, fsc, &priceSeq); len(pbHits) > 0 || total > 0 {
+		pbExported, pbTotal, pbTruncated = len(pbHits), total, truncated
+		if pb := result.PartsBaseHistoricalPricing; pb != nil || total > 0 {
+			src := "PARTSBASE"
+			note := "Historical federal procurement unit prices from PartsBase GovData."
+			supCount := 0
+			lastUp := ""
+			if pb != nil {
+				src = firstNonEmpty(pb.Source, src)
+				if strings.TrimSpace(pb.Note) != "" {
+					note = pb.Note
+				}
+				supCount = pb.SupplierCount
+				lastUp = pb.LastUpdated
+				if pb.SignalCount > total {
+					total = pb.SignalCount
+					pbTotal = total
+				}
+			}
+			doc.Hits = append(doc.Hits, models.DataCaptureHit{
+				HitID:   "partsbase-summary-1",
+				HitType: "partsbase_summary",
+				Source:  src,
+				Identifiers: models.DataCaptureIdentifiers{
+					NSN:  nsn,
+					NIIN: niin,
+					FSC:  fsc,
+				},
+				Context: note,
+				Attributes: map[string]any{
+					"signal_count":    pbTotal,
+					"exported_count":  pbExported,
+					"truncated":      pbTruncated,
+					"export_cap":      maxDataCapturePartsBaseSignals,
+					"supplier_count":  supCount,
+					"last_updated":    lastUp,
+				},
+			})
+		}
+		doc.Hits = append(doc.Hits, pbHits...)
+	} else if pb := result.PartsBaseHistoricalPricing; pb != nil {
+		// Fallback: UI sample only when snapshot signals are unavailable.
 		if pb.SignalCount > 0 || pb.SupplierCount > 0 {
 			doc.Hits = append(doc.Hits, models.DataCaptureHit{
 				HitID:   "partsbase-summary-1",
@@ -214,15 +268,17 @@ func BuildDataCaptureDocument(result models.InsightResult, snaps []models.DataSn
 				Context: strings.TrimSpace(pb.Note),
 				Attributes: map[string]any{
 					"signal_count":   pb.SignalCount,
+					"exported_count": len(pb.Sample),
+					"truncated":     len(pb.Sample) < pb.SignalCount,
 					"supplier_count": pb.SupplierCount,
 					"last_updated":   pb.LastUpdated,
+					"source":         "insight_sample_fallback",
 				},
 			})
 		}
 		for i, row := range pb.Sample {
 			up, ok := parseSingleUnitPrice(row.UnitPrice)
 			if !ok {
-				// try bare number
 				if v, err := strconv.ParseFloat(strings.TrimSpace(strings.TrimPrefix(strings.ReplaceAll(row.UnitPrice, ",", ""), "$")), 64); err == nil && v > 0 {
 					up, ok = v, true
 				}
@@ -387,6 +443,81 @@ func buildDataCaptureSources(snaps []models.DataSnapshot) []models.DataCaptureSo
 		out = append(out, src)
 	}
 	return out
+}
+
+// partsBasePriceHitsFromSnapshots expands every usable price_signal from the
+// live PARTSBASE snapshot into atomic price_observation hits (up to cap).
+func partsBasePriceHitsFromSnapshots(snaps []models.DataSnapshot, nsn, niin, fsc string, priceSeq *int) (hits []models.DataCaptureHit, total int, truncated bool) {
+	pb, ok := findPartsBaseSnapshot(snaps)
+	if !ok || pb.RawResponse == nil {
+		return nil, 0, false
+	}
+	signals := mapSliceFromAny(pb.RawResponse["price_signals"])
+	if len(signals) == 0 {
+		return nil, 0, false
+	}
+	total = len(signals)
+	limit := maxDataCapturePartsBaseSignals
+	if len(signals) > limit {
+		truncated = true
+		signals = signals[:limit]
+	}
+	for i, s := range signals {
+		unit := toFloatFromAny(s["unit_price"])
+		if unit <= 0 {
+			unit = toFloatFromAny(s["price"])
+		}
+		if unit <= 0 {
+			if p := firstNonEmptyString(s, "unit_price", "price"); p != "" {
+				if up, ok := parseSingleUnitPrice(p); ok {
+					unit = up
+				} else {
+					unit = toFloatFromAny(strings.TrimPrefix(strings.TrimSpace(p), "$"))
+				}
+			}
+		}
+		if unit <= 0 {
+			continue
+		}
+		qty := intFromAny(s["quantity"])
+		if qty <= 0 {
+			qty = 1
+		}
+		supplier := firstNonEmptyString(s, "supplier", "vendor", "manufacturer")
+		contract := firstNonEmptyString(s, "contract_number", "contractNo", "contract")
+		awardDate := firstNonEmptyString(s, "award_date", "AwardDate")
+		cond := firstNonEmptyString(s, "condition_code", "ConditionCode", "condition")
+		ctx := firstNonEmptyString(s, "context")
+		*priceSeq++
+		hits = append(hits, models.DataCaptureHit{
+			HitID:   fmt.Sprintf("price-obs-%d", *priceSeq),
+			HitType: "price_observation",
+			Source:  "PARTSBASE",
+			Identifiers: models.DataCaptureIdentifiers{
+				NSN:          nsn,
+				NIIN:         niin,
+				FSC:          fsc,
+				Manufacturer: supplier,
+				Contract:     contract,
+			},
+			Pricing: &models.DataCapturePricing{
+				UnitPrice:   roundMoney(unit),
+				Quantity:    qty,
+				Currency:    "USD",
+				Channel:     "partsbase",
+				Merchant:    supplier,
+				PriceSource: "PARTSBASE",
+				AsOf:        awardDate,
+			},
+			Context: ctx,
+			Attributes: map[string]any{
+				"condition_code": cond,
+				"award_date":     awardDate,
+				"signal_index":   i + 1,
+			},
+		})
+	}
+	return hits, total, truncated
 }
 
 func webSearchHitsFromSnapshots(snaps []models.DataSnapshot, nsn, niin, fsc string) []models.DataCaptureHit {
