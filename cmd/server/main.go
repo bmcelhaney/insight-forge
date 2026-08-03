@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/bmcelhaney/insight-forge/internal/config"
 	"github.com/bmcelhaney/insight-forge/internal/extraction"
+	"github.com/bmcelhaney/insight-forge/internal/models"
 	"github.com/bmcelhaney/insight-forge/internal/processing"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -154,7 +156,20 @@ func main() {
 		})
 	})
 
-	// Main analysis endpoint - enhanced synthesis with rich AbilityOne-aware output
+	// runAnalyze synthesizes an NSN and builds the data-capture document.
+	runAnalyze := func(ctx context.Context, nsn string) (models.InsightResult, models.DataCaptureDocument) {
+		snaps, _ := extractorReg.FetchAll(ctx, nsn, nil, nil)
+		result, _ := processing.Synthesize(ctx, nsn, snaps)
+		doc := processing.BuildDataCaptureDocument(result, snaps, processing.DataCaptureMeta{
+			Commit:    commit,
+			BuildTime: buildTime,
+		})
+		return result, doc
+	}
+
+	// Primary machine API: returns the data-capture hit inventory only
+	// (schema insight-forge.data-capture.v1 / v1.1). Not the narrative analysis.
+	// Use POST /api/insight for the full InsightResult used by the web UI / pricing tool.
 	r.Post("/api/analyze", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			NSN string `json:"nsn"`
@@ -166,42 +181,52 @@ func main() {
 			return
 		}
 
-		snaps, _ := extractorReg.FetchAll(r.Context(), req.NSN, nil, nil)
-		result, _ := processing.Synthesize(r.Context(), req.NSN, snaps)
-		dataCapture := processing.BuildDataCaptureDocument(result, snaps, processing.DataCaptureMeta{
-			Commit:    commit,
-			BuildTime: buildTime,
-		})
+		_, doc := runAnalyze(r.Context(), req.NSN)
+
+		w.Header().Set("Content-Type", "application/json")
+		enc := json.NewEncoder(w)
+		enc.SetIndent("", "  ")
+		enc.Encode(doc)
+	})
+
+	// Full insight payload for the Insight Forge UI and pricing-tool consumers.
+	// Returns narrative analysis (result) plus data_capture for convenience.
+	r.Post("/api/insight", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			NSN string `json:"nsn"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.NSN == "" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{"error": "nsn (9 or 13 digits) is required"})
+			return
+		}
+
+		result, doc := runAnalyze(r.Context(), req.NSN)
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{
 			"nsn":          req.NSN,
 			"result":       result,
-			"data_capture": dataCapture, // hit inventory for downstream apps (not pricing-tool export)
+			"data_capture": doc,
 		})
 	})
 
 	// JSON export for pricing tool (full InsightResult narrative + scores)
 	r.Get("/api/export/json/{nsn}", func(w http.ResponseWriter, r *http.Request) {
 		nsn := chi.URLParam(r, "nsn")
-		snaps, _ := extractorReg.FetchAll(r.Context(), nsn, nil, nil)
-		result, _ := processing.Synthesize(r.Context(), nsn, snaps)
+		result, _ := runAnalyze(r.Context(), nsn)
 
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="insight-forge-pricing-%s.json"`, nsn))
 		json.NewEncoder(w).Encode(result)
 	})
 
-	// Data-capture export: machine-readable hit inventory for downstream apps
-	// (NSN/SKU/UPC/ETS/commercial/procurement/web hits). Schema: insight-forge.data-capture.v1
+	// Data-capture export download (same document as POST /api/analyze)
+	// Schema: insight-forge.data-capture.v1 / v1.1
 	r.Get("/api/export/data/{nsn}", func(w http.ResponseWriter, r *http.Request) {
 		nsn := chi.URLParam(r, "nsn")
-		snaps, _ := extractorReg.FetchAll(r.Context(), nsn, nil, nil)
-		result, _ := processing.Synthesize(r.Context(), nsn, snaps)
-		doc := processing.BuildDataCaptureDocument(result, snaps, processing.DataCaptureMeta{
-			Commit:    commit,
-			BuildTime: buildTime,
-		})
+		_, doc := runAnalyze(r.Context(), nsn)
 
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="insight-forge-data-%s.json"`, nsn))

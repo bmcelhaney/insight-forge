@@ -13,7 +13,7 @@ Insight Forge uses a simple, maintainable Go + static frontend architecture opti
 
 ## Core Data Flow
 
-1. Client sends NSN (via POST `/api/analyze` or GET `/api/export/json/{nsn}`)
+1. Client sends NSN (via POST `/api/analyze` for data-capture, POST `/api/insight` for full analysis UI, or GET export routes)
 2. `Extractor` registry runs multiple sources in parallel:
    - USAspending (live award aggregates)
    - GSA Advantage (direct JWOD form POST + HTML scrape)

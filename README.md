@@ -13,9 +13,10 @@ High-fidelity prototype actively used for NIB analyst work.
 
 - Clean, fast UI with dynamic score coloring (green/amber/red) for both Sourcing Attractiveness and Supply Risk
 - Strong Analyst Recommendation and Key Insights powered by curated AbilityOne data + live sources
+- Primary API (`POST /api/analyze`) returns the data-capture hit inventory (not narrative analysis)
 - Two JSON export modes:
+  - Data capture: same schema as `/api/analyze` (`/api/export/data/{nsn}`, `insight-forge.data-capture.v1` / v1.1). Atomic `unit_price` + `quantity`.
   - Pricing tool: full InsightResult (`/api/export/json/{nsn}`)
-  - Data capture: machine-readable hit inventory for downstream apps (`/api/export/data/{nsn}`, schema `insight-forge.data-capture.v1` / v1.1). Price hits are atomic (`unit_price` + `quantity`); analysis UI ranges are not exported.
 - Hardened deployment with commit embedding and functional gates
 
 ## Quick Start (Dedicated Sprite)
@@ -49,9 +50,10 @@ Open http://localhost:8080
   - Analyst Recommendation
   - Full narrative report
 - Clean APIs for external tools:
-  - `POST /api/analyze` (returns `result` + `data_capture`)
-  - `GET /api/export/json/{nsn}` — full InsightResult for pricing tools
-  - `GET /api/export/data/{nsn}` — hit inventory (NSN/SKU/UPC/ETS/commercial/etc.) for other applications
+  - `POST /api/analyze` — **primary machine API**: data-capture document only (`insight-forge.data-capture.v1` / v1.1). Atomic price hits, no narrative analysis.
+  - `POST /api/insight` — full InsightResult + `data_capture` (web UI / pricing consumers)
+  - `GET /api/export/data/{nsn}` — same data-capture document as a download
+  - `GET /api/export/json/{nsn}` — full InsightResult download for pricing tools
 
 See `ARCHITECTURE.md` for more details on the extractor + synthesis model.
 

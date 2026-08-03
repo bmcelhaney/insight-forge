@@ -68,7 +68,8 @@ FAIL=0
 
 for NSN in "${NSNS[@]}"; do
   echo "==> Testing NSN ${NSN}..."
-  RESP=$(curl -s --max-time 30 -X POST "${BASE}/api/analyze" \
+  # Full analysis (UI / gate) lives on /api/insight; /api/analyze returns data-capture only.
+  RESP=$(curl -s --max-time 30 -X POST "${BASE}/api/insight" \
     -H "Content-Type: application/json" \
     -d "{\"nsn\":\"${NSN}\"}" || echo '{"error":"curl failed"}')
 
