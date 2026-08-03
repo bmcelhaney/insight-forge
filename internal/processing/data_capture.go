@@ -19,15 +19,10 @@ type DataCaptureMeta struct {
 // synthesized InsightResult and the underlying snapshots. Suitable as an input
 // payload for other applications (not the pricing-tool narrative export).
 //
-// maxDataCapturePartsBaseSignals is how many historical PartsBase unit-price
-// signals to export. The UI sample stays small (25); the machine API aims for
-// near-complete hit inventory without unbounded multi-MB payloads.
-const maxDataCapturePartsBaseSignals = 2000
-
 // Pricing policy (schema 1.1+): every price is an atomic observation with
 // unit_price + quantity. Analysis UI ranges are not exported.
-// PartsBase historical signals are pulled from the live snapshot (not the
-// 25-row UI sample) up to maxDataCapturePartsBaseSignals.
+// PartsBase historical signals are pulled from the live snapshot in full
+// (not the 25-row UI sample) — no export cap.
 func BuildDataCaptureDocument(result models.InsightResult, snaps []models.DataSnapshot, meta DataCaptureMeta) models.DataCaptureDocument {
 	nsn := digitsOnlyString(firstNonEmpty(result.EntityID, ""))
 	if len(nsn) > 13 {
@@ -210,11 +205,11 @@ func BuildDataCaptureDocument(result models.InsightResult, snaps []models.DataSn
 		}
 	}
 
-	// 4) PartsBase historical transactions — full price_signals from snapshot
-	// (not the UI's 25-row sample), capped for payload size.
-	pbExported, pbTotal, pbTruncated := 0, 0, false
-	if pbHits, total, truncated := partsBasePriceHitsFromSnapshots(snaps, nsn, niin, fsc, &priceSeq); len(pbHits) > 0 || total > 0 {
-		pbExported, pbTotal, pbTruncated = len(pbHits), total, truncated
+	// 4) PartsBase historical transactions — all price_signals from snapshot
+	// (not the UI's 25-row sample). Unbounded: every usable signal becomes a hit.
+	if pbHits, total := partsBasePriceHitsFromSnapshots(snaps, nsn, niin, fsc, &priceSeq); len(pbHits) > 0 || total > 0 {
+		pbExported := len(pbHits)
+		pbTotal := total
 		if pb := result.PartsBaseHistoricalPricing; pb != nil || total > 0 {
 			src := "PARTSBASE"
 			note := "Historical federal procurement unit prices from PartsBase GovData."
@@ -227,9 +222,8 @@ func BuildDataCaptureDocument(result models.InsightResult, snaps []models.DataSn
 				}
 				supCount = pb.SupplierCount
 				lastUp = pb.LastUpdated
-				if pb.SignalCount > total {
-					total = pb.SignalCount
-					pbTotal = total
+				if pb.SignalCount > pbTotal {
+					pbTotal = pb.SignalCount
 				}
 			}
 			doc.Hits = append(doc.Hits, models.DataCaptureHit{
@@ -243,12 +237,11 @@ func BuildDataCaptureDocument(result models.InsightResult, snaps []models.DataSn
 				},
 				Context: note,
 				Attributes: map[string]any{
-					"signal_count":    pbTotal,
-					"exported_count":  pbExported,
-					"truncated":      pbTruncated,
-					"export_cap":      maxDataCapturePartsBaseSignals,
-					"supplier_count":  supCount,
-					"last_updated":    lastUp,
+					"signal_count":   pbTotal,
+					"exported_count": pbExported,
+					"truncated":     false,
+					"supplier_count": supCount,
+					"last_updated":   lastUp,
 				},
 			})
 		}
@@ -446,22 +439,17 @@ func buildDataCaptureSources(snaps []models.DataSnapshot) []models.DataCaptureSo
 }
 
 // partsBasePriceHitsFromSnapshots expands every usable price_signal from the
-// live PARTSBASE snapshot into atomic price_observation hits (up to cap).
-func partsBasePriceHitsFromSnapshots(snaps []models.DataSnapshot, nsn, niin, fsc string, priceSeq *int) (hits []models.DataCaptureHit, total int, truncated bool) {
+// live PARTSBASE snapshot into atomic price_observation hits (no cap).
+func partsBasePriceHitsFromSnapshots(snaps []models.DataSnapshot, nsn, niin, fsc string, priceSeq *int) (hits []models.DataCaptureHit, total int) {
 	pb, ok := findPartsBaseSnapshot(snaps)
 	if !ok || pb.RawResponse == nil {
-		return nil, 0, false
+		return nil, 0
 	}
 	signals := mapSliceFromAny(pb.RawResponse["price_signals"])
 	if len(signals) == 0 {
-		return nil, 0, false
+		return nil, 0
 	}
 	total = len(signals)
-	limit := maxDataCapturePartsBaseSignals
-	if len(signals) > limit {
-		truncated = true
-		signals = signals[:limit]
-	}
 	for i, s := range signals {
 		unit := toFloatFromAny(s["unit_price"])
 		if unit <= 0 {
@@ -517,7 +505,7 @@ func partsBasePriceHitsFromSnapshots(snaps []models.DataSnapshot, nsn, niin, fsc
 			},
 		})
 	}
-	return hits, total, truncated
+	return hits, total
 }
 
 func webSearchHitsFromSnapshots(snaps []models.DataSnapshot, nsn, niin, fsc string) []models.DataCaptureHit {
