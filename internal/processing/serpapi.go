@@ -80,11 +80,19 @@ func SerpAPIEnabled() bool {
 	return serpAPIKey != ""
 }
 
-// SerpAPIImmersiveEnabled reports whether Immersive Product follow-up is on.
+// SerpAPIImmersiveEnabled reports the server default for Immersive Product (env / ConfigureSerpAPI).
+// Per-request override uses WithSerpImmersive + SerpImmersiveForRequest.
 func SerpAPIImmersiveEnabled() bool {
 	serpMu.RLock()
 	defer serpMu.RUnlock()
 	return serpAPIKey != "" && serpImmersive
+}
+
+// SerpAPIImmersiveDefault is the default for requests that omit serp_immersive (true when configured).
+func SerpAPIImmersiveDefault() bool {
+	serpMu.RLock()
+	defer serpMu.RUnlock()
+	return serpImmersive
 }
 
 func serpKey() string {
@@ -97,6 +105,29 @@ func serpImmersiveOn() bool {
 	serpMu.RLock()
 	defer serpMu.RUnlock()
 	return serpImmersive
+}
+
+// Context key for per-request immersive override (API / UI control).
+type ctxKeySerpImmersive struct{}
+
+// WithSerpImmersive sets whether this analysis should use Immersive Product follow-up.
+// When omitted from the request path, SerpImmersiveForRequest uses the server default.
+func WithSerpImmersive(ctx context.Context, on bool) context.Context {
+	return context.WithValue(ctx, ctxKeySerpImmersive{}, on)
+}
+
+// SerpImmersiveForRequest returns whether Immersive Product is active for this call.
+// Request override wins when present; otherwise server default (IF_SERPAPI_IMMERSIVE).
+func SerpImmersiveForRequest(ctx context.Context) bool {
+	if !SerpAPIEnabled() {
+		return false
+	}
+	if ctx != nil {
+		if v, ok := ctx.Value(ctxKeySerpImmersive{}).(bool); ok {
+			return v
+		}
+	}
+	return serpImmersiveOn()
 }
 
 // classifySerpNetError turns Go transport errors into analyst-facing messages.
@@ -160,9 +191,9 @@ func resolveViaSerpShopping(ctx context.Context, sku, upc, mfr, title string) (p
 			return productIdentity{}, false
 		}
 	}
-	// P2: one Immersive Product call when enabled and a page_token is available.
-	// Kill-switch: IF_SERPAPI_IMMERSIVE=false skips this (shopping-only, prior behavior).
-	if serpImmersiveOn() && serpCtx.Err() == nil {
+	// P2: one Immersive Product call when enabled for this request and a page_token is available.
+	// Server default: IF_SERPAPI_IMMERSIVE (true). Per-request: serp_immersive on analyze/insight body.
+	if SerpImmersiveForRequest(ctx) && serpCtx.Err() == nil {
 		hits = enrichHitsWithImmersive(serpCtx, hits, sku, mfr)
 	}
 	return identityFromShoppingHits(hits, sku, mfr), true
@@ -171,7 +202,7 @@ func resolveViaSerpShopping(ctx context.Context, sku, upc, mfr, title string) (p
 // enrichHitsWithImmersive picks the best shopping hit that has an immersive token,
 // fetches multi-store prices (≤maxImmersiveCallsPerResolve), and merges them in.
 func enrichHitsWithImmersive(ctx context.Context, hits []shoppingHit, preferSKU, mfr string) []shoppingHit {
-	if len(hits) == 0 || !SerpAPIEnabled() || !serpImmersiveOn() {
+	if len(hits) == 0 || !SerpAPIEnabled() || !SerpImmersiveForRequest(ctx) {
 		return hits
 	}
 	token := pickBestImmersiveToken(hits, preferSKU, mfr)
@@ -663,7 +694,7 @@ func serpGoogleShopping(ctx context.Context, query string) ([]shoppingHit, bool)
 // Each call costs one SerpAPI search credit. Results are cached by page_token.
 func serpImmersiveProduct(ctx context.Context, pageToken string) ([]shoppingHit, bool) {
 	pageToken = strings.TrimSpace(pageToken)
-	if pageToken == "" || !SerpAPIEnabled() || !serpImmersiveOn() {
+	if pageToken == "" || !SerpAPIEnabled() || !SerpImmersiveForRequest(ctx) {
 		return nil, false
 	}
 	// Prefix cache keys so shopping and immersive never collide.
@@ -845,7 +876,231 @@ func serpStatusMessage() string {
 	}
 	mode := "shopping only"
 	if serpImmersiveOn() {
-		mode = "shopping + immersive"
+		mode = "shopping + immersive (default)"
 	}
 	return fmt.Sprintf("SerpAPI: enabled (%s, num=%d)", mode, serpResultLimit())
+}
+
+// SerpAPIAccountQuota is a redacted snapshot of SerpAPI account usage (free Account API).
+type SerpAPIAccountQuota struct {
+	Configured              bool    `json:"configured"`
+	OK                      bool    `json:"ok"`
+	PlanName                string  `json:"plan_name,omitempty"`
+	PlanID                  string  `json:"plan_id,omitempty"`
+	SearchesPerMonth        int     `json:"searches_per_month,omitempty"`
+	ThisMonthUsage          int     `json:"this_month_usage,omitempty"`
+	PlanSearchesLeft        int     `json:"plan_searches_left,omitempty"`
+	TotalSearchesLeft       int     `json:"total_searches_left,omitempty"`
+	ExtraCredits            int     `json:"extra_credits,omitempty"`
+	ThisHourSearches        int     `json:"this_hour_searches,omitempty"`
+	LastHourSearches        int     `json:"last_hour_searches,omitempty"`
+	AccountRateLimitPerHour int     `json:"account_rate_limit_per_hour,omitempty"`
+	PlanRenewalDate         string  `json:"plan_renewal_date,omitempty"`
+	PlanMonthlyPrice        float64 `json:"plan_monthly_price,omitempty"`
+	AccountStatus           string  `json:"account_status,omitempty"`
+	// ImmersiveDefault is the server default for serp_immersive when the client omits it.
+	ImmersiveDefault bool   `json:"immersive_default"`
+	UsagePercent     float64 `json:"usage_percent,omitempty"` // this_month_usage / searches_per_month * 100
+	CheckedAt        string  `json:"checked_at,omitempty"`
+	Error            string  `json:"error,omitempty"`
+	Note             string  `json:"note,omitempty"`
+}
+
+var (
+	serpQuotaMu    sync.RWMutex
+	serpQuotaCache SerpAPIAccountQuota
+	serpQuotaAt    time.Time
+)
+
+const serpQuotaCacheTTL = 90 * time.Second
+
+// FetchSerpAPIQuota calls SerpAPI Account API (free, does not burn search credits).
+// Results are cached briefly so the UI can poll without hammering the account endpoint.
+func FetchSerpAPIQuota(ctx context.Context, force bool) SerpAPIAccountQuota {
+	out := SerpAPIAccountQuota{
+		Configured:       SerpAPIEnabled(),
+		ImmersiveDefault: SerpAPIImmersiveDefault(),
+		Note:             "Account API is free and does not count against monthly search quota.",
+	}
+	if !out.Configured {
+		out.Error = "SerpAPI key not configured"
+		return out
+	}
+	if !force {
+		serpQuotaMu.RLock()
+		if !serpQuotaAt.IsZero() && time.Since(serpQuotaAt) < serpQuotaCacheTTL && serpQuotaCache.Configured {
+			c := serpQuotaCache
+			serpQuotaMu.RUnlock()
+			return c
+		}
+		serpQuotaMu.RUnlock()
+	}
+
+	u := url.URL{Scheme: "https", Host: "serpapi.com", Path: "/account.json"}
+	q := u.Query()
+	q.Set("api_key", serpKey())
+	u.RawQuery = q.Encode()
+
+	reqCtx := ctx
+	if reqCtx == nil {
+		reqCtx = context.Background()
+	}
+	reqCtx, cancel := context.WithTimeout(reqCtx, 12*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		out.Error = "could not build account request"
+		return out
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", "InsightForge/1.0 (+https://github.com/bmcelhaney/insight-forge)")
+
+	resp, err := serpClient.Do(req)
+	if err != nil {
+		out.Error = "account request failed: " + classifyNetDetail(err)
+		return out
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		out.Error = "account response unreadable"
+		return out
+	}
+	if resp.StatusCode != 200 {
+		out.Error = fmt.Sprintf("account API HTTP %d", resp.StatusCode)
+		return out
+	}
+
+	var payload struct {
+		AccountStatus           string  `json:"account_status"`
+		PlanID                  string  `json:"plan_id"`
+		PlanName                string  `json:"plan_name"`
+		PlanMonthlyPrice        float64 `json:"plan_monthly_price"`
+		PlanRenewalDate         string  `json:"plan_renewal_date"`
+		SearchesPerMonth        int     `json:"searches_per_month"`
+		PlanSearchesLeft        int     `json:"plan_searches_left"`
+		ExtraCredits            int     `json:"extra_credits"`
+		TotalSearchesLeft       int     `json:"total_searches_left"`
+		ThisMonthUsage          int     `json:"this_month_usage"`
+		ThisHourSearches        int     `json:"this_hour_searches"`
+		LastHourSearches        int     `json:"last_hour_searches"`
+		AccountRateLimitPerHour int     `json:"account_rate_limit_per_hour"`
+		Error                   string  `json:"error"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		out.Error = "account JSON unreadable"
+		return out
+	}
+	if payload.Error != "" {
+		out.Error = payload.Error
+		return out
+	}
+
+	out.OK = true
+	out.AccountStatus = payload.AccountStatus
+	out.PlanID = payload.PlanID
+	out.PlanName = payload.PlanName
+	out.PlanMonthlyPrice = payload.PlanMonthlyPrice
+	out.PlanRenewalDate = payload.PlanRenewalDate
+	out.SearchesPerMonth = payload.SearchesPerMonth
+	out.PlanSearchesLeft = payload.PlanSearchesLeft
+	out.ExtraCredits = payload.ExtraCredits
+	out.TotalSearchesLeft = payload.TotalSearchesLeft
+	out.ThisMonthUsage = payload.ThisMonthUsage
+	out.ThisHourSearches = payload.ThisHourSearches
+	out.LastHourSearches = payload.LastHourSearches
+	out.AccountRateLimitPerHour = payload.AccountRateLimitPerHour
+	out.CheckedAt = time.Now().UTC().Format(time.RFC3339)
+	if out.SearchesPerMonth > 0 {
+		out.UsagePercent = float64(out.ThisMonthUsage) / float64(out.SearchesPerMonth) * 100
+	}
+
+	serpQuotaMu.Lock()
+	serpQuotaCache = out
+	serpQuotaAt = time.Now()
+	serpQuotaMu.Unlock()
+	return out
+}
+
+func classifyNetDetail(err error) string {
+	if err == nil {
+		return ""
+	}
+	d := err.Error()
+	if i := strings.Index(strings.ToLower(d), "api_key="); i >= 0 {
+		d = d[:i] + "api_key=[redacted]"
+	}
+	return d
+}
+
+// BuildAPIQuotas assembles multi-source quota / burn status for the UI and /api/quotas.
+func BuildAPIQuotas(ctx context.Context, forceSerp bool) map[string]any {
+	serpQ := FetchSerpAPIQuota(ctx, forceSerp)
+	upcPlan := "trial"
+	if UPCItemDBConfigured() {
+		upcPlan = "v1"
+	}
+	upcRT := getUPCItemDBStatus()
+	upc := map[string]any{
+		"configured": UPCItemDBConfigured(),
+		"enabled":    true,
+		"plan":       upcPlan,
+		"ok":         !upcRT.Checked || upcRT.OK,
+		"note": "UPCItemDB has no public remaining-quota API. Paid DEV plan is rate-limited " +
+			"(~1 lookup / 2s, ~1 search / 6s). Daily caps depend on your UPCItemDB plan.",
+	}
+	if upcRT.Checked {
+		upc["last_ok"] = upcRT.OK
+		upc["last_http"] = upcRT.HTTPCode
+		upc["last_message"] = upcRT.Message
+		if upcRT.Error != "" {
+			upc["last_error"] = upcRT.Error
+		}
+		if !upcRT.CheckedAt.IsZero() {
+			upc["last_checked_at"] = upcRT.CheckedAt.Format(time.RFC3339)
+		}
+	}
+	serpRT := getSerpAPIStatus()
+	serp := map[string]any{
+		"configured":        serpQ.Configured,
+		"ok":                serpQ.OK,
+		"plan_name":         serpQ.PlanName,
+		"plan_id":           serpQ.PlanID,
+		"searches_per_month": serpQ.SearchesPerMonth,
+		"this_month_usage":  serpQ.ThisMonthUsage,
+		"plan_searches_left": serpQ.PlanSearchesLeft,
+		"total_searches_left": serpQ.TotalSearchesLeft,
+		"extra_credits":     serpQ.ExtraCredits,
+		"this_hour_searches": serpQ.ThisHourSearches,
+		"last_hour_searches": serpQ.LastHourSearches,
+		"account_rate_limit_per_hour": serpQ.AccountRateLimitPerHour,
+		"plan_renewal_date": serpQ.PlanRenewalDate,
+		"account_status":    serpQ.AccountStatus,
+		"usage_percent":     serpQ.UsagePercent,
+		"immersive_default": serpQ.ImmersiveDefault,
+		"shopping_num":      serpResultLimit(),
+		"checked_at":        serpQ.CheckedAt,
+		"note":              serpQ.Note,
+	}
+	if serpQ.Error != "" {
+		serp["error"] = serpQ.Error
+	}
+	if serpRT.Checked {
+		serp["last_call_ok"] = serpRT.OK
+		serp["last_call_message"] = serpRT.Message
+		if !serpRT.CheckedAt.IsZero() {
+			serp["last_call_at"] = serpRT.CheckedAt.Format(time.RFC3339)
+		}
+	}
+	partsbase := map[string]any{
+		"note": "PartsBase does not expose a public remaining-quota endpoint in Insight Forge. " +
+			"Status reflects last GovData call outcome only.",
+	}
+	return map[string]any{
+		"serpapi":   serp,
+		"upcitemdb": upc,
+		"partsbase": partsbase,
+		"checked_at": time.Now().UTC().Format(time.RFC3339),
+	}
 }

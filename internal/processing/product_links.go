@@ -583,6 +583,13 @@ func applyDeterministicProductLinks(refs []models.CommercialReference, entityID 
 				r.LinkShop = id.ShopLink
 				shopIsDirect = isDirectProductURL(r.LinkShop)
 			}
+			// Surface actual merchant name for UI (avoid generic "Retail product").
+			if id.ShopMerchant != "" && !isGenericMerchant(id.ShopMerchant) {
+				r.LinkShopMerchant = id.ShopMerchant
+			} else if id.OfferMerchant != "" && !isGenericMerchant(id.OfferMerchant) &&
+				!strings.Contains(strings.ToLower(id.OfferMerchant), "amazon") {
+				r.LinkShopMerchant = id.OfferMerchant
+			}
 
 			// Amazon
 			switch {
@@ -2008,6 +2015,16 @@ func sanitizeMerchantTag(merchant string) string {
 		return "OFFER"
 	}
 	return s
+}
+
+// isGenericMerchant is true for labels that should not be shown as a specific vendor on cards.
+func isGenericMerchant(name string) bool {
+	n := strings.ToLower(strings.TrimSpace(name))
+	switch n {
+	case "", "retail", "shop", "google shopping", "google", "market", "offer", "catalog", "catalog low", "online":
+		return true
+	}
+	return false
 }
 
 func compactAlnum(s string) string {

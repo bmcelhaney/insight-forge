@@ -219,6 +219,8 @@ type CommercialReference struct {
 	PriceBasis   string `json:"price_basis,omitempty"`
 	PriceURL     string `json:"price_url,omitempty"`     // Best URL to view/verify the primary price
 	LinkShop     string `json:"link_shop,omitempty"`     // Google Shopping / retailer product link
+	// LinkShopMerchant is the retail merchant for LinkShop (e.g. "The Home Depot"), not a generic "Retail".
+	LinkShopMerchant string `json:"link_shop_merchant,omitempty"`
 	LinkUPC      string `json:"link_upc,omitempty"`      // UPC product lookup
 	LinkAmazon   string `json:"link_amazon,omitempty"`   // Amazon product or search
 	LinkGSA      string `json:"link_gsa,omitempty"`      // Federal catalog (AbilityOne.com) prefilled with NSN/SKU

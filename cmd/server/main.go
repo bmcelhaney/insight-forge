@@ -210,7 +210,14 @@ func main() {
 
 	// runAnalyze synthesizes an NSN and builds the data-capture document.
 	// One builder for UI export, POST /api/analyze, and GET /api/export/data.
-	runAnalyze := func(ctx context.Context, nsn string) (models.InsightResult, models.DataCaptureDocument) {
+	// serpImmersive nil → server default (IF_SERPAPI_IMMERSIVE, default true).
+	runAnalyze := func(ctx context.Context, nsn string, serpImmersive *bool) (models.InsightResult, models.DataCaptureDocument) {
+		if serpImmersive != nil {
+			ctx = processing.WithSerpImmersive(ctx, *serpImmersive)
+		} else {
+			// Explicit default so request path is always intentional.
+			ctx = processing.WithSerpImmersive(ctx, processing.SerpAPIImmersiveDefault())
+		}
 		snaps, _ := extractorReg.FetchAll(ctx, nsn, nil, nil)
 		result, _ := processing.Synthesize(ctx, nsn, snaps)
 		doc := processing.BuildDataCaptureDocument(result, snaps, processing.DataCaptureMeta{
@@ -218,6 +225,27 @@ func main() {
 			BuildTime: buildTime,
 		})
 		return result, doc
+	}
+
+	// parseSerpImmersive reads optional body field or query param.
+	// Omitted → nil (use server default = immersive on).
+	parseSerpImmersive := func(body *bool, query string) *bool {
+		if body != nil {
+			return body
+		}
+		q := strings.TrimSpace(strings.ToLower(query))
+		if q == "" {
+			return nil
+		}
+		switch q {
+		case "1", "true", "yes", "on", "immersive":
+			v := true
+			return &v
+		case "0", "false", "no", "off", "shopping", "normal":
+			v := false
+			return &v
+		}
+		return nil
 	}
 
 	// writeDataCaptureJSON writes the data-capture document with the same
@@ -233,11 +261,24 @@ func main() {
 		_ = enc.Encode(doc)
 	}
 
+	// Multi-API quota / burn status (SerpAPI Account API is free; UPC has no public remaining counter).
+	r.Get("/api/quotas", func(w http.ResponseWriter, r *http.Request) {
+		force := r.URL.Query().Get("refresh") == "1" || r.URL.Query().Get("force") == "1"
+		payload := processing.BuildAPIQuotas(r.Context(), force)
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store")
+		enc := json.NewEncoder(w)
+		enc.SetEscapeHTML(false)
+		_ = enc.Encode(payload)
+	})
+
 	// Primary machine API: data-capture document only — identical body to
 	// GET /api/export/data/{nsn} and to the UI Data Capture export (same builder).
+	// Optional: "serp_immersive": true|false (default true / server IF_SERPAPI_IMMERSIVE).
 	r.Post("/api/analyze", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
-			NSN string `json:"nsn"`
+			NSN           string `json:"nsn"`
+			SerpImmersive *bool  `json:"serp_immersive"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.NSN == "" {
 			w.Header().Set("Content-Type", "application/json")
@@ -246,7 +287,7 @@ func main() {
 			return
 		}
 
-		_, doc := runAnalyze(r.Context(), req.NSN)
+		_, doc := runAnalyze(r.Context(), req.NSN, parseSerpImmersive(req.SerpImmersive, r.URL.Query().Get("serp_immersive")))
 		writeDataCaptureJSON(w, doc, req.NSN, false)
 	})
 
@@ -254,7 +295,8 @@ func main() {
 	// data_capture is the same document type as POST /api/analyze (same builder).
 	r.Post("/api/insight", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
-			NSN string `json:"nsn"`
+			NSN           string `json:"nsn"`
+			SerpImmersive *bool  `json:"serp_immersive"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.NSN == "" {
 			w.Header().Set("Content-Type", "application/json")
@@ -263,23 +305,30 @@ func main() {
 			return
 		}
 
-		result, doc := runAnalyze(r.Context(), req.NSN)
+		imm := parseSerpImmersive(req.SerpImmersive, r.URL.Query().Get("serp_immersive"))
+		result, doc := runAnalyze(r.Context(), req.NSN, imm)
+		usedImmersive := processing.SerpAPIImmersiveDefault()
+		if imm != nil {
+			usedImmersive = *imm
+		}
 
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		enc := json.NewEncoder(w)
 		enc.SetEscapeHTML(false)
 		// data_capture is embedded for the UI export button — same struct as /api/analyze.
 		_ = enc.Encode(map[string]any{
-			"nsn":          req.NSN,
-			"result":       result,
-			"data_capture": doc,
+			"nsn":            req.NSN,
+			"result":         result,
+			"data_capture":   doc,
+			"serp_immersive": usedImmersive && processing.SerpAPIEnabled(),
 		})
 	})
 
 	// JSON export for pricing tool (full InsightResult narrative + scores)
 	r.Get("/api/export/json/{nsn}", func(w http.ResponseWriter, r *http.Request) {
 		nsn := chi.URLParam(r, "nsn")
-		result, _ := runAnalyze(r.Context(), nsn)
+		imm := parseSerpImmersive(nil, r.URL.Query().Get("serp_immersive"))
+		result, _ := runAnalyze(r.Context(), nsn, imm)
 
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="insight-forge-pricing-%s.json"`, nsn))
@@ -289,7 +338,8 @@ func main() {
 	// Data-capture file download — same JSON body as POST /api/analyze.
 	r.Get("/api/export/data/{nsn}", func(w http.ResponseWriter, r *http.Request) {
 		nsn := chi.URLParam(r, "nsn")
-		_, doc := runAnalyze(r.Context(), nsn)
+		imm := parseSerpImmersive(nil, r.URL.Query().Get("serp_immersive"))
+		_, doc := runAnalyze(r.Context(), nsn, imm)
 		writeDataCaptureJSON(w, doc, nsn, true)
 	})
 

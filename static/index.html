@@ -114,6 +114,11 @@
         </form>
         <div class="flex flex-wrap items-center gap-x-3 gap-y-1 mt-1.5 px-1">
           <div class="text-[10px] text-zinc-500">Multi-source extraction from WebFLIS, USAspending, and GSA Advantage</div>
+          <label class="inline-flex items-center gap-1.5 text-[11px] text-zinc-300 cursor-pointer select-none"
+                 title="Immersive Product uses one extra SerpAPI credit per product for multi-store prices. Uncheck for shopping-search only (less quota).">
+            <input type="checkbox" id="serp-immersive-toggle" class="rounded border-zinc-600 bg-zinc-900 text-emerald-500 focus:ring-emerald-500" checked>
+            <span>SerpAPI Immersive (multi-store)</span>
+          </label>
           <button type="button" id="clear-recent-nsns"
                   class="hidden text-[10px] text-zinc-500 hover:text-amber-300 underline">
             Clear recent searches
@@ -121,6 +126,8 @@
         </div>
         <!-- External API health alerts (PartsBase, SerpAPI, UPCItemDB, …) -->
         <div id="integration-status-banner" class="hidden mt-3 rounded-2xl border px-4 py-3 text-sm"></div>
+        <!-- API quota / burn status -->
+        <div id="api-quota-panel" class="hidden mt-3 rounded-2xl border border-zinc-700 bg-zinc-900/80 px-4 py-3 text-sm"></div>
         <!-- legacy id kept as alias for any old hooks -->
         <div id="partsbase-status-banner" class="hidden"></div>
       </div>
@@ -446,12 +453,130 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
         // Global multi-API health banner (PartsBase, SerpAPI, UPCItemDB, …).
         if (data) {
           updateIntegrationBannerFromHealth(data);
+          if (typeof data.serpapi_immersive === 'boolean') {
+            const tog = document.getElementById('serp-immersive-toggle');
+            if (tog && localStorage.getItem('if_serp_immersive') === null) {
+              tog.checked = !!data.serpapi_immersive;
+            }
+          }
         }
+        loadAPIQuotas(false);
       } catch (e) {
         el.textContent = 'build: fetch error';
         el.title = 'Error fetching version: ' + (e.message || e);
         console.error('loadVersionInfo error:', e);
       }
+    }
+
+    function getSerpImmersivePreference() {
+      const tog = document.getElementById('serp-immersive-toggle');
+      if (tog) return !!tog.checked;
+      try {
+        const v = localStorage.getItem('if_serp_immersive');
+        if (v === '0' || v === 'false') return false;
+      } catch (_) {}
+      return true; // API default
+    }
+
+    function wireSerpImmersiveToggle() {
+      const tog = document.getElementById('serp-immersive-toggle');
+      if (!tog) return;
+      try {
+        const v = localStorage.getItem('if_serp_immersive');
+        if (v === '0' || v === 'false') tog.checked = false;
+        else if (v === '1' || v === 'true') tog.checked = true;
+      } catch (_) {}
+      tog.addEventListener('change', () => {
+        try {
+          localStorage.setItem('if_serp_immersive', tog.checked ? '1' : '0');
+        } catch (_) {}
+      });
+    }
+
+    async function loadAPIQuotas(force) {
+      const el = document.getElementById('api-quota-panel');
+      if (!el) return;
+      try {
+        const res = await fetch('/api/quotas' + (force ? '?refresh=1' : ''));
+        if (!res.ok) return;
+        const data = await res.json();
+        renderAPIQuotaPanel(data);
+      } catch (e) {
+        console.warn('loadAPIQuotas', e);
+      }
+    }
+
+    function renderAPIQuotaPanel(data) {
+      const el = document.getElementById('api-quota-panel');
+      if (!el || !data) return;
+      const serp = data.serpapi || {};
+      const upc = data.upcitemdb || {};
+      const pb = data.partsbase || {};
+
+      const fmtPct = (p) => (typeof p === 'number' && !isNaN(p) ? p.toFixed(0) + '%' : '—');
+      const burnBar = (pct) => {
+        const p = Math.max(0, Math.min(100, Number(pct) || 0));
+        let color = 'bg-emerald-500';
+        if (p >= 85) color = 'bg-red-500';
+        else if (p >= 60) color = 'bg-amber-500';
+        return `<div class="h-1.5 w-full bg-zinc-800 rounded-full overflow-hidden mt-1">
+          <div class="${color} h-full rounded-full" style="width:${p}%"></div>
+        </div>`;
+      };
+
+      let serpBody = '';
+      if (!serp.configured) {
+        serpBody = '<div class="text-zinc-500 text-xs">Not configured</div>';
+      } else if (serp.error && !serp.ok) {
+        serpBody = `<div class="text-amber-300/90 text-xs">${escapeHtml(serp.error)}</div>`;
+      } else {
+        const left = serp.plan_searches_left != null ? serp.plan_searches_left : serp.total_searches_left;
+        serpBody = `
+          <div class="text-xs text-zinc-300">${escapeHtml(serp.plan_name || 'SerpAPI')} · ${Number(serp.this_month_usage||0).toLocaleString()} / ${Number(serp.searches_per_month||0).toLocaleString()} searches this month (${fmtPct(serp.usage_percent)})</div>
+          <div class="text-[11px] text-zinc-500 mt-0.5">${Number(left||0).toLocaleString()} left · hour ${Number(serp.this_hour_searches||0).toLocaleString()}${serp.account_rate_limit_per_hour ? '/' + Number(serp.account_rate_limit_per_hour).toLocaleString() : ''}${serp.plan_renewal_date ? ' · renews ' + escapeHtml(serp.plan_renewal_date) : ''}</div>
+          ${burnBar(serp.usage_percent)}
+          <div class="text-[10px] text-zinc-600 mt-1">Immersive default: ${serp.immersive_default ? 'on' : 'off'} · each shopping + immersive call burns 1 search</div>`;
+      }
+
+      let upcBody = '';
+      if (!upc.configured) {
+        upcBody = '<div class="text-zinc-500 text-xs">Trial / not configured</div>';
+      } else {
+        upcBody = `<div class="text-xs text-zinc-300">Plan ${escapeHtml(upc.plan || 'v1')}</div>
+          <div class="text-[11px] text-zinc-500 mt-0.5">${escapeHtml(upc.note || 'No public remaining-quota API')}</div>
+          ${upc.last_message ? `<div class="text-[10px] mt-0.5 ${upc.last_ok === false ? 'text-amber-300' : 'text-zinc-600'}">${escapeHtml(upc.last_message)}</div>` : ''}`;
+      }
+
+      el.className = 'mt-3 rounded-2xl border border-zinc-700 bg-zinc-900/80 px-4 py-3 text-sm';
+      el.innerHTML = `
+        <div class="flex items-center justify-between gap-2 mb-2">
+          <div class="text-[11px] uppercase tracking-wide text-zinc-400 font-medium">API quota / burn</div>
+          <button type="button" id="refresh-quotas-btn" class="text-[10px] text-sky-400 hover:text-sky-300 underline">Refresh</button>
+        </div>
+        <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <div class="rounded-xl border border-zinc-800 bg-zinc-950/50 p-2.5">
+            <div class="text-[10px] uppercase text-emerald-400/90 font-semibold mb-1">SerpAPI</div>
+            ${serpBody}
+          </div>
+          <div class="rounded-xl border border-zinc-800 bg-zinc-950/50 p-2.5">
+            <div class="text-[10px] uppercase text-sky-400/90 font-semibold mb-1">UPCItemDB</div>
+            ${upcBody}
+          </div>
+          <div class="rounded-xl border border-zinc-800 bg-zinc-950/50 p-2.5">
+            <div class="text-[10px] uppercase text-amber-400/90 font-semibold mb-1">PartsBase</div>
+            <div class="text-[11px] text-zinc-500">${escapeHtml(pb.note || 'No public remaining-quota endpoint')}</div>
+          </div>
+        </div>`;
+      const btn = document.getElementById('refresh-quotas-btn');
+      if (btn) btn.addEventListener('click', () => loadAPIQuotas(true));
+    }
+
+    function escapeHtml(s) {
+      return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
     }
 
     function updateIntegrationBannerFromHealth(health) {
@@ -602,6 +727,7 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
     // was affected by external CDNs (Tailwind, FA). Immediate attach is reliable here.
     (function attachUI() {
       try {
+        wireSerpImmersiveToggle();
         loadVersionInfo();
         paintRecentNSNSelect();
 
@@ -680,10 +806,11 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
 
       try {
         // /api/insight returns full analysis for the UI; /api/analyze is data-capture only (downstream apps).
+        const serpImmersive = getSerpImmersivePreference();
         const res = await fetch('/api/insight', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ nsn })
+          body: JSON.stringify({ nsn, serp_immersive: serpImmersive })
         });
         if (!res.ok) {
           const txt = await res.text();
@@ -703,6 +830,8 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
           console.error('Render error:', renderErr);
           showError('Analysis succeeded but UI render failed. Check console. Error: ' + (renderErr.message || renderErr));
         }
+        // Refresh burn after analysis (shopping/immersive credits used).
+        loadAPIQuotas(true);
       } catch (err) {
         showError('Analysis failed: ' + (err.message || 'Network or server error'));
       } finally {
@@ -2110,20 +2239,13 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
       const federal = c.link_gsa || c.linkGsa || federalFallback;
       const website = c.link_website || c.linkWebsite || manufacturerHomepage(mfr);
 
-      // Label shop by how direct the URL is.
-      let shopLabel = 'Shop';
-      if (/officedepot\.com\/a\/products\//i.test(shop)) shopLabel = 'Office Depot product';
-      else if (/walmart\.com\/ip\//i.test(shop)) shopLabel = 'Walmart product';
-      else if (/staples\.com\/.*product/i.test(shop)) shopLabel = 'Staples product';
-      else if (/homedepot\.com\/s\//i.test(shop)) shopLabel = 'Home Depot (product search)';
-      else if (/upcitemdb\.com\/norob\//i.test(shop)) shopLabel = 'Retail offer';
-      else if (/walmart\.com\/search/i.test(shop) && upcClean) shopLabel = 'Walmart (UPC)';
-      else if (/tbm=shop/i.test(shop)) shopLabel = richQ ? 'Shop (brand+desc+SKU)' : (upcClean ? 'Shop (UPC)' : 'Shop (SKU)');
-      else if (shop) shopLabel = 'Retail product';
+      const shopMerchant = (c.link_shop_merchant || c.linkShopMerchant || '').trim();
+      const shopLabel = labelShopVendor(shop, shopMerchant, c.price_shop_source || c.priceShopSrc || '', richQ, upcClean);
+      const shopIsProduct = isDirectRetailProductURL(shop);
 
       const amazonLabel = amazonIsProduct
-        ? 'Amazon product'
-        : (richQ ? 'Amazon (brand+desc+SKU)' : (upcClean ? 'Amazon (UPC)' : (sku ? 'Amazon (SKU)' : 'Amazon')));
+        ? 'Amazon'
+        : (richQ ? 'Amazon (search)' : (upcClean ? 'Amazon (UPC)' : (sku ? 'Amazon (SKU)' : 'Amazon')));
 
       const fmtPrice = (p) => {
         if (!p) return '';
@@ -2162,13 +2284,18 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
 
       const isRangeStr = (s) => /–|—|-.*\$|\(\d+\s*offers?\)/i.test(String(s || ''));
 
+      // Discrete vendor offers for multi-merchant rows (from Serp immersive / UPC catalog).
+      const vendorOffers = collectVendorOffers(c, fmtPrice);
+
       return {
         shop,
         shopLabel,
-        shopIsProduct: /officedepot\.com\/a\/products\/|walmart\.com\/ip\/|upcitemdb\.com\/norob\//i.test(shop || ''),
+        shopMerchant,
+        shopIsProduct,
         shopPrice: fallShop,
         shopPriceSrc: c.price_shop_source || c.priceShopSrc || '',
         shopPriceIsRange: !!(c.price_shop_is_range || c.priceShopIsRange) || isRangeStr(fallShop),
+        vendorOffers,
         upc: upcIdentity,
         upcPrice: fallUpc,
         upcPriceSrc: c.price_upc_source || c.priceUpcSrc || '',
@@ -2186,6 +2313,110 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
         website,
         priceUrl: c.price_url || c.priceUrl || '',
       };
+    }
+
+    function isDirectRetailProductURL(url) {
+      if (!url) return false;
+      return /officedepot\.com\/a\/products\/|walmart\.com\/ip\/|staples\.com\/.*product|homedepot\.com\/p\/|lowes\.com\/pd\/|target\.com\/p\/|bestbuy\.com\/site\/|upcitemdb\.com\/norob\//i.test(url);
+    }
+
+    function merchantFromURL(url) {
+      if (!url) return '';
+      try {
+        const host = new URL(url).hostname.replace(/^www\./i, '').toLowerCase();
+        const map = [
+          [/homedepot\.com/, 'Home Depot'],
+          [/walmart\.com/, 'Walmart'],
+          [/officedepot\.com/, 'Office Depot'],
+          [/staples\.com/, 'Staples'],
+          [/lowes\.com/, "Lowe's"],
+          [/target\.com/, 'Target'],
+          [/bestbuy\.com/, 'Best Buy'],
+          [/menards\.com/, 'Menards'],
+          [/acehardware\.com/, 'Ace Hardware'],
+          [/grainger\.com/, 'Grainger'],
+          [/globalindustrial\.com/, 'Global Industrial'],
+          [/amazon\.com/, 'Amazon'],
+          [/google\./, 'Google Shopping'],
+          [/upcitemdb\.com/, 'UPC catalog'],
+        ];
+        for (const [re, name] of map) {
+          if (re.test(host)) return name;
+        }
+        // Capitalize first label of domain (e.g. costco.com → Costco)
+        const base = host.split('.')[0];
+        if (base && base.length >= 3 && base !== 'www') {
+          return base.charAt(0).toUpperCase() + base.slice(1);
+        }
+      } catch (_) {}
+      return '';
+    }
+
+    function merchantFromPriceSource(src) {
+      const s = String(src || '');
+      const m = s.match(/MARKET(?::|_RANGE:)?([A-Z0-9_]+)/i);
+      if (!m) return '';
+      const tag = m[1].replace(/_/g, ' ').toLowerCase();
+      if (/^(top.?results|nsn.?top.?results|catalog|retail|offer|search)/i.test(tag)) return '';
+      return tag.replace(/\b\w/g, ch => ch.toUpperCase());
+    }
+
+    function isGenericVendorName(name) {
+      const n = String(name || '').trim().toLowerCase();
+      return !n || /^(retail|shop|google shopping|google|market|offer|catalog|online|product)$/i.test(n);
+    }
+
+    function labelShopVendor(shopUrl, shopMerchant, priceSrc, richQ, upcClean) {
+      const fromMerch = !isGenericVendorName(shopMerchant) ? shopMerchant.trim() : '';
+      const fromSrc = merchantFromPriceSource(priceSrc);
+      const fromUrl = merchantFromURL(shopUrl);
+      const name = fromMerch || fromSrc || fromUrl;
+      const isProduct = isDirectRetailProductURL(shopUrl);
+      const isSearch = /tbm=shop|\/s\/|\/search/i.test(shopUrl || '');
+      if (name) {
+        if (isProduct) return name;
+        if (isSearch) return name + ' (search)';
+        return name;
+      }
+      if (/tbm=shop/i.test(shopUrl || '')) return richQ ? 'Google Shopping (search)' : (upcClean ? 'Google Shopping (UPC)' : 'Google Shopping');
+      if (shopUrl) return 'Shop';
+      return 'Shop';
+    }
+
+    // Collect per-merchant shop offers (and non-Amazon) for multi-vendor card lines.
+    function collectVendorOffers(c, fmtPrice) {
+      const raw = c.market_offers || c.MarketOffers || [];
+      if (!Array.isArray(raw) || raw.length === 0) return [];
+      const byMerchant = new Map();
+      for (const o of raw) {
+        const ch = String(o.channel || o.Channel || '').toLowerCase();
+        const merchant = String(o.merchant || o.Merchant || '').trim();
+        const link = String(o.link || o.Link || '').trim();
+        if (/amazon/i.test(merchant) || ch === 'amazon' || /amazon\.com/i.test(link)) continue;
+        if (isGenericVendorName(merchant) && !link) continue;
+        const name = !isGenericVendorName(merchant) ? merchant : (merchantFromURL(link) || 'Retailer');
+        if (isGenericVendorName(name)) continue;
+        const unit = Number(o.unit_price != null ? o.unit_price : o.UnitPrice);
+        const each = Number(o.price_per_each != null ? o.price_per_each : o.PricePerEach);
+        const priceNum = (each > 0 ? each : unit) || 0;
+        const key = name.toLowerCase();
+        const prev = byMerchant.get(key);
+        // Prefer offer with a product link; then lowest price.
+        const score = (link ? 100 : 0) + (priceNum > 0 ? (1000 - Math.min(priceNum, 999)) : 0);
+        const prevScore = prev ? ((prev.link ? 100 : 0) + (prev.priceNum > 0 ? (1000 - Math.min(prev.priceNum, 999)) : 0)) : -1;
+        if (!prev || score > prevScore) {
+          byMerchant.set(key, {
+            merchant: name,
+            link,
+            price: priceNum > 0 ? fmtPrice(priceNum.toFixed(2)) : '',
+            priceNum,
+            source: String(o.source || o.Source || 'MARKET'),
+          });
+        }
+      }
+      return Array.from(byMerchant.values())
+        .sort((a, b) => (a.priceNum || 1e9) - (b.priceNum || 1e9))
+        .slice(0, 6);
     }
 
     function appendCommercialLinkRow(parent, links) {
@@ -2231,13 +2462,28 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
         }
         row.appendChild(line);
       };
-      // Prioritize direct product pages first; emphasize true deep links. Price (or range) sits next to each link.
+      // Amazon first when present.
       add(links.amazon, links.amazonLabel || 'Amazon', links.amazonPrice, links.amazonPriceSrc, links.amazonPriceIsRange, links.amazonIsProduct
         ? 'text-[11px] text-orange-300 hover:text-orange-200 underline font-medium'
         : 'text-[11px] text-sky-300 hover:text-sky-200 underline');
-      add(links.shop, links.shopLabel || 'Shop product', links.shopPrice, links.shopPriceSrc, links.shopPriceIsRange, links.shopIsProduct
-        ? 'text-[11px] text-emerald-300 hover:text-emerald-200 underline font-medium'
-        : 'text-[11px] text-emerald-300 hover:text-emerald-200 underline');
+
+      // Prefer discrete vendor lines when we have multi-store market_offers.
+      const vendors = Array.isArray(links.vendorOffers) ? links.vendorOffers : [];
+      if (vendors.length >= 1) {
+        vendors.forEach(v => {
+          const href = v.link || links.shop;
+          if (!href) return;
+          const isProd = isDirectRetailProductURL(href);
+          add(href, v.merchant, v.price, v.source || 'MARKET', false,
+            isProd
+              ? 'text-[11px] text-emerald-300 hover:text-emerald-200 underline font-medium'
+              : 'text-[11px] text-emerald-300 hover:text-emerald-200 underline');
+        });
+      } else {
+        add(links.shop, links.shopLabel || 'Shop', links.shopPrice, links.shopPriceSrc, links.shopPriceIsRange, links.shopIsProduct
+          ? 'text-[11px] text-emerald-300 hover:text-emerald-200 underline font-medium'
+          : 'text-[11px] text-emerald-300 hover:text-emerald-200 underline');
+      }
       if (links.upc && links.upc !== links.shop && /upcitemdb\.com\/upc\//i.test(links.upc)) {
         add(links.upc, 'UPC identity', links.upcPrice, links.upcPriceSrc, links.upcPriceIsRange);
       }

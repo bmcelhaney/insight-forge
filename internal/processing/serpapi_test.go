@@ -1,6 +1,7 @@
 package processing
 
 import (
+	"context"
 	"strings"
 	"testing"
 )
@@ -81,6 +82,15 @@ func TestSerpAPIImmersiveKillSwitch(t *testing.T) {
 	}
 	if !strings.Contains(serpStatusMessage(), "immersive") {
 		t.Fatalf("status=%s", serpStatusMessage())
+	}
+	// Per-request override: off even when default is on.
+	ctxOff := WithSerpImmersive(context.Background(), false)
+	if SerpImmersiveForRequest(ctxOff) {
+		t.Fatal("request override should disable immersive")
+	}
+	ctxOn := WithSerpImmersive(context.Background(), true)
+	if !SerpImmersiveForRequest(ctxOn) {
+		t.Fatal("request override should enable immersive")
 	}
 	// Clean up so other tests don't see a fake key.
 	ConfigureSerpAPI("", 8, true)
