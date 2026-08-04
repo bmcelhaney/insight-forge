@@ -38,6 +38,9 @@ type Config struct {
 	SerpAPIConfigured bool
 	SerpAPIKey        string
 	SerpAPINum        int // shopping results to request (top N)
+	// SerpAPIImmersive enables google_immersive_product follow-up (extra quota).
+	// Set IF_SERPAPI_IMMERSIVE=false to restore shopping-search-only behavior.
+	SerpAPIImmersive bool
 	// UPCItemDB paid plan (DEV/PRO) for product identity + market offers
 	UPCItemDBEnabled    bool
 	UPCItemDBConfigured bool
@@ -75,6 +78,9 @@ func Load() (*Config, error) {
 	viper.SetDefault("PARTSBASE_TIMEOUT_SECONDS", 30)
 	viper.SetDefault("SERPAPI_ENABLED", true)
 	viper.SetDefault("SERPAPI_NUM", 8)
+	// P2: Immersive Product multi-store enrichment (uses extra SerpAPI credits).
+	// Default on for richer merchant prices; set false to burn less quota.
+	viper.SetDefault("SERPAPI_IMMERSIVE", true)
 	viper.SetDefault("UPCITEMDB_ENABLED", true)
 
 	partsBaseClientID := getConfiguredValue("PARTSBASE_CLIENT_ID")
@@ -135,6 +141,7 @@ func Load() (*Config, error) {
 		SerpAPIConfigured:        serpKey != "",
 		SerpAPIKey:               serpKey,
 		SerpAPINum:               serpNum,
+		SerpAPIImmersive:         viper.GetBool("SERPAPI_IMMERSIVE"),
 		UPCItemDBEnabled:         viper.GetBool("UPCITEMDB_ENABLED"),
 		UPCItemDBConfigured:      upcKey != "",
 		UPCItemDBKey:             upcKey,

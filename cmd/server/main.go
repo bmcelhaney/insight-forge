@@ -56,9 +56,14 @@ func main() {
 	extractorReg := extraction.NewDefaultRegistry(samAPIKey, partsBaseCfg)
 
 	// SerpAPI Google Shopping for commercial market prices / better product links.
+	// Immersive Product (P2) is optional extra quota — disable with IF_SERPAPI_IMMERSIVE=false.
 	if cfg.SerpAPIEnabled && cfg.SerpAPIConfigured {
-		processing.ConfigureSerpAPI(cfg.SerpAPIKey, cfg.SerpAPINum)
-		fmt.Printf("SerpAPI: enabled (Google Shopping, num=%d)\n", cfg.SerpAPINum)
+		processing.ConfigureSerpAPI(cfg.SerpAPIKey, cfg.SerpAPINum, cfg.SerpAPIImmersive)
+		imm := "shopping only"
+		if cfg.SerpAPIImmersive {
+			imm = "shopping + immersive product"
+		}
+		fmt.Printf("SerpAPI: enabled (%s, num=%d)\n", imm, cfg.SerpAPINum)
 	} else if cfg.SerpAPIEnabled {
 		fmt.Printf("SerpAPI: enabled but IF_SERPAPI_KEY missing — place key in .env.serpapi (gitignored)\n")
 	} else {
@@ -131,6 +136,7 @@ func main() {
 			"serpapi_enabled":      cfg.SerpAPIEnabled,
 			"serpapi_configured":   cfg.SerpAPIConfigured && processing.SerpAPIEnabled(),
 			"serpapi_num":          cfg.SerpAPINum,
+			"serpapi_immersive":    cfg.SerpAPIImmersive && processing.SerpAPIImmersiveEnabled(),
 			"upcitemdb_enabled":    cfg.UPCItemDBEnabled,
 			"upcitemdb_configured": cfg.UPCItemDBConfigured && processing.UPCItemDBConfigured(),
 			"upcitemdb_plan":       map[bool]string{true: "v1", false: "trial"}[processing.UPCItemDBConfigured()],

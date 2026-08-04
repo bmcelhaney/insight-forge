@@ -17,13 +17,17 @@ import (
 	"github.com/bmcelhaney/insight-forge/internal/models"
 )
 
-// SerpAPI Google Shopping integration for commercial product prices and links.
+// SerpAPI Google Shopping + optional Immersive Product integration.
 // Key is loaded at process start via ConfigureSerpAPI (never log the raw key).
+//
+// Quota: each google_shopping and google_immersive_product call costs a search credit.
+// IF_SERPAPI_IMMERSIVE=false (or ConfigureSerpAPI immersive=false) restores shopping-only.
 
 var (
-	serpMu     sync.RWMutex
-	serpAPIKey string
-	serpNum    = 8
+	serpMu         sync.RWMutex
+	serpAPIKey     string
+	serpNum        = 8
+	serpImmersive  = true // default on; kill-switch restores shopping-only
 	// Google Shopping often needs 5–15s; keep client timeout above that.
 	serpClient = &http.Client{Timeout: 30 * time.Second}
 
@@ -31,9 +35,12 @@ var (
 	serpCache   = map[string]cachedSerpResult{}
 )
 
-// serpCallTimeout is the per-request budget for a SerpAPI shopping call.
+// serpCallTimeout is the per-resolve budget for SerpAPI (shopping + optional immersive).
 // Independent of the UPCItemDB resolve budget so rate-limit waits don't starve Serp.
 const serpCallTimeout = 28 * time.Second
+
+// maxImmersiveCallsPerResolve caps Immersive Product API usage (1 search credit each).
+const maxImmersiveCallsPerResolve = 1
 
 type cachedSerpResult struct {
 	hits   []shoppingHit
@@ -41,20 +48,23 @@ type cachedSerpResult struct {
 	ok     bool
 }
 
-// shoppingHit is one Google Shopping result.
+// shoppingHit is one Google Shopping result (or a store row from Immersive Product).
 type shoppingHit struct {
-	Title    string
-	Price    float64
-	Link     string
-	Source   string // merchant name
-	ProductID string
+	Title          string
+	Price          float64
+	Link           string
+	Source         string // merchant name
+	ProductID      string
+	ImmersiveToken string // page_token for engine=google_immersive_product
 }
 
 // ConfigureSerpAPI enables SerpAPI-backed Google Shopping lookups.
-func ConfigureSerpAPI(apiKey string, numResults int) {
+// immersive enables P2 multi-store enrichment (extra quota); false = shopping only.
+func ConfigureSerpAPI(apiKey string, numResults int, immersive bool) {
 	serpMu.Lock()
 	defer serpMu.Unlock()
 	serpAPIKey = strings.TrimSpace(apiKey)
+	serpImmersive = immersive
 	if numResults > 0 {
 		if numResults > 20 {
 			numResults = 20
@@ -70,10 +80,23 @@ func SerpAPIEnabled() bool {
 	return serpAPIKey != ""
 }
 
+// SerpAPIImmersiveEnabled reports whether Immersive Product follow-up is on.
+func SerpAPIImmersiveEnabled() bool {
+	serpMu.RLock()
+	defer serpMu.RUnlock()
+	return serpAPIKey != "" && serpImmersive
+}
+
 func serpKey() string {
 	serpMu.RLock()
 	defer serpMu.RUnlock()
 	return serpAPIKey
+}
+
+func serpImmersiveOn() bool {
+	serpMu.RLock()
+	defer serpMu.RUnlock()
+	return serpImmersive
 }
 
 // classifySerpNetError turns Go transport errors into analyst-facing messages.
@@ -137,7 +160,96 @@ func resolveViaSerpShopping(ctx context.Context, sku, upc, mfr, title string) (p
 			return productIdentity{}, false
 		}
 	}
+	// P2: one Immersive Product call when enabled and a page_token is available.
+	// Kill-switch: IF_SERPAPI_IMMERSIVE=false skips this (shopping-only, prior behavior).
+	if serpImmersiveOn() && serpCtx.Err() == nil {
+		hits = enrichHitsWithImmersive(serpCtx, hits, sku, mfr)
+	}
 	return identityFromShoppingHits(hits, sku, mfr), true
+}
+
+// enrichHitsWithImmersive picks the best shopping hit that has an immersive token,
+// fetches multi-store prices (≤maxImmersiveCallsPerResolve), and merges them in.
+func enrichHitsWithImmersive(ctx context.Context, hits []shoppingHit, preferSKU, mfr string) []shoppingHit {
+	if len(hits) == 0 || !SerpAPIEnabled() || !serpImmersiveOn() {
+		return hits
+	}
+	token := pickBestImmersiveToken(hits, preferSKU, mfr)
+	if token == "" {
+		return hits
+	}
+	storeHits, ok := serpImmersiveProduct(ctx, token)
+	if !ok || len(storeHits) == 0 {
+		return hits
+	}
+	return mergeImmersiveStoreHits(hits, storeHits)
+}
+
+// pickBestImmersiveToken prefers SKU/brand-matched hits that expose a page_token.
+func pickBestImmersiveToken(hits []shoppingHit, preferSKU, mfr string) string {
+	prefer := strings.ToUpper(strings.TrimSpace(preferSKU))
+	preferCompact := compactAlnum(prefer)
+	mfrL := strings.ToLower(strings.TrimSpace(mfr))
+
+	bestScore := -1
+	bestToken := ""
+	for _, h := range hits {
+		tok := strings.TrimSpace(h.ImmersiveToken)
+		if tok == "" {
+			continue
+		}
+		titleU := strings.ToUpper(h.Title)
+		titleL := strings.ToLower(h.Title)
+		sc := 1
+		if prefer != "" && strings.Contains(titleU, prefer) {
+			sc += 50
+		}
+		if preferCompact != "" && len(preferCompact) >= 4 && strings.Contains(compactAlnum(titleU), preferCompact) {
+			sc += 40
+		}
+		if mfrL != "" && strings.Contains(titleL, mfrL) {
+			sc += 20
+		}
+		if h.Price > 0 && h.Price <= 50000 {
+			sc += 5
+		}
+		if sc > bestScore {
+			bestScore = sc
+			bestToken = tok
+		}
+	}
+	return bestToken
+}
+
+// mergeImmersiveStoreHits appends store-level offers not already present by merchant+price.
+func mergeImmersiveStoreHits(base, stores []shoppingHit) []shoppingHit {
+	if len(stores) == 0 {
+		return base
+	}
+	type key struct {
+		src string
+		p   int64 // price * 100
+	}
+	seen := map[key]bool{}
+	for _, h := range base {
+		if h.Price <= 0 {
+			continue
+		}
+		seen[key{src: strings.ToLower(strings.TrimSpace(h.Source)), p: int64(h.Price*100 + 0.5)}] = true
+	}
+	out := append([]shoppingHit(nil), base...)
+	for _, s := range stores {
+		if s.Price <= 0 || s.Price > 50000 {
+			continue
+		}
+		k := key{src: strings.ToLower(strings.TrimSpace(s.Source)), p: int64(s.Price*100 + 0.5)}
+		if seen[k] {
+			continue
+		}
+		seen[k] = true
+		out = append(out, s)
+	}
+	return out
 }
 
 // mergeProductIdentity prefers existing deep links/ASIN; fills prices/ranges/links from b.
@@ -481,16 +593,17 @@ func serpGoogleShopping(ctx context.Context, query string) ([]shoppingHit, bool)
 	}
 
 	var payload struct {
-		Error            string `json:"error"`
-		ShoppingResults  []struct {
-			Title           string  `json:"title"`
-			Link            string  `json:"link"`
-			ProductLink     string  `json:"product_link"`
-			Source          string  `json:"source"`
-			Price           string  `json:"price"`
-			ExtractedPrice  float64 `json:"extracted_price"`
-			ProductID       string  `json:"product_id"`
-			OldPrice        string  `json:"old_price"`
+		Error           string `json:"error"`
+		ShoppingResults []struct {
+			Title                     string  `json:"title"`
+			Link                      string  `json:"link"`
+			ProductLink               string  `json:"product_link"`
+			Source                    string  `json:"source"`
+			Price                     string  `json:"price"`
+			ExtractedPrice            float64 `json:"extracted_price"`
+			ProductID                 string  `json:"product_id"`
+			OldPrice                  string  `json:"old_price"`
+			ImmersiveProductPageToken string  `json:"immersive_product_page_token"`
 		} `json:"shopping_results"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
@@ -530,11 +643,139 @@ func serpGoogleShopping(ctx context.Context, query string) ([]shoppingHit, bool)
 			continue
 		}
 		hits = append(hits, shoppingHit{
-			Title:     strings.TrimSpace(r.Title),
-			Price:     price,
-			Link:      link,
-			Source:    strings.TrimSpace(r.Source),
-			ProductID: strings.TrimSpace(r.ProductID),
+			Title:          strings.TrimSpace(r.Title),
+			Price:          price,
+			Link:           link,
+			Source:         strings.TrimSpace(r.Source),
+			ProductID:      strings.TrimSpace(r.ProductID),
+			ImmersiveToken: strings.TrimSpace(r.ImmersiveProductPageToken),
+		})
+	}
+	if len(hits) == 0 {
+		setSerpCache(cacheKey, nil, false, 6*time.Hour)
+		return nil, false
+	}
+	setSerpCache(cacheKey, hits, true, 12*time.Hour)
+	return hits, true
+}
+
+// serpImmersiveProduct fetches multi-store prices via engine=google_immersive_product.
+// Each call costs one SerpAPI search credit. Results are cached by page_token.
+func serpImmersiveProduct(ctx context.Context, pageToken string) ([]shoppingHit, bool) {
+	pageToken = strings.TrimSpace(pageToken)
+	if pageToken == "" || !SerpAPIEnabled() || !serpImmersiveOn() {
+		return nil, false
+	}
+	// Prefix cache keys so shopping and immersive never collide.
+	cacheKey := "imm:" + pageToken
+	if hit, ok := getSerpCache(cacheKey); ok {
+		return hit.hits, hit.ok
+	}
+
+	u := url.URL{
+		Scheme: "https",
+		Host:   "serpapi.com",
+		Path:   "/search.json",
+	}
+	q := u.Query()
+	q.Set("engine", "google_immersive_product")
+	q.Set("page_token", pageToken)
+	// more_stores returns up to ~13 merchants (still one search credit).
+	q.Set("more_stores", "true")
+	q.Set("api_key", serpKey())
+	u.RawQuery = q.Encode()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		setSerpCache(cacheKey, nil, false, 2*time.Minute)
+		return nil, false
+	}
+	req.Header.Set("User-Agent", "InsightForge/1.0 (+https://github.com/bmcelhaney/insight-forge)")
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := serpClient.Do(req)
+	if err != nil {
+		// Soft-fail: keep prior shopping success status; immersive is additive.
+		setSerpCache(cacheKey, nil, false, 2*time.Minute)
+		return nil, false
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	if err != nil {
+		setSerpCache(cacheKey, nil, false, 2*time.Minute)
+		return nil, false
+	}
+	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
+		// Rate limit is real — surface it so the UI banner can warn.
+		recordSerpAPIStatus(false, resp.StatusCode, fmt.Sprintf("HTTP %d", resp.StatusCode),
+			"SerpAPI rate-limited during Immersive Product. Shopping enrichment may be incomplete.")
+		setSerpCache(cacheKey, nil, false, 45*time.Second)
+		return nil, false
+	}
+	if resp.StatusCode == 401 || resp.StatusCode == 403 {
+		recordSerpAPIStatus(false, resp.StatusCode, fmt.Sprintf("HTTP %d", resp.StatusCode),
+			"SerpAPI rejected the API key (unauthorized). Check IF_SERPAPI_KEY.")
+		setSerpCache(cacheKey, nil, false, 10*time.Minute)
+		return nil, false
+	}
+	if resp.StatusCode != 200 {
+		setSerpCache(cacheKey, nil, false, 10*time.Minute)
+		return nil, false
+	}
+
+	var payload struct {
+		Error          string `json:"error"`
+		ProductResults struct {
+			Title  string `json:"title"`
+			Brand  string `json:"brand"`
+			Stores []struct {
+				Name           string  `json:"name"`
+				Link           string  `json:"link"`
+				Title          string  `json:"title"`
+				Price          string  `json:"price"`
+				ExtractedPrice float64 `json:"extracted_price"`
+			} `json:"stores"`
+		} `json:"product_results"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		setSerpCache(cacheKey, nil, false, 5*time.Minute)
+		return nil, false
+	}
+	if payload.Error != "" {
+		if strings.Contains(strings.ToLower(payload.Error), "invalid") || strings.Contains(strings.ToLower(payload.Error), "api key") {
+			recordSerpAPIStatus(false, 200, payload.Error, "SerpAPI reported an invalid API key. Check IF_SERPAPI_KEY.")
+		}
+		setSerpCache(cacheKey, nil, false, 6*time.Hour)
+		return nil, false
+	}
+	if len(payload.ProductResults.Stores) == 0 {
+		// No stores — shopping still valid; don't clobber healthy status.
+		setSerpCache(cacheKey, nil, false, 6*time.Hour)
+		return nil, false
+	}
+	recordSerpAPIStatus(true, 200, "", "SerpAPI Google Shopping + Immersive Product is live.")
+
+	productTitle := strings.TrimSpace(payload.ProductResults.Title)
+	var hits []shoppingHit
+	for _, s := range payload.ProductResults.Stores {
+		price := s.ExtractedPrice
+		if price <= 0 {
+			price = parseMoneyToFloat(s.Price)
+		}
+		if price <= 0 {
+			continue
+		}
+		title := strings.TrimSpace(s.Title)
+		if title == "" {
+			title = productTitle
+		}
+		// Prefer merchant product URLs over Google Shopping aggregate links.
+		link := strings.TrimSpace(s.Link)
+		hits = append(hits, shoppingHit{
+			Title:  title,
+			Price:  price,
+			Link:   link,
+			Source: nonEmpty(strings.TrimSpace(s.Name), "Retail"),
 		})
 	}
 	if len(hits) == 0 {
@@ -602,5 +843,9 @@ func serpStatusMessage() string {
 	if !SerpAPIEnabled() {
 		return "SerpAPI: not configured"
 	}
-	return fmt.Sprintf("SerpAPI: enabled (Google Shopping, num=%d)", serpResultLimit())
+	mode := "shopping only"
+	if serpImmersiveOn() {
+		mode = "shopping + immersive"
+	}
+	return fmt.Sprintf("SerpAPI: enabled (%s, num=%d)", mode, serpResultLimit())
 }
