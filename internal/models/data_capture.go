@@ -92,13 +92,17 @@ type DataCaptureIdentifiers struct {
 // DataCapturePricing is one atomic price observation for downstream systems.
 // No min/max/range fields — each observation is unit_price for quantity units.
 type DataCapturePricing struct {
-	UnitPrice   float64 `json:"unit_price"`             // numeric unit price (USD unless Currency set)
-	Quantity    int     `json:"quantity"`               // units covered by unit_price (default 1)
-	Currency    string  `json:"currency,omitempty"`     // default USD when empty on export
-	Channel     string  `json:"channel,omitempty"`      // amazon | shop | catalog | federal | gsa | partsbase
-	Merchant    string  `json:"merchant,omitempty"`
-	PriceSource string  `json:"price_source,omitempty"` // provenance tag
-	AsOf        string  `json:"as_of,omitempty"`
+	UnitPrice    float64 `json:"unit_price"`                 // listing price for the sell unit
+	Quantity     int     `json:"quantity"`                   // base units covered by unit_price (pack size)
+	PricePerEach float64 `json:"price_per_each,omitempty"`   // unit_price / quantity when quantity >= 1
+	Unit         string  `json:"unit,omitempty"`              // EA, DZ, CS, PK, BX, CT, RM, …
+	PackLabel    string  `json:"pack_label,omitempty"`       // e.g. "dozen", "case of 24"
+	BaseUnit     string  `json:"base_unit,omitempty"`        // e.g. "sheet"
+	Currency     string  `json:"currency,omitempty"`         // default USD when empty on export
+	Channel      string  `json:"channel,omitempty"`          // amazon | shop | catalog | federal | gsa | partsbase
+	Merchant     string  `json:"merchant,omitempty"`
+	PriceSource  string  `json:"price_source,omitempty"`     // provenance tag
+	AsOf         string  `json:"as_of,omitempty"`
 }
 
 // DataCaptureLinks holds verification / product URLs for a hit.

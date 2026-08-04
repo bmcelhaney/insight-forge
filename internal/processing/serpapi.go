@@ -271,7 +271,7 @@ func identityFromShoppingHits(hits []shoppingHit, preferSKU, mfr string) product
 				bestShop = h
 			}
 		}
-		// Atomic offer for data-capture export (one price hit, quantity 1).
+		// Atomic offer for data-capture export (pack/UOM filled later from title + ETS).
 		id.Offers = append(id.Offers, models.MarketOffer{
 			UnitPrice: h.Price,
 			Quantity:  1,
@@ -280,6 +280,7 @@ func identityFromShoppingHits(hits []shoppingHit, preferSKU, mfr string) product
 			Merchant:  nonEmpty(h.Source, "Google Shopping"),
 			Source:    "SERPAPI",
 			Link:      h.Link,
+			Title:     strings.TrimSpace(h.Title),
 		})
 	}
 

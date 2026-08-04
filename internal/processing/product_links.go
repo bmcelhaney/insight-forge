@@ -559,6 +559,10 @@ func applyDeterministicProductLinks(refs []models.CommercialReference, entityID 
 				if id.Offers[i].Quantity <= 0 {
 					id.Offers[i].Quantity = 1
 				}
+				// Prefer catalog title on the offer for pack/UOM parse.
+				if id.Offers[i].Title == "" && id.Title != "" {
+					id.Offers[i].Title = id.Title
+				}
 			}
 			r.MarketOffers = appendMarketOffers(r.MarketOffers, id.Offers...)
 		}
@@ -577,9 +581,12 @@ func applyDeterministicProductLinks(refs []models.CommercialReference, entityID 
 					Source:    nonEmpty(r.PriceFederalSrc, "ABILITYONE_COM"),
 					Link:      r.LinkGSA,
 					AsOf:      asOf,
+					Title:     strings.TrimSpace(r.Description),
 				})
 			}
 		}
+		// P0: pack size / UOM / price-per-each from ETS description + offer titles.
+		enrichCommercialMarketOffers(r)
 
 		// Primary tile price: prefer shop, then amazon, then upc, then existing GSA/row price.
 		if strings.TrimSpace(r.Price) == "" && id != nil && id.OfferPrice > 0 && (deepOK || id.DeepLinkOK || id.Title != "") {
@@ -1453,6 +1460,7 @@ func collectChannelOffers(offers []upcOffer) channelOfferSet {
 			Merchant:  c.merchant,
 			Source:    "UPCITEMDB",
 			Link:      c.link,
+			// Title filled later from productIdentity when offers are attached to a ref.
 		})
 	}
 	return out
@@ -1945,6 +1953,9 @@ func appendMarketOffers(dst []models.MarketOffer, more ...models.MarketOffer) []
 		if o.Currency == "" {
 			o.Currency = "USD"
 		}
+		if o.PricePerEach <= 0 && o.Quantity > 0 {
+			o.PricePerEach = roundMoney(o.UnitPrice / float64(o.Quantity))
+		}
 		key := marketOfferKey(o)
 		if _, ok := seen[key]; ok {
 			continue
@@ -2009,6 +2020,7 @@ func singlePriceMarketOffers(r models.CommercialReference, asOf string) []models
 			Source:    src,
 			Link:      c.link,
 			AsOf:      asOf,
+			Title:     strings.TrimSpace(r.Description),
 		})
 	}
 	return out

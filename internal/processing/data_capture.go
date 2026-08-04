@@ -146,6 +146,10 @@ func BuildDataCaptureDocument(result models.InsightResult, snaps []models.DataSn
 			if cur == "" {
 				cur = "USD"
 			}
+			ppe := o.PricePerEach
+			if ppe <= 0 && o.UnitPrice > 0 && qty > 0 {
+				ppe = roundMoney(o.UnitPrice / float64(qty))
+			}
 			priceHit := models.DataCaptureHit{
 				HitID:       fmt.Sprintf("price-obs-%d", priceSeq),
 				HitType:     "price_observation",
@@ -153,18 +157,28 @@ func BuildDataCaptureDocument(result models.InsightResult, snaps []models.DataSn
 				Identifiers: ids,
 				Description: strings.TrimSpace(c.Description),
 				Pricing: &models.DataCapturePricing{
-					UnitPrice:   roundMoney(o.UnitPrice),
-					Quantity:    qty,
-					Currency:    cur,
-					Channel:     o.Channel,
-					Merchant:    o.Merchant,
-					PriceSource: firstNonEmpty(o.Source, c.PriceSource),
-					AsOf:        firstNonEmpty(o.AsOf, c.PriceAsOf),
+					UnitPrice:    roundMoney(o.UnitPrice),
+					Quantity:     qty,
+					PricePerEach: ppe,
+					Unit:         o.Unit,
+					PackLabel:    o.PackLabel,
+					BaseUnit:     o.BaseUnit,
+					Currency:     cur,
+					Channel:      o.Channel,
+					Merchant:     o.Merchant,
+					PriceSource:  firstNonEmpty(o.Source, c.PriceSource),
+					AsOf:         firstNonEmpty(o.AsOf, c.PriceAsOf),
 				},
 				Attributes: map[string]any{
 					"parent_hit_id": parentID,
 					"parent_type":   hitType,
 				},
+			}
+			if o.Title != "" {
+				if priceHit.Attributes == nil {
+					priceHit.Attributes = map[string]any{}
+				}
+				priceHit.Attributes["offer_title"] = o.Title
 			}
 			if o.Link != "" {
 				priceHit.Links = &models.DataCaptureLinks{URL: o.Link, PriceURL: o.Link}

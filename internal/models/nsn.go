@@ -218,16 +218,22 @@ type CommercialReference struct {
 }
 
 // MarketOffer is one atomic commercial/market price observation (not a min–max range).
-// Quantity is the sell/pack quantity when known; retail list prices default to 1.
+// UnitPrice is the observed listing price for the sell unit; Quantity is how many
+// base units that price covers (pack size). PricePerEach normalizes to one base unit.
 type MarketOffer struct {
-	UnitPrice float64 `json:"unit_price"`           // USD unit price for Quantity units
-	Quantity  int     `json:"quantity"`             // units covered by UnitPrice (default 1)
-	Currency  string  `json:"currency,omitempty"`   // e.g. USD
-	Channel   string  `json:"channel,omitempty"`    // amazon | shop | catalog | federal | gsa | partsbase
-	Merchant  string  `json:"merchant,omitempty"`
-	Source    string  `json:"source,omitempty"`     // e.g. UPCITEMDB, SERPAPI, GSA_ADVANTAGE
-	Link      string  `json:"link,omitempty"`
-	AsOf      string  `json:"as_of,omitempty"`      // ISO date when known
+	UnitPrice     float64 `json:"unit_price"`                 // listing price for the sell unit (USD)
+	Quantity      int     `json:"quantity"`                   // base units covered by UnitPrice (default 1)
+	PricePerEach  float64 `json:"price_per_each,omitempty"`   // UnitPrice / Quantity when Quantity >= 1
+	Unit          string  `json:"unit,omitempty"`              // UOM: EA, DZ, CS, PK, BX, CT, RM, RL, PR, SET, HD
+	PackLabel     string  `json:"pack_label,omitempty"`       // e.g. "dozen", "case of 24", "50 sheets"
+	BaseUnit      string  `json:"base_unit,omitempty"`        // e.g. "sheet" when pack is a ream
+	Currency      string  `json:"currency,omitempty"`         // e.g. USD
+	Channel       string  `json:"channel,omitempty"`          // amazon | shop | catalog | federal | gsa | partsbase
+	Merchant      string  `json:"merchant,omitempty"`
+	Source        string  `json:"source,omitempty"`           // e.g. UPCITEMDB, SERPAPI, GSA_ADVANTAGE
+	Link          string  `json:"link,omitempty"`
+	Title         string  `json:"title,omitempty"`            // product/offer title used for pack parse
+	AsOf          string  `json:"as_of,omitempty"`            // ISO date when known
 }
 
 // CommercialSupplier represents an aggregated commercial supplier derived from SKU/UPC data.
