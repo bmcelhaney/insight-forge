@@ -19,10 +19,15 @@ type DataCaptureMeta struct {
 // synthesized InsightResult and the underlying snapshots. Suitable as an input
 // payload for other applications (not the pricing-tool narrative export).
 //
+// includePartsBaseInDataCapture controls whether PartsBase historical price
+// signals appear in the data-capture document (API + UI Export). Off for now;
+// analysis UI still uses PartsBase. Flip to true to restore full export.
+const includePartsBaseInDataCapture = false
+
 // Pricing policy (schema 1.1+): every price is an atomic observation with
 // unit_price + quantity. Analysis UI ranges are not exported.
-// PartsBase historical signals are pulled from the live snapshot in full
-// (not the 25-row UI sample) — no export cap.
+// When includePartsBaseInDataCapture is true, PartsBase signals come from the
+// live snapshot in full (not the 25-row UI sample).
 func BuildDataCaptureDocument(result models.InsightResult, snaps []models.DataSnapshot, meta DataCaptureMeta) models.DataCaptureDocument {
 	nsn := digitsOnlyString(firstNonEmpty(result.EntityID, ""))
 	if len(nsn) > 13 {
@@ -205,112 +210,112 @@ func BuildDataCaptureDocument(result models.InsightResult, snaps []models.DataSn
 		}
 	}
 
-	// 4) PartsBase historical transactions — all price_signals from snapshot
-	// (not the UI's 25-row sample). Unbounded: every usable signal becomes a hit.
-	if pbHits, total := partsBasePriceHitsFromSnapshots(snaps, nsn, niin, fsc, &priceSeq); len(pbHits) > 0 || total > 0 {
-		pbExported := len(pbHits)
-		pbTotal := total
-		if pb := result.PartsBaseHistoricalPricing; pb != nil || total > 0 {
-			src := "PARTSBASE"
-			note := "Historical federal procurement unit prices from PartsBase GovData."
-			supCount := 0
-			lastUp := ""
-			if pb != nil {
-				src = firstNonEmpty(pb.Source, src)
-				if strings.TrimSpace(pb.Note) != "" {
-					note = pb.Note
+	// 4) PartsBase historical transactions (optional — off for now).
+	if includePartsBaseInDataCapture {
+		if pbHits, total := partsBasePriceHitsFromSnapshots(snaps, nsn, niin, fsc, &priceSeq); len(pbHits) > 0 || total > 0 {
+			pbExported := len(pbHits)
+			pbTotal := total
+			if pb := result.PartsBaseHistoricalPricing; pb != nil || total > 0 {
+				src := "PARTSBASE"
+				note := "Historical federal procurement unit prices from PartsBase GovData."
+				supCount := 0
+				lastUp := ""
+				if pb != nil {
+					src = firstNonEmpty(pb.Source, src)
+					if strings.TrimSpace(pb.Note) != "" {
+						note = pb.Note
+					}
+					supCount = pb.SupplierCount
+					lastUp = pb.LastUpdated
+					if pb.SignalCount > pbTotal {
+						pbTotal = pb.SignalCount
+					}
 				}
-				supCount = pb.SupplierCount
-				lastUp = pb.LastUpdated
-				if pb.SignalCount > pbTotal {
-					pbTotal = pb.SignalCount
+				doc.Hits = append(doc.Hits, models.DataCaptureHit{
+					HitID:   "partsbase-summary-1",
+					HitType: "partsbase_summary",
+					Source:  src,
+					Identifiers: models.DataCaptureIdentifiers{
+						NSN:  nsn,
+						NIIN: niin,
+						FSC:  fsc,
+					},
+					Context: note,
+					Attributes: map[string]any{
+						"signal_count":   pbTotal,
+						"exported_count": pbExported,
+						"truncated":     false,
+						"supplier_count": supCount,
+						"last_updated":   lastUp,
+					},
+				})
+			}
+			doc.Hits = append(doc.Hits, pbHits...)
+		} else if pb := result.PartsBaseHistoricalPricing; pb != nil {
+			if pb.SignalCount > 0 || pb.SupplierCount > 0 {
+				doc.Hits = append(doc.Hits, models.DataCaptureHit{
+					HitID:   "partsbase-summary-1",
+					HitType: "partsbase_summary",
+					Source:  firstNonEmpty(pb.Source, "PARTSBASE"),
+					Identifiers: models.DataCaptureIdentifiers{
+						NSN:  nsn,
+						NIIN: niin,
+						FSC:  fsc,
+					},
+					Context: strings.TrimSpace(pb.Note),
+					Attributes: map[string]any{
+						"signal_count":   pb.SignalCount,
+						"exported_count": len(pb.Sample),
+						"truncated":     len(pb.Sample) < pb.SignalCount,
+						"supplier_count": pb.SupplierCount,
+						"last_updated":   pb.LastUpdated,
+						"source":         "insight_sample_fallback",
+					},
+				})
+			}
+			for i, row := range pb.Sample {
+				up, ok := parseSingleUnitPrice(row.UnitPrice)
+				if !ok {
+					if v, err := strconv.ParseFloat(strings.TrimSpace(strings.TrimPrefix(strings.ReplaceAll(row.UnitPrice, ",", ""), "$")), 64); err == nil && v > 0 {
+						up, ok = v, true
+					}
 				}
-			}
-			doc.Hits = append(doc.Hits, models.DataCaptureHit{
-				HitID:   "partsbase-summary-1",
-				HitType: "partsbase_summary",
-				Source:  src,
-				Identifiers: models.DataCaptureIdentifiers{
-					NSN:  nsn,
-					NIIN: niin,
-					FSC:  fsc,
-				},
-				Context: note,
-				Attributes: map[string]any{
-					"signal_count":   pbTotal,
-					"exported_count": pbExported,
-					"truncated":     false,
-					"supplier_count": supCount,
-					"last_updated":   lastUp,
-				},
-			})
-		}
-		doc.Hits = append(doc.Hits, pbHits...)
-	} else if pb := result.PartsBaseHistoricalPricing; pb != nil {
-		// Fallback: UI sample only when snapshot signals are unavailable.
-		if pb.SignalCount > 0 || pb.SupplierCount > 0 {
-			doc.Hits = append(doc.Hits, models.DataCaptureHit{
-				HitID:   "partsbase-summary-1",
-				HitType: "partsbase_summary",
-				Source:  firstNonEmpty(pb.Source, "PARTSBASE"),
-				Identifiers: models.DataCaptureIdentifiers{
-					NSN:  nsn,
-					NIIN: niin,
-					FSC:  fsc,
-				},
-				Context: strings.TrimSpace(pb.Note),
-				Attributes: map[string]any{
-					"signal_count":   pb.SignalCount,
-					"exported_count": len(pb.Sample),
-					"truncated":     len(pb.Sample) < pb.SignalCount,
-					"supplier_count": pb.SupplierCount,
-					"last_updated":   pb.LastUpdated,
-					"source":         "insight_sample_fallback",
-				},
-			})
-		}
-		for i, row := range pb.Sample {
-			up, ok := parseSingleUnitPrice(row.UnitPrice)
-			if !ok {
-				if v, err := strconv.ParseFloat(strings.TrimSpace(strings.TrimPrefix(strings.ReplaceAll(row.UnitPrice, ",", ""), "$")), 64); err == nil && v > 0 {
-					up, ok = v, true
+				if !ok {
+					continue
 				}
+				qty := row.Quantity
+				if qty <= 0 {
+					qty = 1
+				}
+				priceSeq++
+				doc.Hits = append(doc.Hits, models.DataCaptureHit{
+					HitID:   fmt.Sprintf("price-obs-%d", priceSeq),
+					HitType: "price_observation",
+					Source:  firstNonEmpty(pb.Source, "PARTSBASE"),
+					Identifiers: models.DataCaptureIdentifiers{
+						NSN:          nsn,
+						NIIN:         niin,
+						FSC:          fsc,
+						Manufacturer: strings.TrimSpace(row.Supplier),
+						Contract:     strings.TrimSpace(row.ContractNumber),
+					},
+					Pricing: &models.DataCapturePricing{
+						UnitPrice:   roundMoney(up),
+						Quantity:    qty,
+						Currency:    "USD",
+						Channel:     "partsbase",
+						Merchant:    strings.TrimSpace(row.Supplier),
+						PriceSource: "PARTSBASE",
+						AsOf:        row.AwardDate,
+					},
+					Context: strings.TrimSpace(row.Context),
+					Attributes: map[string]any{
+						"condition_code": row.ConditionCode,
+						"award_date":     row.AwardDate,
+						"sample_index":   i + 1,
+					},
+				})
 			}
-			if !ok {
-				continue
-			}
-			qty := row.Quantity
-			if qty <= 0 {
-				qty = 1
-			}
-			priceSeq++
-			doc.Hits = append(doc.Hits, models.DataCaptureHit{
-				HitID:   fmt.Sprintf("price-obs-%d", priceSeq),
-				HitType: "price_observation",
-				Source:  firstNonEmpty(pb.Source, "PARTSBASE"),
-				Identifiers: models.DataCaptureIdentifiers{
-					NSN:          nsn,
-					NIIN:         niin,
-					FSC:          fsc,
-					Manufacturer: strings.TrimSpace(row.Supplier),
-					Contract:     strings.TrimSpace(row.ContractNumber),
-				},
-				Pricing: &models.DataCapturePricing{
-					UnitPrice:   roundMoney(up),
-					Quantity:    qty,
-					Currency:    "USD",
-					Channel:     "partsbase",
-					Merchant:    strings.TrimSpace(row.Supplier),
-					PriceSource: "PARTSBASE",
-					AsOf:        row.AwardDate,
-				},
-				Context: strings.TrimSpace(row.Context),
-				Attributes: map[string]any{
-					"condition_code": row.ConditionCode,
-					"award_date":     row.AwardDate,
-					"sample_index":   i + 1,
-				},
-			})
 		}
 	}
 

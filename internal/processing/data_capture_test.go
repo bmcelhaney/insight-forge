@@ -96,9 +96,18 @@ func TestBuildDataCaptureDocument_AtomicPriceHits(t *testing.T) {
 	if doc.SchemaVersion != "1.1" {
 		t.Fatalf("schema_version: got %q want 1.1", doc.SchemaVersion)
 	}
-	if doc.Counts.PriceObservations < 6 {
-		// 3 market offers + 1 GSA single + 1 AbilityOne + 2 partsbase = 7 ideally
+	// PartsBase is currently excluded from data-capture (includePartsBaseInDataCapture=false).
+	// Expect commercial market offers + GSA single + AbilityOne channel (no PB rows).
+	if doc.Counts.PriceObservations < 4 {
 		t.Fatalf("expected multiple price_observation hits, got %d (by_type=%v)", doc.Counts.PriceObservations, doc.Counts.ByType)
+	}
+	if doc.Counts.ByType["partsbase_summary"] != 0 || doc.Counts.ByType["partsbase_transaction"] != 0 {
+		t.Fatalf("PartsBase hits should be excluded from data-capture, got by_type=%v", doc.Counts.ByType)
+	}
+	for _, h := range doc.Hits {
+		if h.HitType == "price_observation" && h.Pricing != nil && h.Pricing.Channel == "partsbase" {
+			t.Fatalf("unexpected partsbase price_observation in data-capture: %+v", h)
+		}
 	}
 
 	// Every price hit must be atomic: unit_price > 0, quantity >= 1, no range fields.
@@ -121,26 +130,6 @@ func TestBuildDataCaptureDocument_AtomicPriceHits(t *testing.T) {
 		}
 	}
 
-	// PartsBase qty preserved
-	foundPB := false
-	for _, h := range doc.Hits {
-		if h.HitType == "price_observation" && h.Pricing != nil && h.Pricing.Channel == "partsbase" && h.Pricing.Quantity == 5 {
-			foundPB = true
-			if h.Pricing.UnitPrice != 10.0 {
-				t.Fatalf("partsbase unit_price want 10 got %v", h.Pricing.UnitPrice)
-			}
-		}
-	}
-	if !foundPB {
-		t.Fatal("expected partsbase price_observation with quantity 5")
-	}
-
-	// partsbase_summary must not embed min/max pricing
-	for _, h := range doc.Hits {
-		if h.HitType == "partsbase_summary" && h.Pricing != nil {
-			t.Fatalf("partsbase_summary must not have pricing block: %+v", h.Pricing)
-		}
-	}
 }
 
 func TestParseSingleUnitPrice(t *testing.T) {
