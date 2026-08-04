@@ -85,6 +85,31 @@ type InsightResult struct {
 	// PartsBaseStatus reports whether the PartsBase GovData API contributed live data
 	// for this analysis (or why it did not). Used for UI warnings.
 	PartsBaseStatus *PartsBaseStatus `json:"partsbase_status,omitempty"`
+
+	// IntegrationHealth aggregates user-facing health of external APIs
+	// (PartsBase, SerpAPI, UPCItemDB, etc.) for clear UI alerts.
+	IntegrationHealth *IntegrationHealth `json:"integration_health,omitempty"`
+}
+
+// IntegrationHealth summarizes external API readiness for the analyst UI.
+type IntegrationHealth struct {
+	AllOK       bool                `json:"all_ok"`
+	HasWarnings bool                `json:"has_warnings"`
+	Services    []IntegrationStatus `json:"services"`
+}
+
+// IntegrationStatus is one external API's status for banners / API consumers.
+type IntegrationStatus struct {
+	Name       string `json:"name"`                  // PartsBase | SerpAPI | UPCItemDB
+	OK         bool   `json:"ok"`                    // true when last check succeeded or not-required
+	Enabled    bool   `json:"enabled"`
+	Configured bool   `json:"configured"`            // credentials present when required
+	Severity   string `json:"severity,omitempty"`    // error | warning | info | ok
+	Message    string `json:"message"`               // analyst-facing summary
+	Error      string `json:"error,omitempty"`       // safe detail (no secrets)
+	Detail     string `json:"detail,omitempty"`      // e.g. plan=v1, last HTTP code
+	Live       bool   `json:"live,omitempty"`
+	CheckedAt  string `json:"checked_at,omitempty"`  // RFC3339 when known
 }
 
 // PartsBaseStatus is a user-facing health summary for the PartsBase integration.

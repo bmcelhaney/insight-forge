@@ -132,6 +132,10 @@ func Synthesize(ctx context.Context, entityID string, snapshots []models.DataSna
 		}
 	}
 	commercialRefs = enrichProductLinksWithFederal(ctx, commercialRefs, entityID, fedPrice, fedSrc)
+
+	// Integration health after commercial resolve so SerpAPI/UPCItemDB last-call status is included.
+	serpEn, serpCfg, upcEn, upcCfg := integrationFlagsSnapshot()
+	result.IntegrationHealth = BuildIntegrationHealth(snapshots, serpEn, serpCfg, upcEn, upcCfg)
 	result.CommercialReferences = commercialRefs
 
 	if len(commercialRefs) > 0 {

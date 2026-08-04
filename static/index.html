@@ -119,8 +119,10 @@
             Clear recent searches
           </button>
         </div>
-        <!-- PartsBase source-status banner (shown when API is down / misconfigured) -->
-        <div id="partsbase-status-banner" class="hidden mt-3 rounded-2xl border px-4 py-3 text-sm"></div>
+        <!-- External API health alerts (PartsBase, SerpAPI, UPCItemDB, …) -->
+        <div id="integration-status-banner" class="hidden mt-3 rounded-2xl border px-4 py-3 text-sm"></div>
+        <!-- legacy id kept as alias for any old hooks -->
+        <div id="partsbase-status-banner" class="hidden"></div>
       </div>
 
       <!-- Visible Error Banner -->
@@ -441,9 +443,9 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
           el.textContent = 'build: unknown (check /health on server)';
           el.title = 'Could not read commit from server response. Run curl http://localhost:8080/version on the sprite.';
         }
-        // Global PartsBase source banner from last known health status.
+        // Global multi-API health banner (PartsBase, SerpAPI, UPCItemDB, …).
         if (data) {
-          updatePartsBaseBannerFromHealth(data);
+          updateIntegrationBannerFromHealth(data);
         }
       } catch (e) {
         el.textContent = 'build: fetch error';
@@ -452,55 +454,101 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
       }
     }
 
-    function updatePartsBaseBannerFromHealth(health) {
-      // Only show a global warning when we know PartsBase is broken/misconfigured.
-      // null/undefined partsbase_ok means "not checked yet" — no banner.
+    function updateIntegrationBannerFromHealth(health) {
       if (!health) return;
+      const ih = health.integration_health || health.IntegrationHealth;
+      if (ih && Array.isArray(ih.services || ih.Services)) {
+        renderIntegrationBanner(ih);
+        return;
+      }
+      // Legacy PartsBase-only health fields
+      const services = [];
       const ok = health.partsbase_ok;
       const configured = health.partsbase_configured;
       const enabled = health.partsbase_enabled;
-      const registered = health.partsbase_registered;
-      const ds = health.partsbase_data_source || '';
-      if (ok === true) {
-        setPartsBaseBanner(null);
-        return;
+      if (ok === false || enabled === false || configured === false) {
+        services.push({
+          name: 'PartsBase',
+          ok: false,
+          severity: 'error',
+          message: health.partsbase_message || 'PartsBase API is not working.',
+          error: health.partsbase_error || '',
+        });
       }
-      // Not yet queried, or still initializing — do not alarm.
-      if (ok === null || ok === undefined || ds === 'not_checked' || ds === '') {
-        if (enabled === false || configured === false || registered === false) {
-          // permanent misconfig still worth showing
-        } else {
-          return;
-        }
+      if (health.serpapi_enabled && !health.serpapi_configured) {
+        services.push({
+          name: 'SerpAPI',
+          ok: false,
+          severity: 'error',
+          message: 'SerpAPI is enabled but no API key is loaded.',
+        });
       }
-      if (ok === false || enabled === false || configured === false || registered === false) {
-        const msg = health.partsbase_message
-          || (configured === false
-            ? 'PartsBase API credentials are not loaded. Federal PartsBase signals are unavailable.'
-            : 'PartsBase API is not working. Historical federal transaction prices may be missing.');
-        setPartsBaseBanner(msg, health.partsbase_error || '');
-      }
+      renderIntegrationBanner({ services, has_warnings: services.length > 0, all_ok: services.length === 0 });
     }
 
-    function setPartsBaseBanner(message, detail) {
-      const el = document.getElementById('partsbase-status-banner');
+    function applyIntegrationHealthFromResult(result) {
+      const ih = result && (result.integration_health || result.IntegrationHealth);
+      if (ih) {
+        renderIntegrationBanner(ih);
+        return;
+      }
+      // Fallback: PartsBase status only
+      const st = result && (result.partsbase_status || result.PartsBaseStatus);
+      if (!st) return;
+      if (st.ok || st.OK) {
+        renderIntegrationBanner({ services: [], all_ok: true, has_warnings: false });
+        return;
+      }
+      renderIntegrationBanner({
+        has_warnings: true,
+        all_ok: false,
+        services: [{
+          name: 'PartsBase',
+          ok: false,
+          severity: 'error',
+          message: st.message || st.Message || 'PartsBase API is not working.',
+          error: st.error || st.Error || '',
+        }],
+      });
+    }
+
+    function renderIntegrationBanner(ih) {
+      const el = document.getElementById('integration-status-banner');
       if (!el) return;
-      if (!message) {
+      const services = (ih && (ih.services || ih.Services)) || [];
+      const problems = services.filter(s => {
+        const sev = (s.severity || s.Severity || '').toLowerCase();
+        const ok = s.ok === true || s.OK === true;
+        return !ok && sev !== 'info' && sev !== 'ok';
+      });
+      if (problems.length === 0) {
         el.className = 'hidden mt-3 rounded-2xl border px-4 py-3 text-sm';
         el.innerHTML = '';
         return;
       }
-      el.className = 'mt-3 rounded-2xl border border-amber-700 bg-amber-950/50 text-amber-100 px-4 py-3 text-sm flex gap-3 items-start';
-      const detailHtml = detail
-        ? `<div class="text-[11px] text-amber-200/80 mt-1 font-mono break-all">${escapeHtml(detail)}</div>`
-        : '';
+      const hasError = problems.some(s => (s.severity || s.Severity || '').toLowerCase() === 'error');
+      const border = hasError ? 'border-rose-700 bg-rose-950/40' : 'border-amber-700 bg-amber-950/50';
+      const titleColor = hasError ? 'text-rose-200' : 'text-amber-200';
+      const iconColor = hasError ? 'text-rose-400' : 'text-amber-400';
+      const rows = problems.map(s => {
+        const name = s.name || s.Name || 'API';
+        const msg = s.message || s.Message || 'Not working.';
+        const err = s.error || s.Error || '';
+        const detail = s.detail || s.Detail || '';
+        const meta = [detail, err].filter(Boolean).join(' · ');
+        return `<div class="mt-2 first:mt-0 border-t border-white/5 pt-2 first:border-0 first:pt-0">
+          <div class="font-semibold ${titleColor}">${escapeHtml(name)}</div>
+          <div class="text-[13px] text-zinc-100/90 mt-0.5">${escapeHtml(msg)}</div>
+          ${meta ? `<div class="text-[11px] text-zinc-400 mt-1 font-mono break-all">${escapeHtml(meta)}</div>` : ''}
+        </div>`;
+      }).join('');
+      el.className = `mt-3 rounded-2xl border ${border} text-zinc-100 px-4 py-3 text-sm flex gap-3 items-start`;
       el.innerHTML = `
-        <div class="text-amber-400 mt-0.5"><i class="fa-solid fa-triangle-exclamation"></i></div>
-        <div class="flex-1">
-          <div class="font-semibold text-amber-200">PartsBase API warning</div>
-          <div class="text-[13px] text-amber-100/90 mt-0.5">${escapeHtml(message)}</div>
-          ${detailHtml}
-          <div class="text-[10px] text-amber-200/70 mt-1.5">Other sources (AbilityOne, ETS, commercial links) still run. Re-analyze after PartsBase is restored for federal transaction price history.</div>
+        <div class="${iconColor} mt-0.5 text-lg"><i class="fa-solid fa-triangle-exclamation"></i></div>
+        <div class="flex-1 min-w-0">
+          <div class="font-semibold ${titleColor}">External API warning${problems.length > 1 ? 's' : ''}</div>
+          <div class="text-[12px] text-zinc-400 mt-0.5">One or more data sources are unavailable. Analysis continues with remaining sources.</div>
+          ${rows}
         </div>`;
     }
 
@@ -512,17 +560,19 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
         .replace(/"/g, '&quot;');
     }
 
-    function applyPartsBaseStatusFromResult(result) {
-      const st = result && (result.partsbase_status || result.PartsBaseStatus);
-      if (!st) return;
-      if (st.ok || st.OK) {
-        setPartsBaseBanner(null);
+    // Back-compat aliases
+    function setPartsBaseBanner(message, detail) {
+      if (!message) {
+        renderIntegrationBanner({ services: [], all_ok: true });
         return;
       }
-      const msg = st.message || st.Message
-        || 'PartsBase API is not working. Historical federal transaction prices are unavailable for this analysis.';
-      const err = st.error || st.Error || '';
-      setPartsBaseBanner(msg, err);
+      renderIntegrationBanner({
+        has_warnings: true,
+        services: [{ name: 'PartsBase', ok: false, severity: 'error', message, error: detail || '' }],
+      });
+    }
+    function applyPartsBaseStatusFromResult(result) {
+      applyIntegrationHealthFromResult(result);
     }
 
     function showError(msg) {
@@ -665,8 +715,8 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
       const resultsEl = document.getElementById('results');
       if (resultsEl) resultsEl.classList.remove('hidden');
 
-      // PartsBase API status → warning banner when unavailable this run
-      applyPartsBaseStatusFromResult(result);
+      // External API health (PartsBase, SerpAPI, UPCItemDB) → clear warning banner
+      applyIntegrationHealthFromResult(result);
 
       // === CRITICAL: Always restore the exact NSN the user typed into the input ===
       const inputEl = document.getElementById('nsn-input');

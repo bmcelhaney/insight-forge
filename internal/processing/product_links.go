@@ -1104,21 +1104,31 @@ func upcitemdbFetch(ctx context.Context, endpoint, preferSKU string) (id product
 
 	resp, err := productHTTPClient.Do(req)
 	if err != nil {
+		recordUPCItemDBStatus(false, 0, err.Error(), "UPCItemDB request failed (network or timeout). Product identity resolve may be incomplete.")
 		return productIdentity{}, false, true
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
+		recordUPCItemDBStatus(false, resp.StatusCode, err.Error(), "UPCItemDB response could not be read.")
 		return productIdentity{}, false, true
 	}
 	// Trial API rate-limits aggressively; treat 429/5xx as transient (no long negative cache).
 	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
+		recordUPCItemDBStatus(false, resp.StatusCode, fmt.Sprintf("HTTP %d", resp.StatusCode),
+			"UPCItemDB is rate-limited or unavailable. Product deep-link resolve may be incomplete.")
 		return productIdentity{}, false, true
 	}
 	if resp.StatusCode != 200 {
+		msg := "UPCItemDB returned an error. Product identity resolve may be incomplete."
+		if resp.StatusCode == 401 || resp.StatusCode == 403 {
+			msg = "UPCItemDB rejected the API key (unauthorized). Check IF_UPCITEMDB_KEY."
+		}
+		recordUPCItemDBStatus(false, resp.StatusCode, fmt.Sprintf("HTTP %d", resp.StatusCode), msg)
 		// Definitive client error / empty — soft-negative OK.
 		return productIdentity{}, false, false
 	}
+	recordUPCItemDBStatus(true, 200, "", "UPCItemDB is live.")
 
 	var payload struct {
 		Code  string `json:"code"`

@@ -413,20 +413,29 @@ func serpGoogleShopping(ctx context.Context, query string) ([]shoppingHit, bool)
 
 	resp, err := serpClient.Do(req)
 	if err != nil {
+		recordSerpAPIStatus(false, 0, err.Error(), "SerpAPI request failed (network or timeout). Commercial shopping prices may be incomplete.")
 		setSerpCache(cacheKey, nil, false, 2*time.Minute)
 		return nil, false
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 	if err != nil {
+		recordSerpAPIStatus(false, resp.StatusCode, err.Error(), "SerpAPI response could not be read.")
 		setSerpCache(cacheKey, nil, false, 2*time.Minute)
 		return nil, false
 	}
 	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
+		recordSerpAPIStatus(false, resp.StatusCode, fmt.Sprintf("HTTP %d", resp.StatusCode),
+			"SerpAPI is rate-limited or unavailable. Commercial shopping prices may be incomplete.")
 		setSerpCache(cacheKey, nil, false, 45*time.Second)
 		return nil, false
 	}
 	if resp.StatusCode != 200 {
+		msg := "SerpAPI returned an error. Commercial shopping prices may be incomplete."
+		if resp.StatusCode == 401 || resp.StatusCode == 403 {
+			msg = "SerpAPI rejected the API key (unauthorized). Check IF_SERPAPI_KEY."
+		}
+		recordSerpAPIStatus(false, resp.StatusCode, fmt.Sprintf("HTTP %d", resp.StatusCode), msg)
 		setSerpCache(cacheKey, nil, false, 10*time.Minute)
 		return nil, false
 	}
@@ -445,13 +454,27 @@ func serpGoogleShopping(ctx context.Context, query string) ([]shoppingHit, bool)
 		} `json:"shopping_results"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
+		recordSerpAPIStatus(false, 200, err.Error(), "SerpAPI returned unreadable JSON.")
 		setSerpCache(cacheKey, nil, false, 5*time.Minute)
 		return nil, false
 	}
-	if payload.Error != "" || len(payload.ShoppingResults) == 0 {
+	if payload.Error != "" {
+		// SerpAPI often returns 200 with {"error":"..."} for bad keys.
+		msg := "SerpAPI error: " + payload.Error
+		if strings.Contains(strings.ToLower(payload.Error), "invalid") || strings.Contains(strings.ToLower(payload.Error), "api key") {
+			msg = "SerpAPI reported an invalid API key. Check IF_SERPAPI_KEY."
+		}
+		recordSerpAPIStatus(false, 200, payload.Error, msg)
 		setSerpCache(cacheKey, nil, false, 6*time.Hour)
 		return nil, false
 	}
+	if len(payload.ShoppingResults) == 0 {
+		// Empty results for a query is not a global API failure — still mark live.
+		recordSerpAPIStatus(true, 200, "", "SerpAPI is responding (no shopping hits for this query).")
+		setSerpCache(cacheKey, nil, false, 6*time.Hour)
+		return nil, false
+	}
+	recordSerpAPIStatus(true, 200, "", "SerpAPI Google Shopping is live.")
 
 	var hits []shoppingHit
 	for _, r := range payload.ShoppingResults {

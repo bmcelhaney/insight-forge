@@ -75,6 +75,12 @@ func main() {
 		fmt.Printf("UPCItemDB: disabled\n")
 	}
 
+	// Flags for UI integration-health banners (missing keys, runtime failures).
+	processing.ConfigureIntegrationFlags(
+		cfg.SerpAPIEnabled, cfg.SerpAPIConfigured,
+		cfg.UPCItemDBEnabled, cfg.UPCItemDBConfigured,
+	)
+
 	// Surface PartsBase credential status without leaking secrets.
 	if cfg.PartsBaseEnabled && cfg.PartsBaseConfigured {
 		fmt.Printf("PartsBase: enabled (credentials loaded")
@@ -130,6 +136,7 @@ func main() {
 			"upcitemdb_plan":       map[bool]string{true: "v1", false: "trial"}[processing.UPCItemDBConfigured()],
 		}
 		// Last observed PartsBase fetch outcome (for UI source-status banner).
+		var pbStatus *models.PartsBaseStatus
 		if st, ok := extractorReg.PartsBaseLastStatus(); ok {
 			payload["partsbase_live"] = st.Live
 			payload["partsbase_data_source"] = st.DataSource
@@ -144,19 +151,45 @@ func main() {
 			if st.DataSource == "" || st.DataSource == "not_checked" {
 				payload["partsbase_ok"] = nil
 				payload["partsbase_message"] = "PartsBase registered; awaiting first analysis query."
+				pbStatus = &models.PartsBaseStatus{
+					OK: true, Enabled: cfg.PartsBaseEnabled, Configured: cfg.PartsBaseConfigured,
+					DataSource: "not_checked", Message: "PartsBase registered; awaiting first analysis query.",
+				}
 			} else {
 				payload["partsbase_ok"] = st.OK
+				pbStatus = &models.PartsBaseStatus{
+					OK: st.OK, Enabled: cfg.PartsBaseEnabled, Configured: cfg.PartsBaseConfigured,
+					Live: st.Live, DataSource: st.DataSource, Error: st.Error, Message: st.Message,
+				}
 			}
 		} else if cfg.PartsBaseEnabled && !cfg.PartsBaseConfigured {
 			payload["partsbase_ok"] = false
 			payload["partsbase_message"] = "PartsBase is enabled but OAuth credentials are not loaded."
+			pbStatus = &models.PartsBaseStatus{
+				OK: false, Enabled: true, Configured: false,
+				Message: "PartsBase is enabled but OAuth credentials are not loaded.",
+			}
 		} else if !cfg.PartsBaseEnabled {
 			payload["partsbase_ok"] = false
 			payload["partsbase_message"] = "PartsBase integration is disabled."
+			pbStatus = &models.PartsBaseStatus{
+				OK: false, Enabled: false, Configured: cfg.PartsBaseConfigured,
+				Message: "PartsBase integration is disabled.",
+			}
 		} else {
 			payload["partsbase_ok"] = nil // not yet queried this process
 			payload["partsbase_message"] = "PartsBase registered; awaiting first analysis query."
+			pbStatus = &models.PartsBaseStatus{
+				OK: true, Enabled: true, Configured: cfg.PartsBaseConfigured,
+				DataSource: "not_checked", Message: "PartsBase registered; awaiting first analysis query.",
+			}
 		}
+		// Multi-API health for UI banners (PartsBase + SerpAPI + UPCItemDB).
+		payload["integration_health"] = processing.IntegrationHealthSnapshot(
+			cfg.SerpAPIEnabled, cfg.SerpAPIConfigured,
+			cfg.UPCItemDBEnabled, cfg.UPCItemDBConfigured,
+			pbStatus,
+		)
 		json.NewEncoder(w).Encode(payload)
 	})
 
