@@ -728,6 +728,8 @@ func applyDeterministicProductLinks(refs []models.CommercialReference, entityID 
 		}
 		// P0: pack size / UOM / price-per-each from ETS description + offer titles.
 		enrichCommercialMarketOffers(r)
+		// P0.5: rewrite card/link price ranges to per-each when pack is known.
+		normalizeCommercialDisplayPrices(r)
 
 		// Primary tile price: prefer shop, then amazon, then upc, then existing GSA/row price.
 		if strings.TrimSpace(r.Price) == "" && id != nil && id.OfferPrice > 0 && (deepOK || id.DeepLinkOK || id.Title != "") {

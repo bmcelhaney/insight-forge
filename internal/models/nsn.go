@@ -214,6 +214,9 @@ type CommercialReference struct {
 	Price        string `json:"price,omitempty"`         // Primary observed price (best commercial signal)
 	PriceSource  string `json:"price_source,omitempty"`  // GSA_ADVANTAGE | MARKET:… | etc.
 	PriceAsOf    string `json:"price_as_of,omitempty"`   // ISO date or capture time when known
+	// PriceBasis is "each" when Price / channel prices were normalized to price-per-each
+	// using pack size from description/title; empty means raw listing prices.
+	PriceBasis   string `json:"price_basis,omitempty"`
 	PriceURL     string `json:"price_url,omitempty"`     // Best URL to view/verify the primary price
 	LinkShop     string `json:"link_shop,omitempty"`     // Google Shopping / retailer product link
 	LinkUPC      string `json:"link_upc,omitempty"`      // UPC product lookup

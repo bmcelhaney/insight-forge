@@ -1,9 +1,11 @@
 package processing
 
 import (
+	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/bmcelhaney/insight-forge/internal/models"
 )
@@ -236,4 +238,105 @@ func enrichCommercialMarketOffers(r *models.CommercialReference) {
 	for i := range r.MarketOffers {
 		enrichMarketOfferPack(&r.MarketOffers[i], ctxTexts...)
 	}
+}
+
+// normalizeCommercialDisplayPrices rewrites tile/link price strings to per-each
+// when market offers have pack quantity > 1. Federal list price is left as listing.
+// Display format examples: "$1.25 /ea", "$1.25 – $2.00 /ea (5 offers)".
+func normalizeCommercialDisplayPrices(r *models.CommercialReference) {
+	if r == nil || len(r.MarketOffers) == 0 {
+		return
+	}
+	var shop, amazon, catalog, all []float64
+	anyPack := false
+	for _, o := range r.MarketOffers {
+		ch := strings.ToLower(strings.TrimSpace(o.Channel))
+		if ch == "federal" || ch == "partsbase" {
+			continue
+		}
+		ppe := o.PricePerEach
+		if ppe <= 0 && o.UnitPrice > 0 {
+			qty := o.Quantity
+			if qty <= 0 {
+				qty = 1
+			}
+			ppe = o.UnitPrice / float64(qty)
+		}
+		if ppe <= 0 {
+			continue
+		}
+		if o.Quantity > 1 || (o.Unit != "" && !strings.EqualFold(o.Unit, "EA")) {
+			anyPack = true
+		}
+		switch ch {
+		case "amazon":
+			amazon = append(amazon, ppe)
+		case "catalog", "upc":
+			catalog = append(catalog, ppe)
+		default: // shop, listing, empty
+			shop = append(shop, ppe)
+		}
+		all = append(all, ppe)
+	}
+	if !anyPack || len(all) == 0 {
+		return
+	}
+
+	r.PriceBasis = "each"
+	if len(shop) > 0 {
+		r.PriceShop, r.PriceShopIsRange = formatPerEachDisplay(shop)
+		r.PriceShopSrc = "MARKET_RANGE:PER_EA"
+	}
+	if len(amazon) > 0 {
+		r.PriceAmazon, r.PriceAmazonIsRange = formatPerEachDisplay(amazon)
+		r.PriceAmazonSrc = "MARKET_RANGE:PER_EA"
+	}
+	if len(catalog) > 0 {
+		r.PriceUPC, r.PriceUPCIsRange = formatPerEachDisplay(catalog)
+		r.PriceUPCSrc = "MARKET_RANGE:PER_EA"
+	}
+	// Primary tile price: prefer shop, then amazon, then catalog, then all.
+	switch {
+	case len(shop) > 0:
+		r.Price, _ = formatPerEachDisplay(shop)
+		r.PriceSource = "MARKET_RANGE:PER_EA"
+	case len(amazon) > 0:
+		r.Price, _ = formatPerEachDisplay(amazon)
+		r.PriceSource = "MARKET_RANGE:PER_EA"
+	case len(catalog) > 0:
+		r.Price, _ = formatPerEachDisplay(catalog)
+		r.PriceSource = "MARKET_RANGE:PER_EA"
+	default:
+		r.Price, _ = formatPerEachDisplay(all)
+		r.PriceSource = "MARKET_RANGE:PER_EA"
+	}
+	if r.PriceAsOf == "" {
+		r.PriceAsOf = time.Now().UTC().Format("2006-01-02")
+	}
+}
+
+// formatPerEachDisplay builds a unit-normalized price string with /ea suffix.
+func formatPerEachDisplay(vals []float64) (display string, isRange bool) {
+	if len(vals) == 0 {
+		return "", false
+	}
+	lo, hi := vals[0], vals[0]
+	for _, v := range vals[1:] {
+		if v < lo {
+			lo = v
+		}
+		if v > hi {
+			hi = v
+		}
+	}
+	loS := normalizePriceString(fmt.Sprintf("%.2f", lo))
+	n := len(vals)
+	if n >= 2 && hi > lo && (hi-lo >= 0.01 || hi > lo*1.005) {
+		hiS := normalizePriceString(fmt.Sprintf("%.2f", hi))
+		return fmt.Sprintf("%s – %s /ea (%d offers)", loS, hiS, n), true
+	}
+	if n >= 2 {
+		return fmt.Sprintf("%s /ea (%d offers)", loS, n), true
+	}
+	return loS + " /ea", false
 }

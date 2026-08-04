@@ -1376,9 +1376,17 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
             const priceEl = document.createElement('div');
             priceEl.className = 'text-xs font-semibold text-emerald-300';
             priceEl.textContent = String(c.price).startsWith('$') ? c.price : ('$' + c.price);
-            if (c.price_source || c.priceSource) {
-              priceEl.title = 'Source: ' + (c.price_source || c.priceSource) + (c.price_as_of || c.priceAsOf ? ' · ' + (c.price_as_of || c.priceAsOf) : '');
+            const basis = (c.price_basis || c.PriceBasis || '').toLowerCase();
+            const src = c.price_source || c.priceSource || '';
+            let tip = src ? ('Source: ' + src) : '';
+            if (basis === 'each' || /PER_EA|\/ea/i.test(String(c.price) + src)) {
+              tip = (tip ? tip + ' · ' : '') + 'Normalized to price per each using pack size from product description/title (dozen, case, 12-pack, etc.)';
+              if (!/\/ea/i.test(priceEl.textContent)) {
+                priceEl.textContent += ' /ea';
+              }
             }
+            if (c.price_as_of || c.priceAsOf) tip = (tip ? tip + ' · ' : '') + (c.price_as_of || c.priceAsOf);
+            if (tip) priceEl.title = tip;
             top.appendChild(priceEl);
           }
           box.appendChild(top);
@@ -1405,13 +1413,18 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
             box.appendChild(context);
           }
 
-          if (c.price_source || c.priceSource) {
+          if (c.price_source || c.priceSource || c.price_basis || c.PriceBasis) {
             const ps = document.createElement('div');
             ps.className = 'text-[10px] text-zinc-500 mt-0.5';
             let src = c.price_source || c.priceSource || '';
             // Friendly label for market offers pulled via deep-link resolution
-            if (String(src).toUpperCase().startsWith('MARKET')) {
+            if (String(src).toUpperCase().includes('PER_EA')) {
+              src = 'Market (per each, pack-normalized)';
+            } else if (String(src).toUpperCase().startsWith('MARKET')) {
               src = src.replace(/^MARKET:?/i, 'Market offer').replace(/_/g, ' ');
+            }
+            if ((c.price_basis || c.PriceBasis || '').toLowerCase() === 'each' && !/per each/i.test(src)) {
+              src = (src ? src + ' · ' : '') + 'per each';
             }
             ps.textContent = 'Price source: ' + src + (c.price_as_of || c.priceAsOf ? ' · ' + (c.price_as_of || c.priceAsOf) : '');
             box.appendChild(ps);
@@ -1850,9 +1863,11 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
       const allEstimate = points.every(p => p.isEstimate);
       // Treat as a range when span is meaningful (>$0.50 or >2%)
       if (hi > lo && (hi - lo >= 0.5 || hi > lo * 1.02)) {
+        // Prefer per-each label when commercial prices were pack-normalized.
+        const perEa = points.some(p => /\/ea|PER_EA/i.test(String(p.display || '')));
         return {
-          display: `${fmt(lo)}–${fmt(hi)}`,
-          label: 'Market range',
+          display: perEa ? `${fmt(lo)}–${fmt(hi)} /ea` : `${fmt(lo)}–${fmt(hi)}`,
+          label: perEa ? 'Market range (per each)' : 'Market range',
           min: lo,
           max: hi,
           count: points.length,
@@ -2196,11 +2211,14 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
             : 'text-[11px] font-semibold text-emerald-300';
           p.textContent = price;
           let tip = priceSrc ? ('Source: ' + priceSrc) : '';
-          if (isRange || /search results|offers\)|MARKET_RANGE/i.test(String(price || '') + String(priceSrc || ''))) {
+          if (isRange || /search results|offers\)|MARKET_RANGE|\/ea/i.test(String(price || '') + String(priceSrc || ''))) {
             const nsnBand = /NSN_TOP_RESULTS/i.test(String(priceSrc || ''));
-            tip = (tip ? tip + ' · ' : '') + (nsnBand
+            const perEa = /PER_EA|\/ea/i.test(String(price || '') + String(priceSrc || ''));
+            tip = (tip ? tip + ' · ' : '') + (perEa
+              ? 'Prices normalized to per-each using pack size (dozen, case, multi-pack) from product text — listing prices may be for a pack.'
+              : (nsnBand
               ? 'Indicative market band from offers resolved for this NSN (not a single product listing price)'
-              : 'Indicative prices from search/top market results — not a verified single-listing price. Open the link to compare live offers.');
+              : 'Indicative prices from search/top market results — not a verified single-listing price. Open the link to compare live offers.'));
           }
           if (tip) p.title = tip;
           line.appendChild(p);

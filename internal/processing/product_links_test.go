@@ -108,7 +108,11 @@ func TestApplyDeterministicProductLinksAmazonASIN(t *testing.T) {
 	if !strings.Contains(out[0].LinkUPC, "upcitemdb.com/upc/070330904330") {
 		t.Fatalf("upc identity link %q", out[0].LinkUPC)
 	}
-	if out[0].Price == "" || !strings.Contains(out[0].Price, "8.49") {
+	if out[0].Price == "" {
+		t.Fatalf("expected market offer price on tile, got empty")
+	}
+	// Listing ($8.49) or pack-normalized per-each (e.g. 12-pack → $0.71 /ea).
+	if !strings.Contains(out[0].Price, "8.49") && !strings.Contains(out[0].Price, "/ea") && !strings.Contains(out[0].Price, "0.71") {
 		t.Fatalf("expected market offer price on tile, got %q", out[0].Price)
 	}
 	if !strings.Contains(out[0].PriceSource, "STAPLES") && !strings.Contains(out[0].PriceSource, "MARKET") {

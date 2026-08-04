@@ -1,6 +1,7 @@
 package processing
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/bmcelhaney/insight-forge/internal/models"
@@ -57,7 +58,7 @@ func TestEnrichCommercialMarketOffers(t *testing.T) {
 	r := &models.CommercialReference{
 		Description: "Writing pads, 50 sheets, Dozen",
 		MarketOffers: []models.MarketOffer{
-			{UnitPrice: 36.00, Quantity: 1, Source: "SERPAPI", Title: "Legal Pads 12 Pack"},
+			{UnitPrice: 36.00, Quantity: 1, Source: "SERPAPI", Title: "Legal Pads 12 Pack", Channel: "shop"},
 		},
 	}
 	enrichCommercialMarketOffers(r)
@@ -68,5 +69,46 @@ func TestEnrichCommercialMarketOffers(t *testing.T) {
 	}
 	if o.PricePerEach <= 0 {
 		t.Fatal("expected price_per_each")
+	}
+}
+
+func TestNormalizeCommercialDisplayPrices_PerEach(t *testing.T) {
+	r := &models.CommercialReference{
+		Description: "Glue Top Pads, Dozen",
+		Price:       "$36.00",
+		PriceShop:   "$36.00",
+		MarketOffers: []models.MarketOffer{
+			{UnitPrice: 36.00, Quantity: 12, PricePerEach: 3.0, Unit: "DZ", Channel: "shop", Source: "SERPAPI"},
+			{UnitPrice: 48.00, Quantity: 12, PricePerEach: 4.0, Unit: "DZ", Channel: "shop", Source: "SERPAPI"},
+			{UnitPrice: 34.84, Quantity: 12, PricePerEach: 2.9, Unit: "DZ", Channel: "federal", Source: "ABILITYONE_COM"},
+		},
+	}
+	normalizeCommercialDisplayPrices(r)
+	if r.PriceBasis != "each" {
+		t.Fatalf("price_basis: got %q", r.PriceBasis)
+	}
+	if !strings.Contains(r.PriceShop, "/ea") {
+		t.Fatalf("PriceShop should be per-each, got %q", r.PriceShop)
+	}
+	if !strings.Contains(r.Price, "/ea") {
+		t.Fatalf("Price should be per-each, got %q", r.Price)
+	}
+	// Range should use 3–4 not 36–48
+	if strings.Contains(r.PriceShop, "36") || strings.Contains(r.PriceShop, "48") {
+		t.Fatalf("expected normalized dollars, got %q", r.PriceShop)
+	}
+	if !strings.Contains(r.PriceShop, "3.00") && !strings.Contains(r.PriceShop, "$3") {
+		t.Fatalf("expected ~$3 low, got %q", r.PriceShop)
+	}
+}
+
+func TestFormatPerEachDisplay(t *testing.T) {
+	d, isR := formatPerEachDisplay([]float64{1.25, 2.00, 1.50})
+	if !isR || !strings.Contains(d, "/ea") || !strings.Contains(d, "1.25") {
+		t.Fatalf("got %q isRange=%v", d, isR)
+	}
+	d2, isR2 := formatPerEachDisplay([]float64{3.0})
+	if isR2 || d2 != "$3.00 /ea" {
+		t.Fatalf("single: got %q isRange=%v", d2, isR2)
 	}
 }
