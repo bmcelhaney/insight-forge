@@ -68,6 +68,14 @@ var (
 	// UPCItemDB paid plan (never log the raw key).
 	upcitemdbMu     sync.RWMutex
 	upcitemdbAPIKey string
+
+	// Global rate limiter — DEV plan: ~1 lookup/2s, ~1 search/6s, ≤2 concurrent.
+	// We serialize all UPCItemDB HTTP and space requests to stay under plan limits.
+	upcRateMu       sync.Mutex
+	upcLastLookup   time.Time
+	upcLastSearch   time.Time
+	upcBackoffUntil time.Time
+	upcLastKind     string // "lookup" | "search"
 )
 
 // ConfigureUPCItemDB enables paid UPCitemdb /prod/v1 endpoints with user_key header.
@@ -97,6 +105,105 @@ func upcitemdbBasePath() string {
 		return "v1"
 	}
 	return "trial"
+}
+
+// upcitemdbMinGap is the minimum spacing between requests of a given kind.
+// DEV plan published limits: 1 lookup / 2s, 1 search / 6s (conservative).
+func upcitemdbMinGap(kind string) time.Duration {
+	paid := UPCItemDBConfigured()
+	if kind == "search" {
+		if paid {
+			return 6500 * time.Millisecond
+		}
+		return 15 * time.Second
+	}
+	// lookup
+	if paid {
+		return 2100 * time.Millisecond
+	}
+	return 10 * time.Second
+}
+
+// upcitemdbAcquire waits for rate-limit spacing. kind is "lookup" or "search".
+// Returns false if context cancelled or still cooling down after a 429.
+func upcitemdbAcquire(ctx context.Context, kind string) bool {
+	upcRateMu.Lock()
+	defer upcRateMu.Unlock()
+
+	now := time.Now()
+	if !upcBackoffUntil.IsZero() && now.Before(upcBackoffUntil) {
+		wait := upcBackoffUntil.Sub(now)
+		upcRateMu.Unlock()
+		select {
+		case <-ctx.Done():
+			upcRateMu.Lock()
+			return false
+		case <-time.After(wait):
+		}
+		upcRateMu.Lock()
+		now = time.Now()
+	}
+
+	var last time.Time
+	if kind == "search" {
+		last = upcLastSearch
+	} else {
+		last = upcLastLookup
+	}
+	// Also space from the other kind slightly so we never double-fire.
+	if !upcLastLookup.IsZero() && upcLastLookup.After(last) {
+		// keep last as kind-specific; additional floor vs any prior call
+	}
+	gap := upcitemdbMinGap(kind)
+	if !last.IsZero() {
+		elapsed := now.Sub(last)
+		if elapsed < gap {
+			wait := gap - elapsed
+			upcRateMu.Unlock()
+			select {
+			case <-ctx.Done():
+				upcRateMu.Lock()
+				return false
+			case <-time.After(wait):
+			}
+			upcRateMu.Lock()
+			now = time.Now()
+		}
+	}
+	// Floor: never issue two UPCItemDB calls < 500ms apart (any kind).
+	prevAny := upcLastLookup
+	if upcLastSearch.After(prevAny) {
+		prevAny = upcLastSearch
+	}
+	if !prevAny.IsZero() {
+		if elapsed := now.Sub(prevAny); elapsed < 500*time.Millisecond {
+			wait := 500*time.Millisecond - elapsed
+			upcRateMu.Unlock()
+			select {
+			case <-ctx.Done():
+				upcRateMu.Lock()
+				return false
+			case <-time.After(wait):
+			}
+			upcRateMu.Lock()
+			now = time.Now()
+		}
+	}
+
+	if kind == "search" {
+		upcLastSearch = now
+	} else {
+		upcLastLookup = now
+	}
+	upcLastKind = kind
+	return true
+}
+
+func upcitemdbNote429() {
+	upcRateMu.Lock()
+	defer upcRateMu.Unlock()
+	// Cool off before more calls (DEV rolling windows are 30s).
+	upcBackoffUntil = time.Now().Add(35 * time.Second)
 }
 
 // enrichProductLinks resolves UPC/SKU to real product identity (title, ASIN) and
@@ -192,12 +299,9 @@ func enrichProductLinksWithFederal(ctx context.Context, refs []models.Commercial
 
 	resolved := make(map[int]*productIdentity, len(cands))
 	var mu sync.Mutex
-	// Paid UPCItemDB can take modest parallelism; trial stays serial to avoid storms.
-	workers := 1
-	if UPCItemDBConfigured() {
-		workers = 3
-	}
-	sem := make(chan struct{}, workers)
+	// Always serial for UPCItemDB HTTP (rate-limited DEV: 1 lookup/2s, 1 search/6s).
+	// Parallelism here only burns quota and triggers 429s.
+	sem := make(chan struct{}, 1)
 	var wg sync.WaitGroup
 	for _, c := range cands {
 		c := c
@@ -949,30 +1053,26 @@ func resolveProductIdentity(ctx context.Context, sku, upc, mfr, title string) (p
 	var transient bool // rate-limit / 5xx — do not long-cache as "not found"
 
 	// Prefer UPC lookup (single definitive item) — one API call.
+	// Avoid stacking search after lookup when rate-limited (429).
 	if u := normalizeUPCDigits(upc); u != "" {
 		id, ok, transient = upcitemdbLookup(ctx, u)
 	}
-	// ASIN-as-SKU: search by ASIN to recover offers/title for price backfill.
-	if !ok && !transient {
+	// ASIN-as-SKU: search by ASIN (expensive — only if no UPC hit).
+	if !ok && !transient && ctx.Err() == nil {
 		if asin, isASIN := amazonASINFromSKU(sku); isASIN {
 			id, ok, transient = upcitemdbSearch(ctx, asin, sku)
 		}
 	}
-	// Text search: ONE best query only (full brand+desc+SKU). Cascading multiple
-	// searches burned the trial API rate limit on the first ETS row so later tiles
-	// never resolved.
-	if !ok && !transient {
+	// Text search: ONE query only (brand+desc+SKU or brand+SKU).
+	// Do not cascade multiple searches — DEV plan allows ~1 search / 6s.
+	if !ok && !transient && ctx.Err() == nil {
 		if _, isASIN := amazonASINFromSKU(sku); !isASIN {
 			q := buildProductSearchQuery(mfr, sku, upc, title)
 			if q == "" {
 				q = strings.TrimSpace(mfr + " " + sku)
 			}
-			if q != "" && ctx.Err() == nil {
+			if q != "" {
 				id, ok, transient = upcitemdbSearch(ctx, q, sku)
-			}
-			// One light fallback if the rich query missed: brand + SKU only.
-			if !ok && !transient && mfr != "" && sku != "" && ctx.Err() == nil {
-				id, ok, transient = upcitemdbSearch(ctx, mfr+" "+sku, sku)
 			}
 		}
 	}
@@ -1028,11 +1128,17 @@ func productSearchQueryCascade(mfr, sku, upc, title string) []string {
 }
 
 func upcitemdbLookup(ctx context.Context, upc string) (id productIdentity, ok bool, transient bool) {
+	if !upcitemdbAcquire(ctx, "lookup") {
+		return productIdentity{}, false, true
+	}
 	u := "https://api.upcitemdb.com/prod/" + upcitemdbBasePath() + "/lookup?upc=" + url.QueryEscape(upc)
 	return upcitemdbFetch(ctx, u, "")
 }
 
 func upcitemdbSearch(ctx context.Context, query, preferSKU string) (id productIdentity, ok bool, transient bool) {
+	if !upcitemdbAcquire(ctx, "search") {
+		return productIdentity{}, false, true
+	}
 	u := "https://api.upcitemdb.com/prod/" + upcitemdbBasePath() + "/search?s=" + url.QueryEscape(query)
 	return upcitemdbFetch(ctx, u, preferSKU)
 }
@@ -1113,10 +1219,16 @@ func upcitemdbFetch(ctx context.Context, endpoint, preferSKU string) (id product
 		recordUPCItemDBStatus(false, resp.StatusCode, err.Error(), "UPCItemDB response could not be read.")
 		return productIdentity{}, false, true
 	}
-	// Trial API rate-limits aggressively; treat 429/5xx as transient (no long negative cache).
-	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
+	// 429 is plan rate-limit (not an invalid key). Back off and treat as transient.
+	if resp.StatusCode == http.StatusTooManyRequests {
+		upcitemdbNote429()
+		recordUPCItemDBStatus(false, 429, "HTTP 429",
+			"UPCItemDB rate limit hit (plan throttle). The key is likely valid — Insight Forge will slow requests. Commercial deep-links may be incomplete for this run; SerpAPI may still fill prices.")
+		return productIdentity{}, false, true
+	}
+	if resp.StatusCode >= 500 {
 		recordUPCItemDBStatus(false, resp.StatusCode, fmt.Sprintf("HTTP %d", resp.StatusCode),
-			"UPCItemDB is rate-limited or unavailable. Product deep-link resolve may be incomplete.")
+			"UPCItemDB is temporarily unavailable (server error). Product deep-link resolve may be incomplete.")
 		return productIdentity{}, false, true
 	}
 	if resp.StatusCode != 200 {
@@ -1917,10 +2029,10 @@ func setCachedProductIDTTL(key string, id productIdentity, ok bool, ttl time.Dur
 
 func productLinkResolveLimit() int {
 	raw := strings.TrimSpace(os.Getenv("IF_PRODUCT_LINK_RESOLVES"))
-	def := 14
+	// Paid DEV: ~1 lookup/2s → keep default modest so one NSN stays under rate windows.
+	def := 10
 	if UPCItemDBConfigured() {
-		// Paid plan: resolve more commercial tiles per NSN.
-		def = 24
+		def = 12
 	}
 	if raw == "" {
 		return def
@@ -1929,10 +2041,7 @@ func productLinkResolveLimit() int {
 	if err != nil || n < 0 {
 		return def
 	}
-	max := 30
-	if UPCItemDBConfigured() {
-		max = 50
-	}
+	max := 20
 	if n > max {
 		return max
 	}
@@ -1942,8 +2051,9 @@ func productLinkResolveLimit() int {
 func productLinkResolveBudget() time.Duration {
 	raw := strings.TrimSpace(os.Getenv("IF_PRODUCT_LINK_RESOLVE_MS"))
 	if raw == "" {
+		// Allow rate-limit spacing (lookup 2s × ~12 products ≈ 24s+).
 		if UPCItemDBConfigured() {
-			return 20000 * time.Millisecond
+			return 45000 * time.Millisecond
 		}
 		return 12000 * time.Millisecond
 	}
@@ -1951,8 +2061,8 @@ func productLinkResolveBudget() time.Duration {
 	if err != nil || ms <= 0 {
 		return 12000 * time.Millisecond
 	}
-	if ms > 25000 {
-		ms = 25000
+	if ms > 60000 {
+		ms = 60000
 	}
 	return time.Duration(ms) * time.Millisecond
 }

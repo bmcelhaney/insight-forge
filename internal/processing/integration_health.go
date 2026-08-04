@@ -281,7 +281,7 @@ func upcIntegrationStatus(enabled, configured bool) models.IntegrationStatus {
 	case 401, 403:
 		st.Message = "UPCItemDB rejected the API key (unauthorized). Check IF_UPCITEMDB_KEY in .env.upcitemdb."
 	case 429:
-		st.Message = "UPCItemDB rate limit exceeded. Product deep-link resolve may be incomplete."
+		st.Message = "UPCItemDB rate limit hit (plan throttle — key is usually still valid). Insight Forge spaces requests; re-run later if commercial links look thin. SerpAPI may still provide market prices."
 		st.Severity = "warning"
 	}
 	return st
