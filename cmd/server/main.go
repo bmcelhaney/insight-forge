@@ -65,6 +65,16 @@ func main() {
 		fmt.Printf("SerpAPI: disabled\n")
 	}
 
+	// UPCItemDB paid DEV/PRO key → /prod/v1 with user_key header (never log the key).
+	if cfg.UPCItemDBEnabled && cfg.UPCItemDBConfigured {
+		processing.ConfigureUPCItemDB(cfg.UPCItemDBKey)
+		fmt.Printf("UPCItemDB: paid plan enabled (/prod/v1)\n")
+	} else if cfg.UPCItemDBEnabled {
+		fmt.Printf("UPCItemDB: trial mode (/prod/trial) — place IF_UPCITEMDB_KEY in .env.upcitemdb (gitignored) for paid access\n")
+	} else {
+		fmt.Printf("UPCItemDB: disabled\n")
+	}
+
 	// Surface PartsBase credential status without leaking secrets.
 	if cfg.PartsBaseEnabled && cfg.PartsBaseConfigured {
 		fmt.Printf("PartsBase: enabled (credentials loaded")
@@ -115,6 +125,9 @@ func main() {
 			"serpapi_enabled":      cfg.SerpAPIEnabled,
 			"serpapi_configured":   cfg.SerpAPIConfigured && processing.SerpAPIEnabled(),
 			"serpapi_num":          cfg.SerpAPINum,
+			"upcitemdb_enabled":    cfg.UPCItemDBEnabled,
+			"upcitemdb_configured": cfg.UPCItemDBConfigured && processing.UPCItemDBConfigured(),
+			"upcitemdb_plan":       map[bool]string{true: "v1", false: "trial"}[processing.UPCItemDBConfigured()],
 		}
 		// Last observed PartsBase fetch outcome (for UI source-status banner).
 		if st, ok := extractorReg.PartsBaseLastStatus(); ok {

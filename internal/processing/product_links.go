@@ -64,7 +64,40 @@ var (
 	productIDCacheMu sync.RWMutex
 	productIDCache   = map[string]cachedProductIdentity{}
 	productHTTPClient = &http.Client{Timeout: 8 * time.Second}
+
+	// UPCItemDB paid plan (never log the raw key).
+	upcitemdbMu     sync.RWMutex
+	upcitemdbAPIKey string
 )
+
+// ConfigureUPCItemDB enables paid UPCitemdb /prod/v1 endpoints with user_key header.
+// Empty key keeps the free trial endpoints (/prod/trial).
+func ConfigureUPCItemDB(apiKey string) {
+	upcitemdbMu.Lock()
+	defer upcitemdbMu.Unlock()
+	upcitemdbAPIKey = strings.TrimSpace(apiKey)
+}
+
+// UPCItemDBConfigured reports whether a paid API key is loaded.
+func UPCItemDBConfigured() bool {
+	upcitemdbMu.RLock()
+	defer upcitemdbMu.RUnlock()
+	return upcitemdbAPIKey != ""
+}
+
+func upcitemdbKey() string {
+	upcitemdbMu.RLock()
+	defer upcitemdbMu.RUnlock()
+	return upcitemdbAPIKey
+}
+
+// upcitemdbBasePath returns "v1" for paid plans, "trial" for free.
+func upcitemdbBasePath() string {
+	if UPCItemDBConfigured() {
+		return "v1"
+	}
+	return "trial"
+}
 
 // enrichProductLinks resolves UPC/SKU to real product identity (title, ASIN) and
 // rewrites shop/Amazon/federal links to be as product-specific as possible.
@@ -159,8 +192,12 @@ func enrichProductLinksWithFederal(ctx context.Context, refs []models.Commercial
 
 	resolved := make(map[int]*productIdentity, len(cands))
 	var mu sync.Mutex
-	// Serial (1) to reduce UPCItemDB trial rate-limit storms; quality over volume.
-	sem := make(chan struct{}, 1)
+	// Paid UPCItemDB can take modest parallelism; trial stays serial to avoid storms.
+	workers := 1
+	if UPCItemDBConfigured() {
+		workers = 3
+	}
+	sem := make(chan struct{}, workers)
 	var wg sync.WaitGroup
 	for _, c := range cands {
 		c := c
@@ -991,12 +1028,12 @@ func productSearchQueryCascade(mfr, sku, upc, title string) []string {
 }
 
 func upcitemdbLookup(ctx context.Context, upc string) (id productIdentity, ok bool, transient bool) {
-	u := "https://api.upcitemdb.com/prod/trial/lookup?upc=" + url.QueryEscape(upc)
+	u := "https://api.upcitemdb.com/prod/" + upcitemdbBasePath() + "/lookup?upc=" + url.QueryEscape(upc)
 	return upcitemdbFetch(ctx, u, "")
 }
 
 func upcitemdbSearch(ctx context.Context, query, preferSKU string) (id productIdentity, ok bool, transient bool) {
-	u := "https://api.upcitemdb.com/prod/trial/search?s=" + url.QueryEscape(query)
+	u := "https://api.upcitemdb.com/prod/" + upcitemdbBasePath() + "/search?s=" + url.QueryEscape(query)
 	return upcitemdbFetch(ctx, u, preferSKU)
 }
 
@@ -1059,6 +1096,11 @@ func upcitemdbFetch(ctx context.Context, endpoint, preferSKU string) (id product
 	req.Header.Set("User-Agent", "InsightForge/1.0 (+https://github.com/bmcelhaney/insight-forge)")
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Accept-Encoding", "identity")
+	// Paid DEV/PRO plans: user_key + key_type on /prod/v1 (never log the key).
+	if key := upcitemdbKey(); key != "" {
+		req.Header.Set("user_key", key)
+		req.Header.Set("key_type", "3scale")
+	}
 
 	resp, err := productHTTPClient.Do(req)
 	if err != nil {
@@ -1865,16 +1907,24 @@ func setCachedProductIDTTL(key string, id productIdentity, ok bool, ttl time.Dur
 
 func productLinkResolveLimit() int {
 	raw := strings.TrimSpace(os.Getenv("IF_PRODUCT_LINK_RESOLVES"))
+	def := 14
+	if UPCItemDBConfigured() {
+		// Paid plan: resolve more commercial tiles per NSN.
+		def = 24
+	}
 	if raw == "" {
-		// Cover a full commercial tile page; each resolve is now 1–2 API calls.
-		return 14
+		return def
 	}
 	n, err := strconv.Atoi(raw)
 	if err != nil || n < 0 {
-		return 14
+		return def
 	}
-	if n > 30 {
-		return 30
+	max := 30
+	if UPCItemDBConfigured() {
+		max = 50
+	}
+	if n > max {
+		return max
 	}
 	return n
 }
@@ -1882,6 +1932,9 @@ func productLinkResolveLimit() int {
 func productLinkResolveBudget() time.Duration {
 	raw := strings.TrimSpace(os.Getenv("IF_PRODUCT_LINK_RESOLVE_MS"))
 	if raw == "" {
+		if UPCItemDBConfigured() {
+			return 20000 * time.Millisecond
+		}
 		return 12000 * time.Millisecond
 	}
 	ms, err := strconv.Atoi(raw)

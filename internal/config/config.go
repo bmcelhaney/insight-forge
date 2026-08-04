@@ -38,6 +38,10 @@ type Config struct {
 	SerpAPIConfigured bool
 	SerpAPIKey        string
 	SerpAPINum        int // shopping results to request (top N)
+	// UPCItemDB paid plan (DEV/PRO) for product identity + market offers
+	UPCItemDBEnabled    bool
+	UPCItemDBConfigured bool
+	UPCItemDBKey        string
 }
 
 func Load() (*Config, error) {
@@ -47,6 +51,7 @@ func Load() (*Config, error) {
 		".env",
 		".env.partsbase",
 		".env.serpapi",
+		".env.upcitemdb",
 		".env.local",
 	)
 
@@ -70,6 +75,7 @@ func Load() (*Config, error) {
 	viper.SetDefault("PARTSBASE_TIMEOUT_SECONDS", 30)
 	viper.SetDefault("SERPAPI_ENABLED", true)
 	viper.SetDefault("SERPAPI_NUM", 8)
+	viper.SetDefault("UPCITEMDB_ENABLED", true)
 
 	partsBaseClientID := getConfiguredValue("PARTSBASE_CLIENT_ID")
 	partsBaseClientSecret := getConfiguredValue("PARTSBASE_CLIENT_SECRET")
@@ -91,6 +97,17 @@ func Load() (*Config, error) {
 	}
 	if serpNum > 20 {
 		serpNum = 20
+	}
+
+	upcKey := getConfiguredValue("UPCITEMDB_KEY")
+	if upcKey == "" {
+		upcKey = getConfiguredValue("UPCITEMDB_USER_KEY")
+	}
+	if upcKey == "" {
+		upcKey = strings.TrimSpace(os.Getenv("UPCITEMDB_KEY"))
+	}
+	if upcKey == "" {
+		upcKey = strings.TrimSpace(os.Getenv("UPCITEMDB_USER_KEY"))
 	}
 
 	cfg := &Config{
@@ -118,6 +135,9 @@ func Load() (*Config, error) {
 		SerpAPIConfigured:        serpKey != "",
 		SerpAPIKey:               serpKey,
 		SerpAPINum:               serpNum,
+		UPCItemDBEnabled:         viper.GetBool("UPCITEMDB_ENABLED"),
+		UPCItemDBConfigured:      upcKey != "",
+		UPCItemDBKey:             upcKey,
 	}
 
 	levelStr := viper.GetString("LOG_LEVEL")
