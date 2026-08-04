@@ -3,8 +3,10 @@ package processing
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -22,11 +24,16 @@ var (
 	serpMu     sync.RWMutex
 	serpAPIKey string
 	serpNum    = 8
-	serpClient = &http.Client{Timeout: 12 * time.Second}
+	// Google Shopping often needs 5–15s; keep client timeout above that.
+	serpClient = &http.Client{Timeout: 30 * time.Second}
 
 	serpCacheMu sync.RWMutex
 	serpCache   = map[string]cachedSerpResult{}
 )
+
+// serpCallTimeout is the per-request budget for a SerpAPI shopping call.
+// Independent of the UPCItemDB resolve budget so rate-limit waits don't starve Serp.
+const serpCallTimeout = 28 * time.Second
 
 type cachedSerpResult struct {
 	hits   []shoppingHit
@@ -69,6 +76,32 @@ func serpKey() string {
 	return serpAPIKey
 }
 
+// classifySerpNetError turns Go transport errors into analyst-facing messages.
+func classifySerpNetError(err error) (message, detail string) {
+	if err == nil {
+		return "SerpAPI request failed.", ""
+	}
+	detail = err.Error()
+	// Never leave full API key material in status (query string is redacted upstream too).
+	if i := strings.Index(strings.ToLower(detail), "api_key="); i >= 0 {
+		detail = detail[:i] + "api_key=[redacted]"
+	}
+	switch {
+	case errors.Is(err, context.DeadlineExceeded) || strings.Contains(detail, "context deadline exceeded"):
+		return "SerpAPI request timed out waiting for Google Shopping (often 5–15s). Analysis continues with other sources.", detail
+	case errors.Is(err, context.Canceled):
+		return "SerpAPI request was cancelled (analysis budget exhausted). Try again or reduce commercial resolve load.", detail
+	case strings.Contains(detail, "Client.Timeout") || strings.Contains(detail, "Timeout exceeded"):
+		return "SerpAPI HTTP client timed out. Google Shopping responses can be slow; Insight Forge uses a 30s client timeout.", detail
+	default:
+		var ne net.Error
+		if errors.As(err, &ne) && ne.Timeout() {
+			return "SerpAPI network timeout. Check outbound HTTPS to serpapi.com from this host.", detail
+		}
+		return "SerpAPI request failed (network error). Commercial shopping prices may be incomplete.", detail
+	}
+}
+
 func serpResultLimit() int {
 	serpMu.RLock()
 	defer serpMu.RUnlock()
@@ -88,11 +121,17 @@ func resolveViaSerpShopping(ctx context.Context, sku, upc, mfr, title string) (p
 	if q == "" {
 		return productIdentity{}, false
 	}
-	hits, ok := serpGoogleShopping(ctx, q)
+	// Dedicated deadline: parent product-link ctx may already be nearly exhausted
+	// after UPCItemDB rate-limit waits (2s+ per lookup). Without this, Serp fails
+	// with context deadline and looks like a network timeout.
+	serpCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), serpCallTimeout)
+	defer cancel()
+
+	hits, ok := serpGoogleShopping(serpCtx, q)
 	if !ok || len(hits) == 0 {
-		// One simpler fallback
-		if mfr != "" && sku != "" {
-			hits, ok = serpGoogleShopping(ctx, strings.TrimSpace(mfr+" "+sku))
+		// One simpler fallback only if we still have budget.
+		if mfr != "" && sku != "" && serpCtx.Err() == nil {
+			hits, ok = serpGoogleShopping(serpCtx, strings.TrimSpace(mfr+" "+sku))
 		}
 		if !ok || len(hits) == 0 {
 			return productIdentity{}, false
@@ -413,7 +452,8 @@ func serpGoogleShopping(ctx context.Context, query string) ([]shoppingHit, bool)
 
 	resp, err := serpClient.Do(req)
 	if err != nil {
-		recordSerpAPIStatus(false, 0, err.Error(), "SerpAPI request failed (network or timeout). Commercial shopping prices may be incomplete.")
+		msg, detail := classifySerpNetError(err)
+		recordSerpAPIStatus(false, 0, detail, msg)
 		setSerpCache(cacheKey, nil, false, 2*time.Minute)
 		return nil, false
 	}
