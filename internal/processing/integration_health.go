@@ -280,6 +280,14 @@ func upcIntegrationStatus(enabled, configured bool) models.IntegrationStatus {
 	switch rt.HTTPCode {
 	case 401, 403:
 		st.Message = "UPCItemDB rejected the API key (unauthorized). Check IF_UPCITEMDB_KEY in .env.upcitemdb."
+	case 404:
+		// 404 is NOT_FOUND for a product query — API is fine; should already be OK from record path.
+		if rt.OK {
+			st.OK = true
+			st.Severity = "ok"
+			st.Message = nonEmpty(rt.Message, "UPCItemDB is live (404 means product not in catalog for some SKUs).")
+			return st
+		}
 	case 429:
 		st.Message = "UPCItemDB rate limit hit (plan throttle — key is usually still valid). Insight Forge spaces requests; re-run later if commercial links look thin. SerpAPI may still provide market prices."
 		st.Severity = "warning"

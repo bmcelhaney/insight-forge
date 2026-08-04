@@ -1219,25 +1219,48 @@ func upcitemdbFetch(ctx context.Context, endpoint, preferSKU string) (id product
 		recordUPCItemDBStatus(false, resp.StatusCode, err.Error(), "UPCItemDB response could not be read.")
 		return productIdentity{}, false, true
 	}
-	// 429 is plan rate-limit (not an invalid key). Back off and treat as transient.
-	if resp.StatusCode == http.StatusTooManyRequests {
+
+	// Shared error envelope (docs: code + message) — used for 4xx/5xx and some 200 bodies.
+	var errEnv struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	}
+	_ = json.Unmarshal(body, &errEnv)
+	codeUpper := strings.ToUpper(strings.TrimSpace(errEnv.Code))
+
+	// 429 / TOO_FAST — plan rate-limit (not an invalid key).
+	if resp.StatusCode == http.StatusTooManyRequests || codeUpper == "TOO_FAST" || codeUpper == "HTTP_TOO_MANY_REQUESTS" {
 		upcitemdbNote429()
-		recordUPCItemDBStatus(false, 429, "HTTP 429",
+		recordUPCItemDBStatus(false, resp.StatusCode, nonEmpty(errEnv.Code, fmt.Sprintf("HTTP %d", resp.StatusCode)),
 			"UPCItemDB rate limit hit (plan throttle). The key is likely valid — Insight Forge will slow requests. Commercial deep-links may be incomplete for this run; SerpAPI may still fill prices.")
 		return productIdentity{}, false, true
 	}
-	if resp.StatusCode >= 500 {
-		recordUPCItemDBStatus(false, resp.StatusCode, fmt.Sprintf("HTTP %d", resp.StatusCode),
+	if codeUpper == "EXCEED_LIMIT" {
+		recordUPCItemDBStatus(false, resp.StatusCode, "EXCEED_LIMIT",
+			"UPCItemDB daily request limit exceeded for this plan. Commercial catalog resolve will pause until the quota resets.")
+		return productIdentity{}, false, true
+	}
+	if resp.StatusCode == 401 || resp.StatusCode == 403 || codeUpper == "AUTH_ERR" {
+		recordUPCItemDBStatus(false, resp.StatusCode, nonEmpty(errEnv.Code, fmt.Sprintf("HTTP %d", resp.StatusCode)),
+			"UPCItemDB rejected the API key (unauthorized). Check IF_UPCITEMDB_KEY.")
+		return productIdentity{}, false, false
+	}
+	if resp.StatusCode >= 500 || codeUpper == "SERVER_ERR" {
+		recordUPCItemDBStatus(false, resp.StatusCode, nonEmpty(errEnv.Code, fmt.Sprintf("HTTP %d", resp.StatusCode)),
 			"UPCItemDB is temporarily unavailable (server error). Product deep-link resolve may be incomplete.")
 		return productIdentity{}, false, true
 	}
+	// 404 NOT_FOUND = no product match (or bad UPC) — API is fine; soft-miss this product only.
+	// Docs: "No matched item was found or wrong endpoint path."
+	if resp.StatusCode == http.StatusNotFound || codeUpper == "NOT_FOUND" || codeUpper == "INVALID_UPC" || codeUpper == "INVALID_QUERY" {
+		// Do not flip global health to error — successful auth + live API.
+		recordUPCItemDBStatus(true, resp.StatusCode, codeUpper,
+			"UPCItemDB is live (some products return 404/not found — normal for unmatched SKUs/UPCs).")
+		return productIdentity{}, false, false
+	}
 	if resp.StatusCode != 200 {
-		msg := "UPCItemDB returned an error. Product identity resolve may be incomplete."
-		if resp.StatusCode == 401 || resp.StatusCode == 403 {
-			msg = "UPCItemDB rejected the API key (unauthorized). Check IF_UPCITEMDB_KEY."
-		}
-		recordUPCItemDBStatus(false, resp.StatusCode, fmt.Sprintf("HTTP %d", resp.StatusCode), msg)
-		// Definitive client error / empty — soft-negative OK.
+		recordUPCItemDBStatus(false, resp.StatusCode, fmt.Sprintf("HTTP %d %s", resp.StatusCode, errEnv.Code),
+			"UPCItemDB returned an unexpected error. Product identity resolve may be incomplete.")
 		return productIdentity{}, false, false
 	}
 	recordUPCItemDBStatus(true, 200, "", "UPCItemDB is live.")
@@ -1259,9 +1282,11 @@ func upcitemdbFetch(ctx context.Context, endpoint, preferSKU string) (id product
 		} `json:"items"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
+		recordUPCItemDBStatus(false, 200, err.Error(), "UPCItemDB returned unreadable JSON.")
 		return productIdentity{}, false, true
 	}
 	if len(payload.Items) == 0 {
+		// Empty items with 200 — treat as miss, API still healthy.
 		return productIdentity{}, false, false
 	}
 
