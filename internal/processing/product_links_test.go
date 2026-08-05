@@ -426,6 +426,61 @@ func TestIsDirectProductURL(t *testing.T) {
 	if !isDirectProductURL("https://www.officedepot.com/a/products/811950/") {
 		t.Fatal("OD product")
 	}
+	// Google Shopping hubs must never count as product evidence.
+	if isDirectProductURL("https://www.google.com/search?ibp=oshop&q=pole") {
+		t.Fatal("google shopping hub is not direct")
+	}
+	if isDirectProductURL("https://www.google.com/search?tbm=shop&q=pole") {
+		t.Fatal("tbm=shop is not direct")
+	}
+	if !isMerchantProductURL("https://www.homedepot.com/p/Wooster-Sherlock-R091/100123456") {
+		t.Fatal("HD product path")
+	}
+	if !isMerchantProductURL("https://www.walmart.com/ip/Some-Product/12345") {
+		t.Fatal("walmart ip")
+	}
+}
+
+func TestProductURLQualityPrefersMerchantPDP(t *testing.T) {
+	hub := "https://www.google.com/search?tbm=shop&q=WOOSTER+R091"
+	pdp := "https://www.homedepot.com/p/Wooster-R091/100"
+	search := "https://www.homedepot.com/s/WOOSTER%20R091"
+	if productURLQuality(pdp) <= productURLQuality(hub) {
+		t.Fatalf("PDP should beat google hub: pdp=%d hub=%d", productURLQuality(pdp), productURLQuality(hub))
+	}
+	if productURLQuality(pdp) <= productURLQuality(search) {
+		t.Fatalf("PDP should beat HD search: pdp=%d search=%d", productURLQuality(pdp), productURLQuality(search))
+	}
+	best := pickBestEvidenceURL(hub, search, pdp, "")
+	if best != pdp {
+		t.Fatalf("pickBestEvidenceURL got %q want pdp", best)
+	}
+}
+
+func TestBuildTightProductSearchQueryPrefersSKU(t *testing.T) {
+	q := buildTightProductSearchQuery("WOOSTER", "R091", "012345678901", "long description that would bury results if used whole")
+	if !strings.Contains(q, "R091") || !strings.Contains(q, "WOOSTER") {
+		t.Fatalf("expected brand+sku, got %q", q)
+	}
+	// Should not dump the full long description.
+	if strings.Contains(q, "bury results") {
+		t.Fatalf("should not use long description when SKU present: %q", q)
+	}
+}
+
+func TestPickBestShopEvidenceLinkSkipsAmazonAndSearch(t *testing.T) {
+	offers := []models.MarketOffer{
+		{Merchant: "Amazon", Channel: "amazon", Link: "https://www.amazon.com/dp/B000DZGQIM", UnitPrice: 10},
+		{Merchant: "Google", Channel: "shop", Link: "https://www.google.com/search?tbm=shop&q=x", UnitPrice: 11},
+		{Merchant: "The Home Depot", Channel: "shop", Link: "https://www.homedepot.com/p/Item/123", UnitPrice: 12},
+	}
+	link, merch := pickBestShopEvidenceLink(offers)
+	if !strings.Contains(link, "homedepot.com/p/") {
+		t.Fatalf("want HD product, got %q (%s)", link, merch)
+	}
+	if merch != "The Home Depot" {
+		t.Fatalf("merchant %q", merch)
+	}
 }
 
 func TestBuildAmazonProductSearchURLUsesTitle(t *testing.T) {

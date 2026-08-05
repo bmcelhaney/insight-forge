@@ -539,17 +539,24 @@ func applyDeterministicProductLinks(refs []models.CommercialReference, entityID 
 			r.LinkAmazon = buildAmazonProductSearchURL(mfr, sku, upc, title)
 		}
 
-		// --- Shop: true product URL first, then rich retailer/Google search ---
+		// --- Shop: merchant product URL first (evidence-quality), then tight search ---
 		r.LinkShop = ""
 		if id != nil {
-			if id.RetailURL != "" {
-				r.LinkShop = id.RetailURL
-			} else if id.OfferLink != "" {
-				r.LinkShop = id.OfferLink
+			// Prefer highest-quality URL among identity fields + market offers.
+			offerLink, offerMerch := pickBestShopEvidenceLink(id.Offers)
+			r.LinkShop = pickBestEvidenceURL(id.RetailURL, id.OfferLink, id.ShopLink, offerLink)
+			if r.LinkShop != "" && offerMerch != "" && r.LinkShop == offerLink {
+				r.LinkShopMerchant = offerMerch
 			}
 		}
-		if r.LinkShop == "" {
-			r.LinkShop = buildBestShopURL(mfr, sku, upc, title, searchQ)
+		// Only fall back to search when we lack a product-detail evidence URL.
+		if r.LinkShop == "" || isSearchOrHubURL(r.LinkShop) {
+			searchFallback := buildBestShopURL(mfr, sku, upc, title, searchQ)
+			if r.LinkShop == "" {
+				r.LinkShop = searchFallback
+			} else if productURLQuality(searchFallback) > productURLQuality(r.LinkShop) {
+				r.LinkShop = searchFallback
+			}
 		}
 
 		// --- UPC identity page (human-readable product dossier) ---
@@ -575,20 +582,28 @@ func applyDeterministicProductLinks(refs []models.CommercialReference, entityID 
 		// Search-only (no direct Amazon/shop match) → range of top market results.
 		shopIsDirect := isDirectProductURL(r.LinkShop)
 		if id != nil {
-			// Prefer shop link from non-Amazon offer when we have one (before pricing).
-			if !shopIsDirect && id.ShopLink != "" && isDirectProductURL(id.ShopLink) {
-				r.LinkShop = id.ShopLink
-				shopIsDirect = true
-			} else if r.LinkShop == "" && id.ShopLink != "" {
+			// Promote any stronger shop link from identity/offers (before pricing).
+			if id.ShopLink != "" && productURLQuality(id.ShopLink) > productURLQuality(r.LinkShop) {
 				r.LinkShop = id.ShopLink
 				shopIsDirect = isDirectProductURL(r.LinkShop)
 			}
+			if offerL, offerM := pickBestShopEvidenceLink(id.Offers); offerL != "" {
+				if productURLQuality(offerL) > productURLQuality(r.LinkShop) {
+					r.LinkShop = offerL
+					shopIsDirect = isDirectProductURL(r.LinkShop)
+					if offerM != "" {
+						r.LinkShopMerchant = offerM
+					}
+				}
+			}
 			// Surface actual merchant name for UI (avoid generic "Retail product").
-			if id.ShopMerchant != "" && !isGenericMerchant(id.ShopMerchant) {
-				r.LinkShopMerchant = id.ShopMerchant
-			} else if id.OfferMerchant != "" && !isGenericMerchant(id.OfferMerchant) &&
-				!strings.Contains(strings.ToLower(id.OfferMerchant), "amazon") {
-				r.LinkShopMerchant = id.OfferMerchant
+			if r.LinkShopMerchant == "" {
+				if id.ShopMerchant != "" && !isGenericMerchant(id.ShopMerchant) {
+					r.LinkShopMerchant = id.ShopMerchant
+				} else if id.OfferMerchant != "" && !isGenericMerchant(id.OfferMerchant) &&
+					!strings.Contains(strings.ToLower(id.OfferMerchant), "amazon") {
+					r.LinkShopMerchant = id.OfferMerchant
+				}
 			}
 
 			// Amazon
@@ -771,30 +786,21 @@ func applyDeterministicProductLinks(refs []models.CommercialReference, entityID 
 			}
 		}
 
-		// Always refresh PriceURL to the best product/verify link we now have
-		// (earlier enrichment may have set a weak SKU-only Google URL).
-		bestPriceURL := ""
-		switch {
-		case amazonProduct && r.PriceAmazon != "":
-			bestPriceURL = r.LinkAmazon
-		case r.PriceShop != "" && r.LinkShop != "":
-			bestPriceURL = r.LinkShop
-		case amazonProduct:
-			bestPriceURL = r.LinkAmazon
-		case id != nil && id.RetailURL != "":
-			bestPriceURL = id.RetailURL
-		case id != nil && id.OfferLink != "":
-			bestPriceURL = id.OfferLink
-		case r.LinkShop != "":
-			bestPriceURL = r.LinkShop
-		case r.LinkAmazon != "":
-			bestPriceURL = r.LinkAmazon
-		case r.LinkUPC != "":
-			bestPriceURL = r.LinkUPC
+		// Always refresh PriceURL to the strongest product-evidence link we have.
+		// Prefer merchant PDPs over search/hub pages (critical for price verification).
+		candidates := []string{r.LinkShop, r.LinkAmazon}
+		if id != nil {
+			candidates = append(candidates, id.RetailURL, id.OfferLink, id.ShopLink)
+			for _, o := range id.Offers {
+				candidates = append(candidates, o.Link)
+			}
 		}
+		if r.LinkUPC != "" {
+			candidates = append(candidates, r.LinkUPC)
+		}
+		bestPriceURL := pickBestEvidenceURL(candidates...)
 		if bestPriceURL != "" {
-			// Overwrite weak prior price URLs (bare SKU searches).
-			if r.PriceURL == "" || isWeakProductSearchURL(r.PriceURL) || !isWeakProductSearchURL(bestPriceURL) {
+			if r.PriceURL == "" || productURLQuality(bestPriceURL) >= productURLQuality(r.PriceURL) {
 				r.PriceURL = bestPriceURL
 			}
 		}
@@ -925,26 +931,82 @@ func replaceInsensitive(s, old, new string) string {
 	return b.String()
 }
 
-// buildBestShopURL prefers retailer product searches that rank specific SKUs highly.
+// buildBestShopURL builds a tight merchant/Google search when no product PDP exists.
+// Prefer UPC or quoted SKU+brand over long free-text descriptions (those bury the item).
 func buildBestShopURL(manufacturer, sku, upc, title, searchQ string) string {
-	if searchQ == "" {
-		searchQ = buildProductSearchQuery(manufacturer, sku, upc, title)
-	}
 	u := normalizeUPCDigits(upc)
-	// UPC-only Walmart is product-like when we lack a title.
-	if searchQ == "" && u != "" {
+	tight := buildTightProductSearchQuery(manufacturer, sku, upc, title)
+	if tight == "" {
+		tight = searchQ
+	}
+	if tight == "" {
+		tight = buildProductSearchQuery(manufacturer, sku, upc, title)
+	}
+	// UPC-only Walmart often lands near the exact item when UPC is known.
+	if u != "" && (tight == "" || tight == u) {
 		return "https://www.walmart.com/search?q=" + url.QueryEscape(u)
 	}
-	if searchQ == "" {
+	if tight == "" {
 		return buildPreciseShopURL(manufacturer, sku, upc, title)
 	}
-	// Home Depot ranks industrial/paint/facility SKUs well; use rich query.
-	// Analysts often find the exact cover/brush here faster than Google Shopping.
+	// Home Depot ranks industrial/paint/facility SKUs well with a tight query.
 	if looksLikeFacilityOrPaintProduct(manufacturer, title, sku) {
-		return "https://www.homedepot.com/s/" + url.PathEscape(searchQ)
+		return "https://www.homedepot.com/s/" + url.PathEscape(tight)
 	}
-	// Google Shopping with full brand+description+SKU query.
-	return "https://www.google.com/search?tbm=shop&q=" + url.QueryEscape(searchQ)
+	// Google Shopping with tight brand+SKU/UPC (not a long fuzzy description).
+	return "https://www.google.com/search?tbm=shop&q=" + url.QueryEscape(tight)
+}
+
+// buildTightProductSearchQuery prioritizes identifiers that land on the right product:
+// quoted SKU + brand, then UPC, then a short title fragment — not full catalog prose.
+func buildTightProductSearchQuery(manufacturer, sku, upc, title string) string {
+	mfr := strings.TrimSpace(manufacturer)
+	sku = strings.TrimSpace(sku)
+	u := normalizeUPCDigits(upc)
+	// 1) Brand + exact SKU (best non-UPC precision).
+	if sku != "" {
+		parts := []string{}
+		if mfr != "" {
+			parts = append(parts, mfr)
+		}
+		parts = append(parts, `"`+sku+`"`)
+		if u != "" {
+			parts = append(parts, u)
+		}
+		return strings.Join(parts, " ")
+	}
+	// 2) UPC alone is highly precise.
+	if u != "" {
+		if mfr != "" {
+			return mfr + " " + u
+		}
+		return u
+	}
+	// 3) Short title + brand (cap length so search doesn't go fuzzy).
+	t := humanizeProductDescription(title)
+	t = strings.Join(strings.Fields(t), " ")
+	if len(t) > 48 {
+		// Keep leading tokens (usually brand/model words).
+		words := strings.Fields(t)
+		var b strings.Builder
+		for _, w := range words {
+			if b.Len()+len(w)+1 > 48 {
+				break
+			}
+			if b.Len() > 0 {
+				b.WriteByte(' ')
+			}
+			b.WriteString(w)
+		}
+		t = b.String()
+	}
+	if mfr != "" && t != "" && !strings.Contains(strings.ToLower(t), strings.ToLower(mfr)) {
+		return strings.TrimSpace(mfr + " " + t)
+	}
+	if t != "" {
+		return t
+	}
+	return mfr
 }
 
 func looksLikeFacilityOrPaintProduct(mfr, title, sku string) bool {
@@ -1507,8 +1569,12 @@ func collectChannelOffers(offers []upcOffer) channelOfferSet {
 			score += 10
 		}
 		link := strings.TrimSpace(o.Link)
-		if link != "" {
+		// Small link bonus only — must not exclude cheaper offers from price bands.
+		// Evidence URL selection uses productURLQuality via pickBestLink below.
+		if isMerchantProductURL(link) || isDirectProductURL(link) {
 			score += 8
+		} else if link != "" {
+			score += 3
 		}
 		all = append(all, scored{price: price, merchant: merch, currency: cur, link: link, score: score, channel: channel})
 	}
@@ -1616,10 +1682,37 @@ func collectChannelOffers(offers []upcOffer) channelOfferSet {
 		}
 	}
 
+	// Prefer highest-quality product URL among candidates (not just cheapest row's link).
+	pickBestLink := func(list []scored) (link, merchant string) {
+		bestQ := 0
+		for _, c := range list {
+			if c.link == "" {
+				continue
+			}
+			q := productURLQuality(c.link)
+			// Require at least a direct/affiliate product link for evidence.
+			if q < 50 && !isDirectProductURL(c.link) {
+				continue
+			}
+			if q > bestQ {
+				bestQ = q
+				link = c.link
+				merchant = c.merchant
+			}
+		}
+		return link, merchant
+	}
+
 	// Catalog / UPC: full offer set so range matches breadth of the UPC identity page.
 	if b, min, max, n, ok := fullRange(all); ok {
 		out.BestPrice, out.BestMerchant, out.BestCurrency, out.BestLink = b.price, b.merchant, b.currency, b.link
 		out.AllMin, out.AllMax, out.AllCount = min, max, n
+		if bestL, bestM := pickBestLink(all); bestL != "" {
+			out.BestLink = bestL
+			if bestM != "" {
+				out.BestMerchant = bestM
+			}
+		}
 	}
 	// Amazon / shop search ranges: top-result band (still useful when no deep-link).
 	if b, min, max, n, ok := topRange(amazonList); ok {
@@ -1629,6 +1722,12 @@ func collectChannelOffers(offers []upcOffer) channelOfferSet {
 	if b, min, max, n, ok := topRange(shopList); ok {
 		out.ShopPrice, out.ShopMerchant, out.ShopLink = b.price, b.merchant, b.link
 		out.ShopMin, out.ShopMax, out.ShopCount = min, max, n
+		if bestL, bestM := pickBestLink(shopList); bestL != "" {
+			out.ShopLink = bestL
+			if bestM != "" {
+				out.ShopMerchant = bestM
+			}
+		}
 	}
 	// When shop deep-link is missing, shop search range can use full non-Amazon set
 	// so analysts see the same breadth as the UPC dossier for retail search.
@@ -1739,41 +1838,226 @@ func pickSearchPriceRange(aMin, aMax float64, aN int, bMin, bMax float64, bN int
 	return best.min, best.max, best.n, true
 }
 
-// isDirectProductURL is true for product detail pages (not search result pages).
-func isDirectProductURL(u string) bool {
+// isSearchOrHubURL is true for multi-result search pages and Google Shopping hubs.
+// These are weak evidence for a single market listing price.
+func isSearchOrHubURL(u string) bool {
 	u = strings.ToLower(strings.TrimSpace(u))
 	if u == "" {
-		return false
+		return true
 	}
-	// Explicit search / multi-result UIs — never treat as a single listing.
+	// Google Shopping / SERP multi-result UIs (not a merchant PDP).
 	if strings.Contains(u, "google.com/search") ||
+		strings.Contains(u, "google.com/shopping") ||
+		strings.Contains(u, "google.com/async") ||
 		strings.Contains(u, "ibp=oshop") ||
 		strings.Contains(u, "tbm=shop") ||
 		strings.Contains(u, "udm=28") ||
-		strings.Contains(u, "amazon.com/s?") ||
+		strings.Contains(u, "serpapi.com") {
+		return true
+	}
+	// Merchant search result pages.
+	if strings.Contains(u, "amazon.com/s?") ||
 		strings.Contains(u, "amazon.com/s/") ||
 		strings.Contains(u, "homedepot.com/s/") ||
 		strings.Contains(u, "walmart.com/search") ||
+		strings.Contains(u, "officedepot.com/a/search") ||
+		strings.Contains(u, "staples.com/") && strings.Contains(u, "search") ||
+		strings.Contains(u, "target.com/s?") ||
+		strings.Contains(u, "lowes.com/search") ||
+		strings.Contains(u, "bestbuy.com/site/searchpage") ||
 		strings.Contains(u, "/search?") ||
 		strings.Contains(u, "/search/") {
+		return true
+	}
+	return false
+}
+
+// isMerchantProductURL is true for a merchant product-detail page (strong price evidence).
+// Stricter than isDirectProductURL: excludes search hubs and generic catalog dumps.
+func isMerchantProductURL(u string) bool {
+	u = strings.ToLower(strings.TrimSpace(u))
+	if u == "" || isSearchOrHubURL(u) {
 		return false
 	}
 	switch {
-	case strings.Contains(u, "amazon.com/dp/"), strings.Contains(u, "amazon.com/gp/product/"):
+	case strings.Contains(u, "amazon.com/dp/"),
+		strings.Contains(u, "amazon.com/gp/product/"),
+		strings.Contains(u, "amazon.com/gp/aw/d/"):
 		return true
 	case strings.Contains(u, "officedepot.com/a/products/"):
 		return true
 	case strings.Contains(u, "walmart.com/ip/"):
 		return true
-	case strings.Contains(u, "upcitemdb.com/norob/"):
-		return true // affiliate deep-link to a specific merchant listing
 	case strings.Contains(u, "homedepot.com/p/"):
 		return true
-	case strings.Contains(u, "/product/"), strings.Contains(u, "/p/"):
+	case strings.Contains(u, "staples.com/") && (strings.Contains(u, "/product/") || strings.Contains(u, "product_")):
+		return true
+	case strings.Contains(u, "lowes.com/pd/"):
+		return true
+	case strings.Contains(u, "target.com/p/"):
+		return true
+	case strings.Contains(u, "bestbuy.com/site/") && strings.Contains(u, ".p"):
+		return true
+	case strings.Contains(u, "grainger.com/product/"):
+		return true
+	case strings.Contains(u, "globalindustrial.com/p/"):
+		return true
+	case strings.Contains(u, "webstaurantstore.com/"):
+		return true
+	case strings.Contains(u, "uline.com/product/"):
+		return true
+	case strings.Contains(u, "menards.com/main/p-"):
+		return true
+	case strings.Contains(u, "acehardware.com/departments/") && strings.Contains(u, "/p/"):
+		return true
+	// Common PDP path shapes on other retailers (exclude pure /p alone on search domains).
+	case strings.Contains(u, "/product/") || strings.Contains(u, "/products/") ||
+		strings.Contains(u, "/dp/") || strings.Contains(u, "/ip/") ||
+		strings.Contains(u, "/pd/") || strings.Contains(u, "/sku/"):
+		return true
+	case strings.Contains(u, "/p/") && !strings.Contains(u, "google."):
 		return true
 	default:
 		return false
 	}
+}
+
+// isDirectProductURL is true for product detail pages (not search result pages).
+// Includes UPCItemDB affiliate deep-links that resolve to a specific merchant listing.
+func isDirectProductURL(u string) bool {
+	u = strings.ToLower(strings.TrimSpace(u))
+	if u == "" || isSearchOrHubURL(u) {
+		return false
+	}
+	if isMerchantProductURL(u) {
+		return true
+	}
+	// Affiliate redirect that usually lands on a specific merchant product.
+	if strings.Contains(u, "upcitemdb.com/norob/") {
+		return true
+	}
+	return false
+}
+
+// productURLQuality scores a URL for use as market-price evidence (higher is better).
+// Search/hub pages score low; merchant PDPs score high.
+func productURLQuality(u string) int {
+	u = strings.TrimSpace(u)
+	if u == "" {
+		return 0
+	}
+	ul := strings.ToLower(u)
+	if isSearchOrHubURL(ul) {
+		// Slight preference for tighter merchant search over bare Google Shopping.
+		if strings.Contains(ul, "homedepot.com/s/") || strings.Contains(ul, "walmart.com/search") {
+			return 8
+		}
+		if strings.Contains(ul, "amazon.com/s") {
+			return 7
+		}
+		if strings.Contains(ul, "tbm=shop") || strings.Contains(ul, "google.com") {
+			return 4
+		}
+		return 5
+	}
+	if isMerchantProductURL(ul) {
+		score := 80
+		// Prefer well-known US retailers for federal/commercial cross-check.
+		switch {
+		case strings.Contains(ul, "amazon.com/dp"), strings.Contains(ul, "amazon.com/gp/product"):
+			score = 95
+		case strings.Contains(ul, "homedepot.com/p/"):
+			score = 92
+		case strings.Contains(ul, "officedepot.com/a/products/"):
+			score = 90
+		case strings.Contains(ul, "staples.com/"):
+			score = 90
+		case strings.Contains(ul, "walmart.com/ip/"):
+			score = 88
+		case strings.Contains(ul, "lowes.com/pd/"):
+			score = 88
+		case strings.Contains(ul, "grainger.com/product/"):
+			score = 86
+		}
+		return score
+	}
+	if strings.Contains(ul, "upcitemdb.com/norob/") {
+		return 55 // specific listing redirect, not always stable
+	}
+	if strings.Contains(ul, "upcitemdb.com/upc/") {
+		return 25 // multi-merchant dossier, not a single listing
+	}
+	// Unknown absolute URL — maybe a product page we don't pattern-match.
+	if strings.HasPrefix(ul, "http") {
+		return 30
+	}
+	return 0
+}
+
+// pickBestEvidenceURL returns the highest-quality URL among candidates for price evidence.
+func pickBestEvidenceURL(urls ...string) string {
+	best, bestQ := "", 0
+	for _, u := range urls {
+		u = strings.TrimSpace(u)
+		if u == "" {
+			continue
+		}
+		q := productURLQuality(u)
+		if q > bestQ {
+			bestQ = q
+			best = u
+		}
+	}
+	return best
+}
+
+// pickBestShopEvidenceLink chooses the best non-Amazon product URL from market offers.
+// Prefers merchant PDPs; returns empty if only weak search links exist.
+func pickBestShopEvidenceLink(offers []models.MarketOffer) (link, merchant string) {
+	bestQ := 0
+	for _, o := range offers {
+		l := strings.TrimSpace(o.Link)
+		if l == "" {
+			continue
+		}
+		ch := strings.ToLower(o.Channel)
+		ml := strings.ToLower(o.Merchant + " " + l)
+		if ch == "amazon" || strings.Contains(ml, "amazon") {
+			continue
+		}
+		q := productURLQuality(l)
+		// Prefer true merchant PDPs for evidence; skip pure search/hub.
+		if q < 50 && !isDirectProductURL(l) {
+			continue
+		}
+		if q > bestQ {
+			bestQ = q
+			link = l
+			merchant = strings.TrimSpace(o.Merchant)
+		}
+	}
+	return link, merchant
+}
+
+// preferSerpMerchantLink picks the better of Serp shopping link vs product_link.
+// Google product_link is almost always a multi-result hub — demote it hard.
+func preferSerpMerchantLink(link, productLink string) string {
+	l, p := strings.TrimSpace(link), strings.TrimSpace(productLink)
+	ql, qp := productURLQuality(l), productURLQuality(p)
+	if ql >= qp && l != "" {
+		return l
+	}
+	if p != "" && qp > ql {
+		return p
+	}
+	// If both are weak Google hubs, return empty so we don't promote them as "product".
+	if isSearchOrHubURL(l) && isSearchOrHubURL(p) {
+		return ""
+	}
+	if l != "" {
+		return l
+	}
+	return p
 }
 
 // pickBestMarketOffer chooses a displayable commercial offer price and optional product link.

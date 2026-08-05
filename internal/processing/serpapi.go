@@ -447,10 +447,14 @@ func identityFromShoppingHits(hits []shoppingHit, preferSKU, mfr string) product
 			}
 		} else {
 			shopPrices = append(shopPrices, h.Price)
-			// Prefer direct product-looking links as shop destination.
-			if bestShop.Price <= 0 || (isDirectProductURL(h.Link) && !isDirectProductURL(bestShop.Link)) ||
-				(isDirectProductURL(h.Link) == isDirectProductURL(bestShop.Link) && h.Price < bestShop.Price) {
+			// Prefer highest-quality product URL; among equal quality, lower price.
+			if bestShop.Link == "" && bestShop.Price <= 0 {
 				bestShop = h
+			} else {
+				bq, hq := productURLQuality(bestShop.Link), productURLQuality(h.Link)
+				if hq > bq || (hq == bq && (bestShop.Price <= 0 || (h.Price > 0 && h.Price < bestShop.Price))) {
+					bestShop = h
+				}
 			}
 		}
 		// Atomic offer for data-capture export (pack/UOM filled later from title + ETS).
@@ -486,22 +490,52 @@ func identityFromShoppingHits(hits []shoppingHit, preferSKU, mfr string) product
 		id.ShopPrice = minP
 		id.ShopMerchant = nonEmpty(bestShop.Source, "Retail")
 		id.ShopMin, id.ShopMax, id.ShopCount = minP, maxP, len(shopPrices)
-		if bestShop.Link != "" {
-			id.ShopLink = bestShop.Link
-			// Only promote to OfferLink/RetailURL when it is a real product page.
-			// Google Shopping result URLs are multi-result UIs and must stay "search".
-			if isDirectProductURL(bestShop.Link) {
-				id.OfferLink = bestShop.Link
-				id.RetailURL = bestShop.Link
+	}
+	// Evidence URL: best merchant PDP across all ranked hits (not only cheapest).
+	// Never promote Google Shopping hub/search pages as RetailURL/OfferLink.
+	var bestEvidenceLink, bestEvidenceMerchant string
+	bestEQ := 0
+	for _, h := range ranked {
+		if h.Link == "" {
+			continue
+		}
+		// Skip Amazon for shop/retail evidence (Amazon uses /dp separately).
+		src := strings.ToLower(h.Source + " " + h.Link)
+		if strings.Contains(src, "amazon") {
+			continue
+		}
+		q := productURLQuality(h.Link)
+		if q > bestEQ {
+			bestEQ = q
+			bestEvidenceLink = h.Link
+			bestEvidenceMerchant = h.Source
+		}
+	}
+	if bestEvidenceLink != "" {
+		id.ShopLink = bestEvidenceLink
+		if bestEvidenceMerchant != "" && !isGenericMerchant(bestEvidenceMerchant) {
+			id.ShopMerchant = bestEvidenceMerchant
+		}
+		if isDirectProductURL(bestEvidenceLink) {
+			id.OfferLink = bestEvidenceLink
+			if isMerchantProductURL(bestEvidenceLink) {
+				id.RetailURL = bestEvidenceLink
 			}
 		}
-	} else if ranked[0].Link != "" && isDirectProductURL(ranked[0].Link) {
-		id.ShopLink = ranked[0].Link
-		id.OfferLink = ranked[0].Link
-		id.RetailURL = ranked[0].Link
+	} else if bestShop.Link != "" && !isSearchOrHubURL(bestShop.Link) {
+		id.ShopLink = bestShop.Link
+	}
+	// Amazon ASIN from any ranked hit with /dp — stronger than search.
+	if id.ASIN == "" {
+		for _, h := range ranked {
+			if a, ok := amazonASINFromSKU(scanASINToken(h.Link)); ok {
+				id.ASIN = a
+				break
+			}
+		}
 	}
 	if id.ASIN != "" || id.RetailURL != "" || id.OfferLink != "" || id.OfferPrice > 0 {
-		id.DeepLinkOK = true
+		id.DeepLinkOK = isMerchantProductURL(id.RetailURL) || isDirectProductURL(id.OfferLink) || id.ASIN != "" || id.OfferPrice > 0
 	}
 	return id
 }
@@ -666,17 +700,15 @@ func serpGoogleShopping(ctx context.Context, query string) ([]shoppingHit, bool)
 		if price <= 0 {
 			price = parseMoneyToFloat(r.Price)
 		}
-		link := strings.TrimSpace(r.Link)
-		if link == "" {
-			link = strings.TrimSpace(r.ProductLink)
-		}
-		if price <= 0 && link == "" {
+		// Prefer merchant PDP over Google Shopping product_link (usually a multi-result hub).
+		link := preferSerpMerchantLink(r.Link, r.ProductLink)
+		if price <= 0 && link == "" && strings.TrimSpace(r.ImmersiveProductPageToken) == "" {
 			continue
 		}
 		hits = append(hits, shoppingHit{
 			Title:          strings.TrimSpace(r.Title),
 			Price:          price,
-			Link:           link,
+			Link:           link, // may be empty when only Google hub URLs — price still used for ranges
 			Source:         strings.TrimSpace(r.Source),
 			ProductID:      strings.TrimSpace(r.ProductID),
 			ImmersiveToken: strings.TrimSpace(r.ImmersiveProductPageToken),

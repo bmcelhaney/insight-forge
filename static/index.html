@@ -2200,12 +2200,23 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
       const richQ = buildClientProductQuery(mfr, sku, upcClean, desc);
       const paintLike = /paint|roller|brush|nap|wooster|purdy|sherwin|premier|mop|broom|cleaner|tool/i.test(mfr + ' ' + desc);
 
-      // Shop fallback: rich brand+desc+SKU (Home Depot for paint/facility; else Google Shopping)
+      // Shop fallback: tight brand+SKU/UPC (avoid long fuzzy descriptions that bury the item).
+      const tightQ = (() => {
+        if (sku) {
+          const parts = [];
+          if (mfr) parts.push(mfr);
+          parts.push('"' + sku + '"');
+          if (upcClean.length >= 11) parts.push(upcClean);
+          return parts.join(' ');
+        }
+        if (upcClean.length >= 11) return mfr ? (mfr + ' ' + upcClean) : upcClean;
+        return richQ;
+      })();
       let shopFallback = '';
-      if (richQ && paintLike) {
-        shopFallback = 'https://www.homedepot.com/s/' + encodeURIComponent(richQ);
-      } else if (richQ) {
-        shopFallback = 'https://www.google.com/search?tbm=shop&q=' + encodeURIComponent(richQ);
+      if (tightQ && paintLike) {
+        shopFallback = 'https://www.homedepot.com/s/' + encodeURIComponent(tightQ);
+      } else if (tightQ) {
+        shopFallback = 'https://www.google.com/search?tbm=shop&q=' + encodeURIComponent(tightQ);
       } else if (upcClean.length >= 11) {
         shopFallback = 'https://www.walmart.com/search?q=' + encodeURIComponent(upcClean);
       } else if (sku) {
@@ -2232,7 +2243,13 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
         federalFallback = 'https://www.abilityone.com/search?q=' + encodeURIComponent(sku);
       }
 
-      const shop = c.link_shop || c.linkShop || shopFallback;
+      // Prefer server merchant product link; only use search fallback when server gave none or a hub/search URL.
+      let shop = c.link_shop || c.linkShop || '';
+      if (!shop || isSearchOrHubURLClient(shop)) {
+        // Prefer a product URL from market_offers before inventing a search page.
+        const fromOffers = bestOfferProductURL(c);
+        shop = fromOffers || shopFallback || shop;
+      }
       const upcIdentity = c.link_upc || c.linkUpc || (upcClean.length >= 11
         ? ('https://www.upcitemdb.com/upc/' + upcClean)
         : '');
@@ -2240,7 +2257,7 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
       const website = c.link_website || c.linkWebsite || manufacturerHomepage(mfr);
 
       const shopMerchant = (c.link_shop_merchant || c.linkShopMerchant || '').trim();
-      const shopLabel = labelShopVendor(shop, shopMerchant, c.price_shop_source || c.priceShopSrc || '', richQ, upcClean);
+      const shopLabel = labelShopVendor(shop, shopMerchant, c.price_shop_source || c.priceShopSrc || '', tightQ || richQ, upcClean);
       const shopIsProduct = isDirectRetailProductURL(shop);
 
       const amazonLabel = amazonIsProduct
@@ -2315,9 +2332,36 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
       };
     }
 
+    function isSearchOrHubURLClient(url) {
+      if (!url) return true;
+      const u = String(url).toLowerCase();
+      return /google\.com\/search|google\.com\/shopping|tbm=shop|ibp=oshop|udm=28|amazon\.com\/s\?|homedepot\.com\/s\/|walmart\.com\/search|\/search\?|\/search\//i.test(u);
+    }
+
     function isDirectRetailProductURL(url) {
-      if (!url) return false;
-      return /officedepot\.com\/a\/products\/|walmart\.com\/ip\/|staples\.com\/.*product|homedepot\.com\/p\/|lowes\.com\/pd\/|target\.com\/p\/|bestbuy\.com\/site\/|upcitemdb\.com\/norob\//i.test(url);
+      if (!url || isSearchOrHubURLClient(url)) return false;
+      return /amazon\.com\/(?:dp|gp\/product)\/|officedepot\.com\/a\/products\/|walmart\.com\/ip\/|staples\.com\/.*product|homedepot\.com\/p\/|lowes\.com\/pd\/|target\.com\/p\/|bestbuy\.com\/site\/|grainger\.com\/product\/|upcitemdb\.com\/norob\/|\/product\/|\/products\/|\/ip\/|\/pd\//i.test(url);
+    }
+
+    // Prefer a merchant product URL from market_offers over search hubs.
+    function bestOfferProductURL(c) {
+      const raw = c.market_offers || c.MarketOffers || [];
+      if (!Array.isArray(raw)) return '';
+      let best = '', bestScore = 0;
+      for (const o of raw) {
+        const link = String(o.link || o.Link || '').trim();
+        if (!link || isSearchOrHubURLClient(link)) continue;
+        const ch = String(o.channel || o.Channel || '').toLowerCase();
+        const merch = String(o.merchant || o.Merchant || '').toLowerCase();
+        if (ch === 'amazon' || merch.includes('amazon') || /amazon\.com/i.test(link)) continue;
+        let score = 30;
+        if (isDirectRetailProductURL(link)) score = 90;
+        if (score > bestScore) {
+          bestScore = score;
+          best = link;
+        }
+      }
+      return best;
     }
 
     function merchantFromURL(url) {
