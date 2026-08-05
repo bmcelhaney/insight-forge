@@ -543,7 +543,7 @@ func applyDeterministicProductLinks(refs []models.CommercialReference, entityID 
 		r.LinkShop = ""
 		if id != nil {
 			// Prefer highest-quality URL among identity fields + market offers.
-			offerLink, offerMerch := pickBestShopEvidenceLink(id.Offers)
+			offerLink, offerMerch := pickBestShopEvidenceLinkFor(id.Offers, sku, mfr, title)
 			r.LinkShop = pickBestEvidenceURL(id.RetailURL, id.OfferLink, id.ShopLink, offerLink)
 			if r.LinkShop != "" && offerMerch != "" && r.LinkShop == offerLink {
 				r.LinkShopMerchant = offerMerch
@@ -587,8 +587,9 @@ func applyDeterministicProductLinks(refs []models.CommercialReference, entityID 
 				r.LinkShop = id.ShopLink
 				shopIsDirect = isDirectProductURL(r.LinkShop)
 			}
-			if offerL, offerM := pickBestShopEvidenceLink(id.Offers); offerL != "" {
-				if productURLQuality(offerL) > productURLQuality(r.LinkShop) {
+			if offerL, offerM := pickBestShopEvidenceLinkFor(id.Offers, sku, mfr, title); offerL != "" {
+				if productURLQuality(offerL)+identityMatchScore(sku, mfr, title, offerL) >
+					productURLQuality(r.LinkShop)+identityMatchScore(sku, mfr, title, r.LinkShop) {
 					r.LinkShop = offerL
 					shopIsDirect = isDirectProductURL(r.LinkShop)
 					if offerM != "" {
@@ -804,6 +805,9 @@ func applyDeterministicProductLinks(refs []models.CommercialReference, entityID 
 				r.PriceURL = bestPriceURL
 			}
 		}
+
+		// Final pass: strip dead/wrong-brand offer links; keep only usable PDPs as evidence.
+		sanitizeCommercialRefLinks(r)
 	}
 	return refs
 }
@@ -1872,11 +1876,63 @@ func isSearchOrHubURL(u string) bool {
 	return false
 }
 
+// isUnreliableOfferLink flags stale/defunct/affiliate/multi-result URLs that often
+// 404 or show "no longer available" (Jet, Sears SPM, Newegg marketplace scrapes, norob, etc.).
+func isUnreliableOfferLink(u string) bool {
+	u = strings.ToLower(strings.TrimSpace(u))
+	if u == "" {
+		return true
+	}
+	if isSearchOrHubURL(u) {
+		return true
+	}
+	deadHosts := []string{
+		"jet.com", "rakuten.com", "buy.com", "sears.com", "kmart.com",
+		"unbeatablesale.com", "toolschest.com", "upcitemdb.com",
+		"shopping.yahoo.com", "pricegrabber.com", "nextag.com", "shopzilla.com",
+	}
+	for _, h := range deadHosts {
+		if strings.Contains(u, h) {
+			return true
+		}
+	}
+	// Newegg marketplace AFC / junction / 9SIA seller scrapes are frequently dead.
+	if strings.Contains(u, "newegg.com") && (strings.Contains(u, "nm_mc=afc") ||
+		strings.Contains(u, "junction") || strings.Contains(u, "mkpl") ||
+		strings.Contains(u, "9sia")) {
+		return true
+	}
+	// Years-old HTTP scrapes from UPC dumps.
+	if strings.HasPrefix(u, "http://") {
+		return true
+	}
+	return false
+}
+
+// isTrustedRetailerHost is true for major US retailers whose PDPs are usually live.
+func isTrustedRetailerHost(u string) bool {
+	u = strings.ToLower(u)
+	trusted := []string{
+		"amazon.com", "homedepot.com", "walmart.com", "lowes.com", "officedepot.com",
+		"staples.com", "target.com", "bestbuy.com", "grainger.com", "acehardware.com",
+		"tractorsupply.com", "menards.com", "doitbest.com", "truevalue.com",
+		"globalindustrial.com", "mscdirect.com", "uline.com", "webstaurantstore.com",
+		"hdsupplysolutions.com", "dunnedwards.com", "sherwin-williams.com",
+		"abilityone.com", "mccoys.com", "painterssolutions.com", "alstapingtools.com",
+		"dkhardware.com", "upsidedownsupply.com",
+	}
+	for _, h := range trusted {
+		if strings.Contains(u, h) {
+			return true
+		}
+	}
+	return false
+}
+
 // isMerchantProductURL is true for a merchant product-detail page (strong price evidence).
-// Stricter than isDirectProductURL: excludes search hubs and generic catalog dumps.
 func isMerchantProductURL(u string) bool {
 	u = strings.ToLower(strings.TrimSpace(u))
-	if u == "" || isSearchOrHubURL(u) {
+	if u == "" || isSearchOrHubURL(u) || isUnreliableOfferLink(u) {
 		return false
 	}
 	switch {
@@ -1908,47 +1964,139 @@ func isMerchantProductURL(u string) bool {
 		return true
 	case strings.Contains(u, "menards.com/main/p-"):
 		return true
-	case strings.Contains(u, "acehardware.com/departments/") && strings.Contains(u, "/p/"):
+	case strings.Contains(u, "acehardware.com/") && (strings.Contains(u, "/p/") || strings.Contains(u, "/product/")):
 		return true
-	// Common PDP path shapes on other retailers (exclude pure /p alone on search domains).
-	case strings.Contains(u, "/product/") || strings.Contains(u, "/products/") ||
+	case strings.Contains(u, "truevalue.com/product/"):
+		return true
+	case strings.Contains(u, "doitbest.com/product/"):
+		return true
+	case strings.Contains(u, "tractorsupply.com/") && strings.Contains(u, "/product/"):
+		return true
+	case isTrustedRetailerHost(u) && (strings.Contains(u, "/product/") || strings.Contains(u, "/products/") ||
 		strings.Contains(u, "/dp/") || strings.Contains(u, "/ip/") ||
-		strings.Contains(u, "/pd/") || strings.Contains(u, "/sku/"):
+		strings.Contains(u, "/pd/") || strings.Contains(u, "/sku/") || strings.Contains(u, "/p/")):
 		return true
-	case strings.Contains(u, "/p/") && !strings.Contains(u, "google."):
+	case strings.Contains(u, "/product/") || strings.Contains(u, "/products/") ||
+		strings.Contains(u, "/pd/") || strings.Contains(u, "/ip/"):
 		return true
 	default:
 		return false
 	}
 }
 
-// isDirectProductURL is true for product detail pages (not search result pages).
-// Includes UPCItemDB affiliate deep-links that resolve to a specific merchant listing.
+// isDirectProductURL is true for product detail pages (not search / not stale affiliates).
 func isDirectProductURL(u string) bool {
 	u = strings.ToLower(strings.TrimSpace(u))
-	if u == "" || isSearchOrHubURL(u) {
+	if u == "" || isSearchOrHubURL(u) || isUnreliableOfferLink(u) {
 		return false
 	}
-	if isMerchantProductURL(u) {
-		return true
+	return isMerchantProductURL(u)
+}
+
+// knownCommercialBrands used to detect wrong-brand product pages (e.g. Purdy page for Sherwin SKU).
+var knownCommercialBrands = []string{
+	"wooster", "purdy", "sherwin", "sherwin-williams", "dynamic", "premier",
+	"benjamin moore", "behr", "frogtape", "3m", "scotchblue", "graco", "wagner",
+	"rust-oleum", "krylon", "homax", "hyde", "shur-line", "shurline",
+}
+
+// brandConflict reports when the page/link clearly belongs to a different brand than mfr.
+func brandConflict(mfr, title, link string) bool {
+	mfrL := strings.ToLower(strings.TrimSpace(mfr))
+	if mfrL == "" {
+		return false
 	}
-	// Affiliate redirect that usually lands on a specific merchant product.
-	if strings.Contains(u, "upcitemdb.com/norob/") {
-		return true
+	blob := strings.ToLower(title + " " + link)
+	mfrNorm := strings.ReplaceAll(mfrL, "-", " ")
+	mfrNorm = strings.ReplaceAll(mfrNorm, "_", " ")
+	mfrBrand := ""
+	for _, b := range knownCommercialBrands {
+		if len(b) >= 4 && strings.Contains(mfrNorm, b) {
+			mfrBrand = b
+			break
+		}
+	}
+	if mfrBrand == "" {
+		for _, tok := range strings.Fields(mfrNorm) {
+			if len(tok) >= 4 {
+				mfrBrand = tok
+				break
+			}
+		}
+	}
+	if mfrBrand == "" {
+		return false
+	}
+	if strings.Contains(blob, mfrBrand) {
+		return false
+	}
+	for _, b := range knownCommercialBrands {
+		if b == mfrBrand {
+			continue
+		}
+		if strings.Contains(mfrBrand, b) || strings.Contains(b, mfrBrand) {
+			continue
+		}
+		if strings.Contains(blob, b) {
+			return true
+		}
 	}
 	return false
 }
 
+// identityMatchScore measures whether a link/title likely matches this SKU/mfr.
+// Negative = reject as evidence URL.
+func identityMatchScore(sku, mfr, title, link string) int {
+	if brandConflict(mfr, title, link) {
+		return -100
+	}
+	if isUnreliableOfferLink(link) {
+		return -50
+	}
+	score := 0
+	skuU := strings.ToUpper(strings.TrimSpace(sku))
+	skuCompact := compactAlnum(skuU)
+	titleU := strings.ToUpper(title + " " + link)
+	if skuU != "" {
+		if strings.Contains(titleU, skuU) {
+			score += 50
+		} else if len(skuCompact) >= 4 && strings.Contains(compactAlnum(titleU), skuCompact) {
+			score += 40
+		} else if len(skuCompact) >= 5 {
+			score -= 5
+		}
+	}
+	mfrL := strings.ToLower(strings.TrimSpace(mfr))
+	blob := strings.ToLower(title + " " + link)
+	if mfrL != "" {
+		if strings.Contains(blob, mfrL) || strings.Contains(blob, strings.ReplaceAll(mfrL, "-", " ")) {
+			score += 20
+		} else {
+			for _, tok := range strings.Fields(strings.ReplaceAll(mfrL, "-", " ")) {
+				if len(tok) >= 4 && strings.Contains(blob, tok) {
+					score += 12
+					break
+				}
+			}
+		}
+	}
+	if isTrustedRetailerHost(link) {
+		score += 10
+	}
+	if isMerchantProductURL(link) {
+		score += 15
+	}
+	return score
+}
+
 // productURLQuality scores a URL for use as market-price evidence (higher is better).
-// Search/hub pages score low; merchant PDPs score high.
 func productURLQuality(u string) int {
 	u = strings.TrimSpace(u)
-	if u == "" {
+	if u == "" || isUnreliableOfferLink(u) {
 		return 0
 	}
 	ul := strings.ToLower(u)
 	if isSearchOrHubURL(ul) {
-		// Slight preference for tighter merchant search over bare Google Shopping.
 		if strings.Contains(ul, "homedepot.com/s/") || strings.Contains(ul, "walmart.com/search") {
 			return 8
 		}
@@ -1961,8 +2109,10 @@ func productURLQuality(u string) int {
 		return 5
 	}
 	if isMerchantProductURL(ul) {
-		score := 80
-		// Prefer well-known US retailers for federal/commercial cross-check.
+		score := 70
+		if isTrustedRetailerHost(ul) {
+			score = 85
+		}
 		switch {
 		case strings.Contains(ul, "amazon.com/dp"), strings.Contains(ul, "amazon.com/gp/product"):
 			score = 95
@@ -1976,20 +2126,20 @@ func productURLQuality(u string) int {
 			score = 88
 		case strings.Contains(ul, "lowes.com/pd/"):
 			score = 88
+		case strings.Contains(ul, "truevalue.com/product/"):
+			score = 84
+		case strings.Contains(ul, "doitbest.com/product/"):
+			score = 84
 		case strings.Contains(ul, "grainger.com/product/"):
 			score = 86
 		}
 		return score
 	}
-	if strings.Contains(ul, "upcitemdb.com/norob/") {
-		return 55 // specific listing redirect, not always stable
+	if strings.Contains(ul, "upcitemdb.com") {
+		return 0
 	}
-	if strings.Contains(ul, "upcitemdb.com/upc/") {
-		return 25 // multi-merchant dossier, not a single listing
-	}
-	// Unknown absolute URL — maybe a product page we don't pattern-match.
-	if strings.HasPrefix(ul, "http") {
-		return 30
+	if strings.HasPrefix(ul, "https://") {
+		return 20
 	}
 	return 0
 }
@@ -1999,7 +2149,7 @@ func pickBestEvidenceURL(urls ...string) string {
 	best, bestQ := "", 0
 	for _, u := range urls {
 		u = strings.TrimSpace(u)
-		if u == "" {
+		if u == "" || isUnreliableOfferLink(u) {
 			continue
 		}
 		q := productURLQuality(u)
@@ -2012,12 +2162,15 @@ func pickBestEvidenceURL(urls ...string) string {
 }
 
 // pickBestShopEvidenceLink chooses the best non-Amazon product URL from market offers.
-// Prefers merchant PDPs; returns empty if only weak search links exist.
 func pickBestShopEvidenceLink(offers []models.MarketOffer) (link, merchant string) {
-	bestQ := 0
+	return pickBestShopEvidenceLinkFor(offers, "", "", "")
+}
+
+func pickBestShopEvidenceLinkFor(offers []models.MarketOffer, sku, mfr, title string) (link, merchant string) {
+	bestQ := -1 << 20
 	for _, o := range offers {
 		l := strings.TrimSpace(o.Link)
-		if l == "" {
+		if l == "" || isUnreliableOfferLink(l) {
 			continue
 		}
 		ch := strings.ToLower(o.Channel)
@@ -2025,10 +2178,18 @@ func pickBestShopEvidenceLink(offers []models.MarketOffer) (link, merchant strin
 		if ch == "amazon" || strings.Contains(ml, "amazon") {
 			continue
 		}
-		q := productURLQuality(l)
-		// Prefer true merchant PDPs for evidence; skip pure search/hub.
-		if q < 50 && !isDirectProductURL(l) {
+		if !isMerchantProductURL(l) && !isDirectProductURL(l) {
 			continue
+		}
+		match := identityMatchScore(sku, mfr, nonEmpty(o.Title, title), l)
+		if match < 0 {
+			continue
+		}
+		q := productURLQuality(l) + match
+		if strings.EqualFold(o.Source, "SERPAPI") {
+			q += 12
+		} else if strings.EqualFold(o.Source, "UPCITEMDB") {
+			q -= 8
 		}
 		if q > bestQ {
 			bestQ = q
@@ -2037,6 +2198,60 @@ func pickBestShopEvidenceLink(offers []models.MarketOffer) (link, merchant strin
 		}
 	}
 	return link, merchant
+}
+
+// sanitizeMarketOfferLinks clears unusable evidence links; keeps price rows.
+func sanitizeMarketOfferLinks(offers []models.MarketOffer, sku, mfr, title string) []models.MarketOffer {
+	if len(offers) == 0 {
+		return offers
+	}
+	out := make([]models.MarketOffer, 0, len(offers))
+	for _, o := range offers {
+		l := strings.TrimSpace(o.Link)
+		if l != "" {
+			if isUnreliableOfferLink(l) || identityMatchScore(sku, mfr, nonEmpty(o.Title, title), l) < 0 {
+				o.Link = ""
+			} else if isSearchOrHubURL(l) {
+				o.Link = ""
+			}
+		}
+		out = append(out, o)
+	}
+	return out
+}
+
+// sanitizeCommercialRefLinks rewrites shop/price URLs and market_offers for evidence quality.
+func sanitizeCommercialRefLinks(r *models.CommercialReference) {
+	if r == nil {
+		return
+	}
+	sku, mfr, title := r.SKU, r.Manufacturer, r.Description
+	r.MarketOffers = sanitizeMarketOfferLinks(r.MarketOffers, sku, mfr, title)
+
+	if r.LinkShop != "" && (isUnreliableOfferLink(r.LinkShop) || identityMatchScore(sku, mfr, title, r.LinkShop) < 0) {
+		r.LinkShop = ""
+		r.LinkShopMerchant = ""
+	}
+	if best, merch := pickBestShopEvidenceLinkFor(r.MarketOffers, sku, mfr, title); best != "" {
+		if r.LinkShop == "" || productURLQuality(best)+identityMatchScore(sku, mfr, title, best) >
+			productURLQuality(r.LinkShop)+identityMatchScore(sku, mfr, title, r.LinkShop) {
+			r.LinkShop = best
+			if merch != "" {
+				r.LinkShopMerchant = merch
+			}
+		}
+	}
+	if r.LinkAmazon != "" && isUnreliableOfferLink(r.LinkAmazon) {
+		r.LinkAmazon = ""
+	}
+	r.PriceURL = pickBestEvidenceURL(r.LinkShop, r.LinkAmazon, r.PriceURL)
+	if r.PriceURL != "" && identityMatchScore(sku, mfr, title, r.PriceURL) < 0 {
+		r.PriceURL = pickBestEvidenceURL(r.LinkShop, r.LinkAmazon)
+	}
+	if r.LinkShop == "" {
+		r.LinkShop = buildBestShopURL(mfr, sku, r.UPC, title, "")
+		r.LinkShopMerchant = ""
+	}
 }
 
 // preferSerpMerchantLink picks the better of Serp shopping link vs product_link.

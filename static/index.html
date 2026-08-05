@@ -2427,7 +2427,8 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
       return 'Shop';
     }
 
-    // Collect per-merchant shop offers (and non-Amazon) for multi-vendor card lines.
+    // Collect per-merchant shop offers for multi-vendor card lines.
+    // Only keep clickable links that look like live product pages (not search/hubs/stale affiliates).
     function collectVendorOffers(c, fmtPrice) {
       const raw = c.market_offers || c.MarketOffers || [];
       if (!Array.isArray(raw) || raw.length === 0) return [];
@@ -2435,19 +2436,24 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
       for (const o of raw) {
         const ch = String(o.channel || o.Channel || '').toLowerCase();
         const merchant = String(o.merchant || o.Merchant || '').trim();
-        const link = String(o.link || o.Link || '').trim();
+        let link = String(o.link || o.Link || '').trim();
         if (/amazon/i.test(merchant) || ch === 'amazon' || /amazon\.com/i.test(link)) continue;
+        // Drop dead/unreliable evidence links (Jet, Sears, Google hubs, norob, Newegg AFC, …).
+        if (link && (isSearchOrHubURLClient(link) || isUnreliableOfferLinkClient(link) || !isDirectRetailProductURL(link))) {
+          link = '';
+        }
         if (isGenericVendorName(merchant) && !link) continue;
-        const name = !isGenericVendorName(merchant) ? merchant : (merchantFromURL(link) || 'Retailer');
-        if (isGenericVendorName(name)) continue;
+        const name = !isGenericVendorName(merchant) ? merchant : (merchantFromURL(link) || '');
+        if (!name || isGenericVendorName(name)) continue;
+        // Without a verified product URL, skip the vendor row (price alone without link misleads).
+        if (!link) continue;
         const unit = Number(o.unit_price != null ? o.unit_price : o.UnitPrice);
         const each = Number(o.price_per_each != null ? o.price_per_each : o.PricePerEach);
         const priceNum = (each > 0 ? each : unit) || 0;
         const key = name.toLowerCase();
         const prev = byMerchant.get(key);
-        // Prefer offer with a product link; then lowest price.
-        const score = (link ? 100 : 0) + (priceNum > 0 ? (1000 - Math.min(priceNum, 999)) : 0);
-        const prevScore = prev ? ((prev.link ? 100 : 0) + (prev.priceNum > 0 ? (1000 - Math.min(prev.priceNum, 999)) : 0)) : -1;
+        const score = 100 + (priceNum > 0 ? (1000 - Math.min(priceNum, 999)) : 0);
+        const prevScore = prev ? (100 + (prev.priceNum > 0 ? (1000 - Math.min(prev.priceNum, 999)) : 0)) : -1;
         if (!prev || score > prevScore) {
           byMerchant.set(key, {
             merchant: name,
@@ -2461,6 +2467,15 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
       return Array.from(byMerchant.values())
         .sort((a, b) => (a.priceNum || 1e9) - (b.priceNum || 1e9))
         .slice(0, 6);
+    }
+
+    function isUnreliableOfferLinkClient(url) {
+      if (!url) return true;
+      const u = String(url).toLowerCase();
+      if (/jet\.com|rakuten\.com|buy\.com|sears\.com|kmart\.com|unbeatablesale|toolschest|upcitemdb\.com|pricegrabber|nextag|shopzilla/i.test(u)) return true;
+      if (/newegg\.com/i.test(u) && /nm_mc=afc|junction|mkpl|9sia/i.test(u)) return true;
+      if (u.startsWith('http://')) return true;
+      return false;
     }
 
     function appendCommercialLinkRow(parent, links) {

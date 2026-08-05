@@ -472,7 +472,7 @@ func TestPickBestShopEvidenceLinkSkipsAmazonAndSearch(t *testing.T) {
 	offers := []models.MarketOffer{
 		{Merchant: "Amazon", Channel: "amazon", Link: "https://www.amazon.com/dp/B000DZGQIM", UnitPrice: 10},
 		{Merchant: "Google", Channel: "shop", Link: "https://www.google.com/search?tbm=shop&q=x", UnitPrice: 11},
-		{Merchant: "The Home Depot", Channel: "shop", Link: "https://www.homedepot.com/p/Item/123", UnitPrice: 12},
+		{Merchant: "The Home Depot", Channel: "shop", Link: "https://www.homedepot.com/p/Item/123", UnitPrice: 12, Source: "SERPAPI"},
 	}
 	link, merch := pickBestShopEvidenceLink(offers)
 	if !strings.Contains(link, "homedepot.com/p/") {
@@ -480,6 +480,63 @@ func TestPickBestShopEvidenceLinkSkipsAmazonAndSearch(t *testing.T) {
 	}
 	if merch != "The Home Depot" {
 		t.Fatalf("merchant %q", merch)
+	}
+}
+
+func TestUnreliableOfferLinksRejected(t *testing.T) {
+	dead := []string{
+		"https://www.newegg.com/Product/Product.aspx?Item=9SIA5D52J90013&nm_mc=AFC-C8Junction-MKPL",
+		"http://www.toolschest.com/lcst17623.html",
+		"http://www.sears.com/shc/s/p_10153_12605_SPM8044505829",
+		"https://www.jet.com/product/foo",
+		"https://www.upcitemdb.com/norob/alink/?id=x",
+		"https://www.google.com/search?ibp=oshop&q=pole",
+	}
+	for _, u := range dead {
+		if !isUnreliableOfferLink(u) && isDirectProductURL(u) {
+			t.Fatalf("should reject %q", u)
+		}
+		if productURLQuality(u) >= 50 {
+			t.Fatalf("quality too high for dead link %q: %d", u, productURLQuality(u))
+		}
+	}
+	if !isDirectProductURL("https://www.homedepot.com/p/Wooster-R091/203150945") {
+		t.Fatal("HD product should be direct")
+	}
+	if !isDirectProductURL("https://www.truevalue.com/product/771335/purdy-power-lock-pole") {
+		t.Fatal("True Value product should be direct")
+	}
+}
+
+func TestBrandConflictRejectsWrongManufacturerPage(t *testing.T) {
+	// Sherwin-Williams SKU must not use a Purdy product page as evidence.
+	if !brandConflict("SHERWIN-WILLIAMS", "Purdy Power Lock Pole", "https://www.walmart.com/ip/Purdy-Pole/18280302499") {
+		t.Fatal("expected brand conflict purdy vs sherwin")
+	}
+	if brandConflict("WOOSTER", "Wooster Sherlock Pole R091", "https://www.homedepot.com/p/Wooster-Sherlock/203150945") {
+		t.Fatal("same brand should not conflict")
+	}
+	score := identityMatchScore("001803824", "SHERWIN-WILLIAMS", "Purdy Power Lock", "https://www.walmart.com/ip/Purdy-Pole/18280302499")
+	if score >= 0 {
+		t.Fatalf("wrong-brand identity score should be negative, got %d", score)
+	}
+}
+
+func TestSanitizeMarketOfferLinksStripsDead(t *testing.T) {
+	offers := []models.MarketOffer{
+		{Merchant: "Newegg.com", UnitPrice: 20.39, Link: "https://www.newegg.com/Product/Product.aspx?Item=9SIA5D52J90013&nm_mc=AFC-C8Junction-MKPL", Source: "UPCITEMDB"},
+		{Merchant: "Home Depot", UnitPrice: 40.35, Link: "https://www.homedepot.com/p/Wooster-R091/203150945", Source: "SERPAPI", Title: "Wooster Sherlock R091"},
+		{Merchant: "Ghost", UnitPrice: 10, Link: "https://www.google.com/search?ibp=oshop&q=x", Source: "SERPAPI"},
+	}
+	out := sanitizeMarketOfferLinks(offers, "R091", "WOOSTER", "Wooster Sherlock Extension Pole")
+	if out[0].Link != "" {
+		t.Fatalf("newegg link should be stripped, got %q", out[0].Link)
+	}
+	if !strings.Contains(out[1].Link, "homedepot.com/p/") {
+		t.Fatalf("HD link should remain: %q", out[1].Link)
+	}
+	if out[2].Link != "" {
+		t.Fatalf("google hub should be stripped")
 	}
 }
 
