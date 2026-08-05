@@ -1890,6 +1890,8 @@ func isUnreliableOfferLink(u string) bool {
 		"jet.com", "rakuten.com", "buy.com", "sears.com", "kmart.com",
 		"unbeatablesale.com", "toolschest.com", "upcitemdb.com",
 		"shopping.yahoo.com", "pricegrabber.com", "nextag.com", "shopzilla.com",
+		// Newegg marketplace scrapes (incl. business) are frequently dead/out of stock.
+		"neweggbusiness.com",
 	}
 	for _, h := range deadHosts {
 		if strings.Contains(u, h) {
@@ -1899,7 +1901,7 @@ func isUnreliableOfferLink(u string) bool {
 	// Newegg marketplace AFC / junction / 9SIA seller scrapes are frequently dead.
 	if strings.Contains(u, "newegg.com") && (strings.Contains(u, "nm_mc=afc") ||
 		strings.Contains(u, "junction") || strings.Contains(u, "mkpl") ||
-		strings.Contains(u, "9sia")) {
+		strings.Contains(u, "9sia") || strings.Contains(u, "item=9si")) {
 		return true
 	}
 	// Years-old HTTP scrapes from UPC dumps.

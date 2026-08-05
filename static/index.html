@@ -2472,8 +2472,8 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
     function isUnreliableOfferLinkClient(url) {
       if (!url) return true;
       const u = String(url).toLowerCase();
-      if (/jet\.com|rakuten\.com|buy\.com|sears\.com|kmart\.com|unbeatablesale|toolschest|upcitemdb\.com|pricegrabber|nextag|shopzilla/i.test(u)) return true;
-      if (/newegg\.com/i.test(u) && /nm_mc=afc|junction|mkpl|9sia/i.test(u)) return true;
+      if (/jet\.com|rakuten\.com|buy\.com|sears\.com|kmart\.com|unbeatablesale|toolschest|upcitemdb\.com|pricegrabber|nextag|shopzilla|neweggbusiness\.com/i.test(u)) return true;
+      if (/newegg\.com/i.test(u) && /nm_mc=afc|junction|mkpl|9sia|item=9si/i.test(u)) return true;
       if (u.startsWith('http://')) return true;
       return false;
     }
