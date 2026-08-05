@@ -89,7 +89,7 @@ func TestApplyDeterministicProductLinksAmazonASIN(t *testing.T) {
 			DeepLinkOK:    true,
 		},
 	}
-	out := applyDeterministicProductLinks(refs, "7520009357136", resolved, "$13.01", "ABILITYONE_COM", nsnMarketBand{})
+	out := applyDeterministicProductLinks(context.Background(), refs, "7520009357136", resolved, "$13.01", "ABILITYONE_COM", nsnMarketBand{})
 	if out[0].LinkAmazon != "https://www.amazon.com/dp/B00006IE7Z" {
 		t.Fatalf("amazon link %q", out[0].LinkAmazon)
 	}
@@ -149,7 +149,7 @@ func TestApplyDeterministicProductLinksPropagatesPriceToSiblingUPC(t *testing.T)
 		},
 	}
 	resolved = expandResolvedIdentities(refs, resolved)
-	out := applyDeterministicProductLinks(refs, "7520009357136", resolved, "", "", nsnMarketBand{})
+	out := applyDeterministicProductLinks(context.Background(), refs, "7520009357136", resolved, "", "", nsnMarketBand{})
 	if out[1].Price == "" || !strings.Contains(out[1].Price, "8.49") {
 		t.Fatalf("sibling UPC tile should get market price, got %q", out[1].Price)
 	}
@@ -271,7 +271,7 @@ func TestSearchLinksNeverGetBareSinglePrice(t *testing.T) {
 			UPCMin: 69.59, UPCMax: 69.59, UPCCount: 1, UPCPrice: 69.59,
 		},
 	}
-	out := applyDeterministicProductLinks(refs, "8020015964253", resolved, "$42.62", "ABILITYONE_COM", nsnMarketBand{})
+	out := applyDeterministicProductLinks(context.Background(), refs, "8020015964253", resolved, "$42.62", "ABILITYONE_COM", nsnMarketBand{})
 	if isDirectProductURL(out[0].LinkAmazon) || isDirectProductURL(out[0].LinkShop) {
 		// amazon/shop should be search builders
 	}
@@ -313,7 +313,7 @@ func TestApplyDeterministicUsesRangeWhenNoDirectLink(t *testing.T) {
 		},
 	}
 	// No ASIN → Amazon is search; shop is HD search (not a product deep-link) → ranges.
-	out := applyDeterministicProductLinks(refs, "8020015964253", resolved, "$42.62", "ABILITYONE_COM", nsnMarketBand{})
+	out := applyDeterministicProductLinks(context.Background(), refs, "8020015964253", resolved, "$42.62", "ABILITYONE_COM", nsnMarketBand{})
 	if !out[0].PriceAmazonIsRange || !strings.Contains(out[0].PriceAmazon, "offers") {
 		t.Fatalf("amazon range expected, got %q isRange=%v", out[0].PriceAmazon, out[0].PriceAmazonIsRange)
 	}
@@ -362,7 +362,7 @@ func TestNSNMarketBandFillsOtherSearchOnlyTiles(t *testing.T) {
 	if band.Count < 2 {
 		t.Fatalf("expected nsn band from resolved row, got %+v", band)
 	}
-	out := applyDeterministicProductLinks(refs, "8020015964253", resolved, "$42.62", "ABILITYONE_COM", band)
+	out := applyDeterministicProductLinks(context.Background(), refs, "8020015964253", resolved, "$42.62", "ABILITYONE_COM", band)
 	// Row 0 has direct amazon/shop — not forced to range for shop if direct.
 	// Rows 1–2 are search-only with no own identity → should inherit NSN band on amazon+shop.
 	if out[1].PriceAmazon == "" || !out[1].PriceAmazonIsRange {
@@ -398,7 +398,7 @@ func TestSearchOnlyAmazonUsesCatalogRangeWhenNoAmazonOffers(t *testing.T) {
 			ShopPrice:  7.00,
 		},
 	}
-	out := applyDeterministicProductLinks(refs, "8020015964250", resolved, "", "", nsnMarketBand{})
+	out := applyDeterministicProductLinks(context.Background(), refs, "8020015964250", resolved, "", "", nsnMarketBand{})
 	if strings.Contains(out[0].LinkAmazon, "/dp/") {
 		t.Fatalf("expected amazon search, got %q", out[0].LinkAmazon)
 	}
@@ -483,21 +483,29 @@ func TestPickBestShopEvidenceLinkSkipsAmazonAndSearch(t *testing.T) {
 	}
 }
 
-func TestUnreliableOfferLinksRejected(t *testing.T) {
-	dead := []string{
-		"https://www.newegg.com/Product/Product.aspx?Item=9SIA5D52J90013&nm_mc=AFC-C8Junction-MKPL",
-		"http://www.toolschest.com/lcst17623.html",
-		"http://www.sears.com/shc/s/p_10153_12605_SPM8044505829",
+func TestPermanentDeadAndSearchHubsRejected(t *testing.T) {
+	// Hard reject: permanently dead hosts + search hubs only (not live retailers).
+	hard := []string{
 		"https://www.jet.com/product/foo",
-		"https://www.upcitemdb.com/norob/alink/?id=x",
+		"https://www.pricegrabber.com/x",
 		"https://www.google.com/search?ibp=oshop&q=pole",
+		"https://www.google.com/search?tbm=shop&q=pole",
 	}
-	for _, u := range dead {
+	for _, u := range hard {
 		if !isUnreliableOfferLink(u) && isDirectProductURL(u) {
-			t.Fatalf("should reject %q", u)
+			t.Fatalf("should hard-reject %q", u)
 		}
-		if productURLQuality(u) >= 50 {
-			t.Fatalf("quality too high for dead link %q: %d", u, productURLQuality(u))
+	}
+	// Live retailers must NOT be hard-blocked — verification decides per listing.
+	live := []string{
+		"https://www.newegg.com/Product/Product.aspx?Item=N82E16834123456",
+		"https://www.truevalue.com/product/771335/purdy-power-lock-pole",
+		"https://www.homedepot.com/p/Wooster-R091/203150945",
+		"http://www.sears.com/shc/s/p_10153_12605_SPM8044505829",
+	}
+	for _, u := range live {
+		if isPermanentlyDeadHost(u) {
+			t.Fatalf("must not permanently block live/retail host %q", u)
 		}
 	}
 	if !isDirectProductURL("https://www.homedepot.com/p/Wooster-R091/203150945") {
@@ -522,21 +530,36 @@ func TestBrandConflictRejectsWrongManufacturerPage(t *testing.T) {
 	}
 }
 
-func TestSanitizeMarketOfferLinksStripsDead(t *testing.T) {
+func TestSanitizeMarketOfferLinksStripsHubsAndDeadHosts(t *testing.T) {
+	t.Setenv("IF_LINK_VERIFY", "0") // structural path only in this unit test
 	offers := []models.MarketOffer{
-		{Merchant: "Newegg.com", UnitPrice: 20.39, Link: "https://www.newegg.com/Product/Product.aspx?Item=9SIA5D52J90013&nm_mc=AFC-C8Junction-MKPL", Source: "UPCITEMDB"},
+		{Merchant: "Jet", UnitPrice: 20.39, Link: "https://www.jet.com/product/foo", Source: "UPCITEMDB"},
 		{Merchant: "Home Depot", UnitPrice: 40.35, Link: "https://www.homedepot.com/p/Wooster-R091/203150945", Source: "SERPAPI", Title: "Wooster Sherlock R091"},
 		{Merchant: "Ghost", UnitPrice: 10, Link: "https://www.google.com/search?ibp=oshop&q=x", Source: "SERPAPI"},
+		// Newegg is NOT hard-blocked; with verify off + product path it may remain.
+		{Merchant: "Newegg.com", UnitPrice: 22, Link: "https://www.newegg.com/p/pl?Item=N82E16834123456", Source: "UPCITEMDB", Title: "Wooster R091"},
 	}
-	out := sanitizeMarketOfferLinks(offers, "R091", "WOOSTER", "Wooster Sherlock Extension Pole")
+	out := sanitizeMarketOfferLinks(context.Background(), offers, "R091", "WOOSTER", "Wooster Sherlock Extension Pole")
 	if out[0].Link != "" {
-		t.Fatalf("newegg link should be stripped, got %q", out[0].Link)
+		t.Fatalf("jet (permanent dead) should be stripped, got %q", out[0].Link)
 	}
 	if !strings.Contains(out[1].Link, "homedepot.com/p/") {
 		t.Fatalf("HD link should remain: %q", out[1].Link)
 	}
 	if out[2].Link != "" {
 		t.Fatalf("google hub should be stripped")
+	}
+}
+
+func TestLinkNeedsVerificationForUntrusted(t *testing.T) {
+	if linkNeedsVerification("https://www.homedepot.com/p/Wooster/123") {
+		t.Fatal("trusted HD PDP should skip probe")
+	}
+	if !linkNeedsVerification("https://www.newegg.com/Product/Product.aspx?Item=N82E16834123456") {
+		t.Fatal("newegg should be verified, not hard-blocked")
+	}
+	if isPermanentlyDeadHost("https://www.newegg.com/x") {
+		t.Fatal("newegg is not permanently dead")
 	}
 }
 

@@ -219,11 +219,6 @@ func enrichProductLinksWithFederal(ctx context.Context, refs []models.Commercial
 		return refs
 	}
 	limit := productLinkResolveLimit()
-	if limit <= 0 {
-		// Still rewrite links with deterministic rules (no network).
-		return applyDeterministicProductLinks(refs, entityID, nil, federalPrice, federalSource, nsnMarketBand{})
-	}
-
 	// Independent budget so a spent parent analyze context cannot zero out deep-link work.
 	budget := productLinkResolveBudget()
 	base := ctx
@@ -232,6 +227,13 @@ func enrichProductLinksWithFederal(ctx context.Context, refs []models.Commercial
 	}
 	probeCtx, cancel := context.WithTimeout(context.WithoutCancel(base), budget)
 	defer cancel()
+	// Shared cap for live URL probes (Newegg/regional/etc.) — not a vendor blocklist.
+	probeCtx = withLinkProbeBudget(probeCtx, 48)
+
+	if limit <= 0 {
+		// Still rewrite links + optional verify (no UPC/Serp resolve).
+		return applyDeterministicProductLinks(probeCtx, refs, entityID, nil, federalPrice, federalSource, nsnMarketBand{})
+	}
 
 	// Rank candidates: has UPC first, then ASIN-as-SKU, then SKU+mfr+description.
 	// Deduplicate by cache key so we only network-resolve each UPC/SKU once.
@@ -346,7 +348,7 @@ func enrichProductLinksWithFederal(ctx context.Context, refs []models.Commercial
 	// ETS rows that never got their own API hit still show a useful range.
 	nsnBand := buildNSNMarketBand(resolved)
 
-	return applyDeterministicProductLinks(refs, entityID, resolved, federalPrice, federalSource, nsnBand)
+	return applyDeterministicProductLinks(probeCtx, refs, entityID, resolved, federalPrice, federalSource, nsnBand)
 }
 
 // nsnMarketBand is a multi-offer price span observed for at least one commercial
@@ -474,12 +476,15 @@ func expandResolvedIdentities(refs []models.CommercialReference, resolved map[in
 	return out
 }
 
-func applyDeterministicProductLinks(refs []models.CommercialReference, entityID string, resolved map[int]*productIdentity, federalPrice, federalSource string, nsnBand nsnMarketBand) []models.CommercialReference {
+func applyDeterministicProductLinks(ctx context.Context, refs []models.CommercialReference, entityID string, resolved map[int]*productIdentity, federalPrice, federalSource string, nsnBand nsnMarketBand) []models.CommercialReference {
 	digitsNSN := digitsOnlyString(entityID)
 	fedPrice := strings.TrimSpace(federalPrice)
 	fedSrc := strings.TrimSpace(federalSource)
 	if fedSrc == "" && fedPrice != "" {
 		fedSrc = "ABILITYONE_COM"
+	}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 	for i := range refs {
 		r := &refs[i]
@@ -806,8 +811,8 @@ func applyDeterministicProductLinks(refs []models.CommercialReference, entityID 
 			}
 		}
 
-		// Final pass: strip dead/wrong-brand offer links; keep only usable PDPs as evidence.
-		sanitizeCommercialRefLinks(r)
+		// Final pass: brand match + live verification (not a broad vendor blocklist).
+		sanitizeCommercialRefLinks(ctx, r)
 	}
 	return refs
 }
@@ -1876,36 +1881,15 @@ func isSearchOrHubURL(u string) bool {
 	return false
 }
 
-// isUnreliableOfferLink flags stale/defunct/affiliate/multi-result URLs that often
-// 404 or show "no longer available" (Jet, Sears SPM, Newegg marketplace scrapes, norob, etc.).
+// isUnreliableOfferLink is a structural reject only (empty, search hubs, permanently
+// dead hosts). Live retailers are NOT blocked here — use acceptEvidenceLink / verify
+// to confirm a listing is reachable for a given NSN/SKU.
 func isUnreliableOfferLink(u string) bool {
-	u = strings.ToLower(strings.TrimSpace(u))
+	u = strings.TrimSpace(u)
 	if u == "" {
 		return true
 	}
-	if isSearchOrHubURL(u) {
-		return true
-	}
-	deadHosts := []string{
-		"jet.com", "rakuten.com", "buy.com", "sears.com", "kmart.com",
-		"unbeatablesale.com", "toolschest.com", "upcitemdb.com",
-		"shopping.yahoo.com", "pricegrabber.com", "nextag.com", "shopzilla.com",
-		// Newegg marketplace scrapes (incl. business) are frequently dead/out of stock.
-		"neweggbusiness.com",
-	}
-	for _, h := range deadHosts {
-		if strings.Contains(u, h) {
-			return true
-		}
-	}
-	// Newegg marketplace AFC / junction / 9SIA seller scrapes are frequently dead.
-	if strings.Contains(u, "newegg.com") && (strings.Contains(u, "nm_mc=afc") ||
-		strings.Contains(u, "junction") || strings.Contains(u, "mkpl") ||
-		strings.Contains(u, "9sia") || strings.Contains(u, "item=9si")) {
-		return true
-	}
-	// Years-old HTTP scrapes from UPC dumps.
-	if strings.HasPrefix(u, "http://") {
+	if isSearchOrHubURL(u) || isPermanentlyDeadHost(u) {
 		return true
 	}
 	return false
@@ -1934,7 +1918,7 @@ func isTrustedRetailerHost(u string) bool {
 // isMerchantProductURL is true for a merchant product-detail page (strong price evidence).
 func isMerchantProductURL(u string) bool {
 	u = strings.ToLower(strings.TrimSpace(u))
-	if u == "" || isSearchOrHubURL(u) || isUnreliableOfferLink(u) {
+	if u == "" || isSearchOrHubURL(u) || isPermanentlyDeadHost(u) {
 		return false
 	}
 	switch {
@@ -1989,7 +1973,7 @@ func isMerchantProductURL(u string) bool {
 // isDirectProductURL is true for product detail pages (not search / not stale affiliates).
 func isDirectProductURL(u string) bool {
 	u = strings.ToLower(strings.TrimSpace(u))
-	if u == "" || isSearchOrHubURL(u) || isUnreliableOfferLink(u) {
+	if u == "" || isSearchOrHubURL(u) || isPermanentlyDeadHost(u) {
 		return false
 	}
 	return isMerchantProductURL(u)
@@ -2094,7 +2078,7 @@ func identityMatchScore(sku, mfr, title, link string) int {
 // productURLQuality scores a URL for use as market-price evidence (higher is better).
 func productURLQuality(u string) int {
 	u = strings.TrimSpace(u)
-	if u == "" || isUnreliableOfferLink(u) {
+	if u == "" || isSearchOrHubURL(u) || isPermanentlyDeadHost(u) {
 		return 0
 	}
 	ul := strings.ToLower(u)
@@ -2137,10 +2121,14 @@ func productURLQuality(u string) int {
 		}
 		return score
 	}
-	if strings.Contains(ul, "upcitemdb.com") {
-		return 0
+	// UPCItemDB norob can be valid when live — quality middling; verification decides.
+	if strings.Contains(ul, "upcitemdb.com/norob") {
+		return 45
 	}
-	if strings.HasPrefix(ul, "https://") {
+	if strings.Contains(ul, "upcitemdb.com") {
+		return 15
+	}
+	if strings.HasPrefix(ul, "https://") || strings.HasPrefix(ul, "http://") {
 		return 20
 	}
 	return 0
@@ -2151,7 +2139,7 @@ func pickBestEvidenceURL(urls ...string) string {
 	best, bestQ := "", 0
 	for _, u := range urls {
 		u = strings.TrimSpace(u)
-		if u == "" || isUnreliableOfferLink(u) {
+		if u == "" || isSearchOrHubURL(u) || isPermanentlyDeadHost(u) {
 			continue
 		}
 		q := productURLQuality(u)
@@ -2172,7 +2160,7 @@ func pickBestShopEvidenceLinkFor(offers []models.MarketOffer, sku, mfr, title st
 	bestQ := -1 << 20
 	for _, o := range offers {
 		l := strings.TrimSpace(o.Link)
-		if l == "" || isUnreliableOfferLink(l) {
+		if l == "" || isSearchOrHubURL(l) || isPermanentlyDeadHost(l) {
 			continue
 		}
 		ch := strings.ToLower(o.Channel)
@@ -2202,18 +2190,28 @@ func pickBestShopEvidenceLinkFor(offers []models.MarketOffer, sku, mfr, title st
 	return link, merchant
 }
 
-// sanitizeMarketOfferLinks clears unusable evidence links; keeps price rows.
-func sanitizeMarketOfferLinks(offers []models.MarketOffer, sku, mfr, title string) []models.MarketOffer {
+// sanitizeMarketOfferLinks clears unusable evidence links after brand match + live verify.
+// Prices are kept even when the link is stripped (ranges still useful).
+func sanitizeMarketOfferLinks(ctx context.Context, offers []models.MarketOffer, sku, mfr, title string) []models.MarketOffer {
 	if len(offers) == 0 {
 		return offers
 	}
 	out := make([]models.MarketOffer, 0, len(offers))
+	probes := 0
 	for _, o := range offers {
 		l := strings.TrimSpace(o.Link)
 		if l != "" {
-			if isUnreliableOfferLink(l) || identityMatchScore(sku, mfr, nonEmpty(o.Title, title), l) < 0 {
+			// Always drop search hubs / permanent dead / wrong brand (no probe needed).
+			if isSearchOrHubURL(l) || isPermanentlyDeadHost(l) || identityMatchScore(sku, mfr, nonEmpty(o.Title, title), l) < 0 {
 				o.Link = ""
-			} else if isSearchOrHubURL(l) {
+			} else if probes < maxLinkProbesPerRef {
+				// Live verification for non-trusted / uncertain hosts (Newegg, regional, …).
+				if !acceptEvidenceLink(ctx, l, sku, mfr, nonEmpty(o.Title, title)) {
+					o.Link = ""
+				}
+				probes++
+			} else if !isTrustedRetailerHost(l) || !looksLikeProductPath(l) {
+				// Out of per-ref probe budget: keep trusted PDPs only.
 				o.Link = ""
 			}
 		}
@@ -2222,19 +2220,23 @@ func sanitizeMarketOfferLinks(offers []models.MarketOffer, sku, mfr, title strin
 	return out
 }
 
-// sanitizeCommercialRefLinks rewrites shop/price URLs and market_offers for evidence quality.
-func sanitizeCommercialRefLinks(r *models.CommercialReference) {
+// sanitizeCommercialRefLinks rewrites shop/price URLs using verification, not a vendor denylist.
+func sanitizeCommercialRefLinks(ctx context.Context, r *models.CommercialReference) {
 	if r == nil {
 		return
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	sku, mfr, title := r.SKU, r.Manufacturer, r.Description
-	r.MarketOffers = sanitizeMarketOfferLinks(r.MarketOffers, sku, mfr, title)
+	r.MarketOffers = sanitizeMarketOfferLinks(ctx, r.MarketOffers, sku, mfr, title)
 
-	if r.LinkShop != "" && (isUnreliableOfferLink(r.LinkShop) || identityMatchScore(sku, mfr, title, r.LinkShop) < 0) {
+	if r.LinkShop != "" && !acceptEvidenceLink(ctx, r.LinkShop, sku, mfr, title) {
 		r.LinkShop = ""
 		r.LinkShopMerchant = ""
 	}
 	if best, merch := pickBestShopEvidenceLinkFor(r.MarketOffers, sku, mfr, title); best != "" {
+		// Offers already verified; prefer best remaining PDP.
 		if r.LinkShop == "" || productURLQuality(best)+identityMatchScore(sku, mfr, title, best) >
 			productURLQuality(r.LinkShop)+identityMatchScore(sku, mfr, title, r.LinkShop) {
 			r.LinkShop = best
@@ -2243,11 +2245,18 @@ func sanitizeCommercialRefLinks(r *models.CommercialReference) {
 			}
 		}
 	}
-	if r.LinkAmazon != "" && isUnreliableOfferLink(r.LinkAmazon) {
-		r.LinkAmazon = ""
+	if r.LinkAmazon != "" && (isSearchOrHubURL(r.LinkAmazon) || isPermanentlyDeadHost(r.LinkAmazon) ||
+		!acceptEvidenceLink(ctx, r.LinkAmazon, sku, mfr, title)) {
+		// Keep Amazon search as last-resort navigate; only drop permanent dead.
+		if isPermanentlyDeadHost(r.LinkAmazon) || isSearchOrHubURL(r.LinkAmazon) {
+			// search is OK for amazon channel when no /dp
+			if isPermanentlyDeadHost(r.LinkAmazon) {
+				r.LinkAmazon = ""
+			}
+		}
 	}
 	r.PriceURL = pickBestEvidenceURL(r.LinkShop, r.LinkAmazon, r.PriceURL)
-	if r.PriceURL != "" && identityMatchScore(sku, mfr, title, r.PriceURL) < 0 {
+	if r.PriceURL != "" && !acceptEvidenceLink(ctx, r.PriceURL, sku, mfr, title) {
 		r.PriceURL = pickBestEvidenceURL(r.LinkShop, r.LinkAmazon)
 	}
 	if r.LinkShop == "" {
