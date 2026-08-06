@@ -2,6 +2,7 @@ package processing
 
 import (
 	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -420,10 +421,9 @@ func hasAnyLink(c models.CommercialReference) bool {
 }
 
 // singleEvidenceLink builds the schema 1.2 single-URL links object (or nil if empty).
-// When kind is empty, it is derived from the URL. Explicit kinds (e.g. federal, web) are kept
-// even if the URL looks like a catalog search page.
+// When kind is empty, it is derived from the URL. Explicit kinds (e.g. federal, web) are kept.
 func singleEvidenceLink(rawURL, kind string) *models.DataCaptureLinks {
-	rawURL = strings.TrimSpace(rawURL)
+	rawURL = cleanEvidenceURL(rawURL)
 	if rawURL == "" {
 		return nil
 	}
@@ -431,6 +431,47 @@ func singleEvidenceLink(rawURL, kind string) *models.DataCaptureLinks {
 		kind = classifyEvidenceURLKind(rawURL)
 	}
 	return &models.DataCaptureLinks{URL: rawURL, URLKind: kind}
+}
+
+// cleanEvidenceURL normalizes evidence URLs for export (fix broken query strings, strip tracking).
+func cleanEvidenceURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	// Fix "…/203150945&intsrc=…" → "…/203150945?intsrc=…"
+	if amp := strings.Index(raw, "&"); amp > 0 && !strings.Contains(raw[:amp], "?") {
+		if strings.Contains(raw[amp:], "=") {
+			raw = raw[:amp] + "?" + raw[amp+1:]
+		}
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return strings.TrimSpace(raw)
+	}
+	q := u.Query()
+	for _, k := range []string{
+		"srsltid", "gclid", "gbraid", "wbraid", "fbclid",
+		"wmlspartner", "selectedSellerId", "veh", "cn",
+		"source", "locale", "intsrc", "g_store", "afid", "cpng", "tcid",
+		"utm_source", "utm_medium", "utm_campaign", "utm_content", "utm_term",
+		"gucid", "cid", "scid", "ref_", "psc",
+	} {
+		q.Del(k)
+		// Case variants
+		for existing := range q {
+			if strings.EqualFold(existing, k) {
+				q.Del(existing)
+			}
+		}
+	}
+	u.RawQuery = q.Encode()
+	// Drop trailing ? with no params
+	out := u.String()
+	if strings.HasSuffix(out, "?") {
+		out = strings.TrimSuffix(out, "?")
+	}
+	return out
 }
 
 // classifyEvidenceURLKind maps a URL to a consumer-facing url_kind.
@@ -454,108 +495,319 @@ func classifyEvidenceURLKind(rawURL string) string {
 	return "other"
 }
 
+// evidenceURLHost returns the lowercase hostname without www.
+func evidenceURLHost(rawURL string) string {
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || u.Host == "" {
+		// Fallback: crude extract
+		s := strings.ToLower(rawURL)
+		s = strings.TrimPrefix(s, "https://")
+		s = strings.TrimPrefix(s, "http://")
+		if i := strings.IndexAny(s, "/?#"); i >= 0 {
+			s = s[:i]
+		}
+		return strings.TrimPrefix(s, "www.")
+	}
+	return strings.TrimPrefix(strings.ToLower(u.Host), "www.")
+}
+
+// hostMatchesMerchant is true when the URL host is plausibly the named merchant.
+// Critical for pricing evidence: never attach Home Depot URL to a Newegg price.
+func hostMatchesMerchant(rawURL, merchant string) bool {
+	host := evidenceURLHost(rawURL)
+	if host == "" {
+		return false
+	}
+	m := strings.ToLower(strings.TrimSpace(merchant))
+	if m == "" {
+		return true // unknown merchant — allow
+	}
+	// Normalize common retailer names → host tokens.
+	type alias struct {
+		needles []string
+		hosts   []string
+	}
+	aliases := []alias{
+		{[]string{"home depot", "homedepot"}, []string{"homedepot.com"}},
+		{[]string{"walmart", "wal-mart"}, []string{"walmart.com"}},
+		{[]string{"amazon"}, []string{"amazon.com", "amazon."}},
+		{[]string{"lowe", "lowes"}, []string{"lowes.com"}},
+		{[]string{"ace hardware", "acehardware"}, []string{"acehardware.com"}},
+		{[]string{"true value", "truevalue"}, []string{"truevalue.com"}},
+		{[]string{"do it best", "doitbest"}, []string{"doitbest.com"}},
+		{[]string{"tractor supply"}, []string{"tractorsupply.com"}},
+		{[]string{"office depot", "officedepot"}, []string{"officedepot.com"}},
+		{[]string{"staples"}, []string{"staples.com"}},
+		{[]string{"target"}, []string{"target.com"}},
+		{[]string{"best buy", "bestbuy"}, []string{"bestbuy.com"}},
+		{[]string{"grainger"}, []string{"grainger.com"}},
+		{[]string{"zoro"}, []string{"zoro.com"}},
+		{[]string{"menards"}, []string{"menards.com"}},
+		{[]string{"newegg"}, []string{"newegg.com", "neweggbusiness.com"}},
+		{[]string{"ebay"}, []string{"ebay.com"}},
+		{[]string{"wayfair"}, []string{"wayfair.com"}},
+		{[]string{"hd supply", "hdsupply"}, []string{"hdsupplysolutions.com", "hdsupply.com"}},
+		{[]string{"abilityone"}, []string{"abilityone.com"}},
+		{[]string{"painters solutions", "painterssolutions"}, []string{"painterssolutions.com"}},
+		{[]string{"mccoy"}, []string{"mccoys.com"}},
+		{[]string{"dk hardware", "dkhardware"}, []string{"dkhardware.com"}},
+	}
+	for _, a := range aliases {
+		matchMerch := false
+		for _, n := range a.needles {
+			if strings.Contains(m, n) {
+				matchMerch = true
+				break
+			}
+		}
+		if !matchMerch {
+			continue
+		}
+		for _, h := range a.hosts {
+			if strings.Contains(host, h) || strings.HasSuffix(host, h) {
+				return true
+			}
+		}
+		return false // known merchant but wrong host
+	}
+	// Generic: merchant tokens appear in host (e.g. "upsidedownsupply.com" vs "Up Side Down Supply").
+	compactHost := strings.ReplaceAll(host, ".", "")
+	compactHost = strings.ReplaceAll(compactHost, "-", "")
+	words := strings.FieldsFunc(m, func(r rune) bool {
+		return r == ' ' || r == '-' || r == '_' || r == '.' || r == ',' || r == '(' || r == ')'
+	})
+	var significant []string
+	for _, w := range words {
+		w = strings.ToLower(w)
+		if len(w) < 4 {
+			continue
+		}
+		// Skip generic tokens.
+		switch w {
+		case "shop", "store", "online", "inc", "llc", "com", "www", "the", "and", "supply", "supplies":
+			continue
+		}
+		significant = append(significant, w)
+	}
+	if len(significant) == 0 {
+		// Can't verify — for pricing evidence require a real product path at least.
+		return isMerchantProductURL(rawURL) || isDirectProductURL(rawURL)
+	}
+	for _, w := range significant {
+		if strings.Contains(compactHost, w) || strings.Contains(host, w) {
+			return true
+		}
+	}
+	return false
+}
+
+// isStrongPricingEvidenceURL is true for product detail pages suitable as price proof.
+func isStrongPricingEvidenceURL(rawURL string) bool {
+	rawURL = strings.TrimSpace(rawURL)
+	if rawURL == "" || isSearchOrHubURL(rawURL) || isPermanentlyDeadHost(rawURL) {
+		return false
+	}
+	kind := classifyEvidenceURLKind(rawURL)
+	return kind == "merchant_pdp" || kind == "amazon_dp" || kind == "federal"
+}
+
 // bestCommercialEvidenceLinks picks one primary URL for an identity / mapping hit.
+// Prefers brand-matched merchant PDPs; will use search only if nothing better exists.
 func bestCommercialEvidenceLinks(c models.CommercialReference) *models.DataCaptureLinks {
 	type cand struct {
 		url  string
 		kind string
-		// Higher is better.
-		score int
 	}
-	// Prefer merchant PDPs and price-evidence pages over search hubs / manufacturer home.
+	// Also consider strong links from market offers (often better than parent LinkShop).
 	cands := []cand{
-		{c.PriceURL, "", 0},
-		{c.LinkShop, "", 0},
-		{c.LinkAmazon, "", 0},
-		{c.LinkGSA, "federal", 0},
-		{c.LinkUPC, "other", 0},
-		// Website homepage is weak product evidence — only if nothing else.
-		{c.LinkWebsite, "other", 0},
+		{c.PriceURL, ""},
+		{c.LinkShop, ""},
+		{c.LinkAmazon, ""},
+		{c.LinkGSA, "federal"},
 	}
-	bestScore := -1
-	best := cand{}
-	for _, cand := range cands {
-		u := strings.TrimSpace(cand.url)
-		if u == "" || isPermanentlyDeadHost(u) {
-			continue
+	for _, o := range c.MarketOffers {
+		if strings.TrimSpace(o.Link) != "" {
+			cands = append(cands, cand{o.Link, ""})
 		}
-		kind := cand.kind
+	}
+	// Weak last resorts only if no strong evidence found.
+	weak := []cand{
+		{c.LinkUPC, "other"},
+		{c.LinkWebsite, "other"},
+	}
+
+	scoreCand := func(u, forcedKind string) (kind string, sc int, ok bool) {
+		u = cleanEvidenceURL(u)
+		if u == "" || isPermanentlyDeadHost(u) {
+			return "", 0, false
+		}
+		kind = forcedKind
 		if kind == "" {
 			kind = classifyEvidenceURLKind(u)
 		}
-		sc := productURLQuality(u)
+		// Brand conflict → reject for identity evidence.
+		if identityMatchScore(c.SKU, c.Manufacturer, c.Description, u) < 0 {
+			return "", 0, false
+		}
+		sc = productURLQuality(u)
 		switch kind {
 		case "merchant_pdp":
-			sc += 30
+			sc += 40
 		case "amazon_dp":
-			sc += 28
+			sc += 38
 		case "federal":
-			sc += 10
+			sc += 8
 		case "search":
-			sc -= 20
+			sc -= 40 // avoid search for pricing evidence when possible
 		case "other":
-			// UPC dossier / manufacturer site
-			if strings.Contains(strings.ToLower(u), "upcitemdb.com/upc/") {
-				sc += 5
-			}
+			sc -= 10
 		}
-		// Prefer channel that matches a known shop merchant when available.
-		if c.LinkShopMerchant != "" && u == c.LinkShop {
-			sc += 5
+		if c.LinkShopMerchant != "" && hostMatchesMerchant(u, c.LinkShopMerchant) {
+			sc += 8
+		}
+		if isStrongPricingEvidenceURL(u) {
+			sc += 15
+		}
+		return kind, sc, true
+	}
+
+	bestScore := -1 << 30
+	bestURL, bestKind := "", ""
+	for _, cnd := range cands {
+		kind, sc, ok := scoreCand(cnd.url, cnd.kind)
+		if !ok {
+			continue
 		}
 		if sc > bestScore {
-			bestScore = sc
-			best = cand
-			best.url = u
-			best.kind = kind
+			bestScore, bestURL, bestKind = sc, cleanEvidenceURL(cnd.url), kind
 		}
 	}
-	if best.url == "" {
+	// Only fall back to weak candidates if we have nothing strong.
+	if bestURL == "" || !isStrongPricingEvidenceURL(bestURL) {
+		for _, cnd := range weak {
+			kind, sc, ok := scoreCand(cnd.url, cnd.kind)
+			if !ok {
+				continue
+			}
+			if bestURL == "" || sc > bestScore {
+				bestScore, bestURL, bestKind = sc, cleanEvidenceURL(cnd.url), kind
+			}
+		}
+	}
+	if bestURL == "" {
 		return nil
 	}
-	return singleEvidenceLink(best.url, best.kind)
+	// Prefer omitting search URLs on identity hits when we have zero strong options?
+	// Keep search as last resort so consumers still have a navigation target.
+	return singleEvidenceLink(bestURL, bestKind)
 }
 
-// bestPriceObservationLinks picks one URL for an atomic price hit.
-// Prefers the offer's own link when it is product-quality; else parent commercial best
-// matching channel (amazon → amazon link, shop → shop link).
+// bestPriceObservationLinks picks one URL for an atomic price hit used as pricing evidence.
+// Rule: the URL must belong to the offer's merchant (or be omitted). Never attach a
+// different retailer's product page to a price (e.g. HD URL on a Newegg observation).
 func bestPriceObservationLinks(o models.MarketOffer, parent models.CommercialReference) *models.DataCaptureLinks {
-	offerLink := strings.TrimSpace(o.Link)
-	if offerLink != "" && !isPermanentlyDeadHost(offerLink) {
-		// Accept merchant PDPs and amazon dp; allow search only if nothing better later.
-		q := productURLQuality(offerLink)
-		if q >= 50 || isDirectProductURL(offerLink) || isMerchantProductURL(offerLink) {
-			return singleEvidenceLink(offerLink, classifyEvidenceURLKind(offerLink))
+	merchant := strings.TrimSpace(o.Merchant)
+	ch := strings.ToLower(strings.TrimSpace(o.Channel))
+
+	// Collect candidate URLs that are honest for this merchant/channel.
+	try := func(raw string) *models.DataCaptureLinks {
+		raw = cleanEvidenceURL(raw)
+		if raw == "" || isPermanentlyDeadHost(raw) {
+			return nil
 		}
-		// Weak offer link — still use if parent has nothing better for this channel.
-		if isSearchOrHubURL(offerLink) {
-			// fall through to parent selection, keep as backup
-		} else if q > 0 {
-			return singleEvidenceLink(offerLink, classifyEvidenceURLKind(offerLink))
+		// Search hubs are weak evidence for a specific unit_price.
+		if isSearchOrHubURL(raw) {
+			return nil
+		}
+		// Merchant must match when we know the merchant (pricing integrity).
+		if merchant != "" && !hostMatchesMerchant(raw, merchant) {
+			// Amazon channel exception: merchant text may be "Amazon Marketplace Used".
+			if ch == "amazon" || strings.Contains(strings.ToLower(merchant), "amazon") {
+				if classifyEvidenceURLKind(raw) == "amazon_dp" {
+					return singleEvidenceLink(raw, "amazon_dp")
+				}
+			}
+			return nil
+		}
+		if !isStrongPricingEvidenceURL(raw) {
+			// Allow other product-ish paths that match merchant host.
+			if !(isMerchantProductURL(raw) || isDirectProductURL(raw) || productURLQuality(raw) >= 40) {
+				return nil
+			}
+		}
+		return singleEvidenceLink(raw, classifyEvidenceURLKind(raw))
+	}
+
+	// 1) Offer's own link (best).
+	if lnk := try(o.Link); lnk != nil {
+		return lnk
+	}
+
+	// 2) Sibling market offers with the same merchant that still have a good link.
+	merchKey := strings.ToLower(merchant)
+	for _, sib := range parent.MarketOffers {
+		if merchKey != "" && strings.ToLower(strings.TrimSpace(sib.Merchant)) != merchKey {
+			// Fuzzy: same host family (e.g. "Walmart - Supply the Home" vs "Walmart")
+			if !merchantsLooselyEqual(merchant, sib.Merchant) {
+				continue
+			}
+		}
+		if lnk := try(sib.Link); lnk != nil {
+			return lnk
 		}
 	}
 
-	ch := strings.ToLower(strings.TrimSpace(o.Channel))
-	var fallback string
+	// 3) Parent channel links only when host matches this merchant.
+	var parentCands []string
 	switch {
-	case ch == "amazon" || strings.Contains(strings.ToLower(o.Merchant), "amazon"):
-		fallback = firstNonEmpty(parent.LinkAmazon, parent.PriceURL, parent.LinkShop)
+	case ch == "amazon" || strings.Contains(strings.ToLower(merchant), "amazon"):
+		parentCands = []string{parent.LinkAmazon, parent.PriceURL}
 	case ch == "federal":
-		fallback = firstNonEmpty(parent.LinkGSA, parent.PriceURL)
+		parentCands = []string{parent.LinkGSA, parent.PriceURL}
 	default:
-		fallback = firstNonEmpty(parent.LinkShop, parent.PriceURL, parent.LinkAmazon)
+		parentCands = []string{parent.LinkShop, parent.PriceURL, parent.LinkAmazon}
 	}
-	if fallback == "" {
-		if offerLink != "" && !isPermanentlyDeadHost(offerLink) {
-			return singleEvidenceLink(offerLink, classifyEvidenceURLKind(offerLink))
+	for _, p := range parentCands {
+		if lnk := try(p); lnk != nil {
+			return lnk
 		}
-		return bestCommercialEvidenceLinks(parent)
 	}
-	// Prefer offer link if both exist and offer is at least as good.
-	if offerLink != "" && productURLQuality(offerLink) >= productURLQuality(fallback) {
-		return singleEvidenceLink(offerLink, classifyEvidenceURLKind(offerLink))
+
+	// 4) No honest URL — omit rather than misattribute another retailer's page.
+	return nil
+}
+
+// merchantsLooselyEqual treats "Walmart - Supply the Home" ≈ "Wal-Mart.com".
+func merchantsLooselyEqual(a, b string) bool {
+	a = strings.ToLower(strings.TrimSpace(a))
+	b = strings.ToLower(strings.TrimSpace(b))
+	if a == "" || b == "" {
+		return false
 	}
-	return singleEvidenceLink(fallback, classifyEvidenceURLKind(fallback))
+	if a == b {
+		return true
+	}
+	// Primary token (before dash/parenthesis).
+	prim := func(s string) string {
+		if i := strings.IndexAny(s, "-("); i > 0 {
+			s = s[:i]
+		}
+		return strings.TrimSpace(s)
+	}
+	pa, pb := prim(a), prim(b)
+	if pa != "" && pb != "" && (strings.Contains(pa, pb) || strings.Contains(pb, pa)) {
+		return true
+	}
+	// Shared significant token length >= 5
+	wa := strings.FieldsFunc(a, func(r rune) bool {
+		return r == ' ' || r == '-' || r == '.' || r == ','
+	})
+	for _, w := range wa {
+		if len(w) >= 5 && strings.Contains(b, w) {
+			return true
+		}
+	}
+	return false
 }
 
 func buildDataCaptureSources(snaps []models.DataSnapshot) []models.DataCaptureSource {

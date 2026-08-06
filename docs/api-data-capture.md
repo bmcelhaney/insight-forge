@@ -190,7 +190,8 @@ Each hit is **one discrete finding**: a commercial mapping, a price observation,
 | `url` | **The** most accurate/reliable evidence URL for this hit |
 | `url_kind` | Classification: `merchant_pdp` \| `amazon_dp` \| `federal` \| `search` \| `web` \| `other` |
 
-**Selection (high level):** verified merchant product pages win; Amazon `/dp/` for Amazon-channel prices; federal catalog for AbilityOne channel hits; tight search only as last resort. Dead/unverified links may be omitted entirely.
+**Selection (high level):** verified merchant product pages win; Amazon `/dp/` for Amazon-channel prices; federal catalog for AbilityOne channel hits.  
+**Pricing integrity:** a `price_observation` URL must match that hit’s `pricing.merchant` host (e.g. Home Depot price → `homedepot.com`). If no honest URL exists, `links` is omitted rather than attaching another retailer’s page. Tracking query params are stripped.
 
 Deprecated multi-channel fields (`shop`, `amazon`, `upc`, `federal`, `website`, `price_url`) may appear in **older ≤1.1** documents but are **not populated** in 1.2+.
 

@@ -211,6 +211,74 @@ func TestBestPriceObservationLinksUsesOfferLink(t *testing.T) {
 	}
 }
 
+func TestBestPriceObservationLinksNeverMisattributesMerchant(t *testing.T) {
+	// Newegg price must NOT get parent Home Depot URL (common bad evidence case).
+	parent := models.CommercialReference{
+		LinkShop:   "https://www.homedepot.com/p/Wooster-R091/203150945",
+		PriceURL:   "https://www.homedepot.com/p/Wooster-R091/203150945",
+		LinkAmazon: "https://www.amazon.com/dp/B000DZGQIM",
+		MarketOffers: []models.MarketOffer{
+			{Merchant: "Home Depot", Link: "https://www.homedepot.com/p/Wooster-R091/203150945", UnitPrice: 40.35},
+			{Merchant: "Ace Hardware", Link: "https://www.acehardware.com/p/1098904", UnitPrice: 33.99},
+		},
+	}
+	newegg := models.MarketOffer{
+		UnitPrice: 20.39, Channel: "shop", Merchant: "Newegg.com",
+		// No link / dead link stripped — must not invent HD URL.
+		Link: "",
+	}
+	if lnk := bestPriceObservationLinks(newegg, parent); lnk != nil {
+		t.Fatalf("newegg without own link must not inherit HD url: %+v", lnk)
+	}
+	// Ace with own link keeps Ace.
+	ace := models.MarketOffer{
+		UnitPrice: 33.99, Channel: "shop", Merchant: "Ace Hardware",
+		Link: "https://www.acehardware.com/p/1098904?x429=true&utm_source=google",
+	}
+	lnk := bestPriceObservationLinks(ace, parent)
+	if lnk == nil || !strings.Contains(lnk.URL, "acehardware.com") {
+		t.Fatalf("ace should keep ace url: %+v", lnk)
+	}
+	if strings.Contains(lnk.URL, "utm_source") {
+		t.Fatalf("tracking params should be stripped: %s", lnk.URL)
+	}
+	// Home Depot price can use parent HD link.
+	hd := models.MarketOffer{UnitPrice: 40.35, Channel: "shop", Merchant: "Home Depot", Link: ""}
+	lnk = bestPriceObservationLinks(hd, parent)
+	if lnk == nil || !strings.Contains(lnk.URL, "homedepot.com/p/") {
+		t.Fatalf("home depot may use parent HD link: %+v", lnk)
+	}
+}
+
+func TestCleanEvidenceURLFixesBrokenQuery(t *testing.T) {
+	// Live bug: missing ? before &intsrc= → parseable then tracking stripped.
+	got := cleanEvidenceURL("https://www.homedepot.com/p/Wooster/203150945&intsrc=CATF_2950")
+	if strings.Contains(got, "945&intsrc") {
+		t.Fatalf("broken &query should be fixed/stripped, got %q", got)
+	}
+	if !strings.Contains(got, "homedepot.com/p/Wooster/203150945") {
+		t.Fatalf("path should remain, got %q", got)
+	}
+	if strings.Contains(got, "intsrc") {
+		t.Fatalf("intsrc tracking should be stripped: %q", got)
+	}
+}
+
+func TestHostMatchesMerchant(t *testing.T) {
+	if !hostMatchesMerchant("https://www.homedepot.com/p/x", "Home Depot") {
+		t.Fatal("hd")
+	}
+	if hostMatchesMerchant("https://www.homedepot.com/p/x", "Newegg.com") {
+		t.Fatal("hd must not match newegg")
+	}
+	if !hostMatchesMerchant("https://www.walmart.com/ip/x", "Walmart - Supply the Home") {
+		t.Fatal("walmart marketplace seller label")
+	}
+	if !hostMatchesMerchant("https://www.amazon.com/dp/B000", "Amazon Marketplace Used") {
+		t.Fatal("amazon")
+	}
+}
+
 func TestParseSingleUnitPrice(t *testing.T) {
 	if v, ok := parseSingleUnitPrice("$15.00"); !ok || v != 15.0 {
 		t.Fatalf("single: %v %v", v, ok)
