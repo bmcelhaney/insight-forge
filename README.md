@@ -15,7 +15,7 @@ High-fidelity prototype actively used for NIB analyst work.
 - Strong Analyst Recommendation and Key Insights powered by curated AbilityOne data + live sources
 - Primary API (`POST /api/analyze`) returns the data-capture hit inventory (not narrative analysis)
 - Two JSON export modes:
-  - Data capture: same schema as `/api/analyze` (`/api/export/data/{nsn}`, `insight-forge.data-capture.v1` / v1.1). Atomic `unit_price` + `quantity`.
+  - Data capture: same schema as `/api/analyze` (`/api/export/data/{nsn}`, `insight-forge.data-capture.v1` / v1.2). Atomic `unit_price` + `quantity`; one primary `links.url` per hit.
   - Pricing tool: full InsightResult (`/api/export/json/{nsn}`)
 - Hardened deployment with commit embedding and functional gates
 
@@ -50,7 +50,7 @@ Open http://localhost:8080
   - Analyst Recommendation
   - Full narrative report
 - Clean APIs for external tools:
-  - `POST /api/analyze` — **primary machine API**: data-capture document only (`insight-forge.data-capture.v1` / v1.1)
+  - `POST /api/analyze` — **primary machine API**: data-capture document only (`insight-forge.data-capture.v1` / v1.2)
   - `GET /api/export/data/{nsn}` — **identical JSON body** to `POST /api/analyze` (file download; also used by UI “Export JSON (Data Capture)”)
   - `POST /api/insight` — full InsightResult + embedded `data_capture` (web UI / pricing consumers)
   - `GET /api/export/json/{nsn}` — full InsightResult download for pricing tools

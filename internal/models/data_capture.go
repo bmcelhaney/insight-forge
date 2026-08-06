@@ -12,8 +12,10 @@ import "time"
 // Analysis UI may still show market ranges; those are not used here.
 
 const (
-	DataCaptureSchemaID      = "insight-forge.data-capture.v1"
-	DataCaptureSchemaVersion = "1.1"
+	DataCaptureSchemaID = "insight-forge.data-capture.v1"
+	// 1.2: single primary evidence URL per hit (links.url + url_kind); multi-channel
+	// link fields are no longer populated on export.
+	DataCaptureSchemaVersion = "1.2"
 )
 
 // DataCaptureDocument is a machine-readable inventory of every structured hit
@@ -105,15 +107,23 @@ type DataCapturePricing struct {
 	AsOf         string  `json:"as_of,omitempty"`
 }
 
-// DataCaptureLinks holds verification / product URLs for a hit.
+// DataCaptureLinks holds the single primary evidence URL for a hit (schema 1.2+).
+// Downstream systems should use URL only; multi-channel fields below are deprecated
+// and are not populated by the 1.2+ builder (kept for unmarshaling older documents).
 type DataCaptureLinks struct {
+	// URL is the most accurate/reliable product or evidence link for this hit.
+	URL string `json:"url,omitempty"`
+	// URLKind classifies URL for consumers:
+	//   merchant_pdp | amazon_dp | federal | search | web | other
+	URLKind string `json:"url_kind,omitempty"`
+
+	// Deprecated (schema ≤1.1 multi-link export). Empty in 1.2+ documents.
 	Shop     string `json:"shop,omitempty"`
 	Amazon   string `json:"amazon,omitempty"`
 	UPC      string `json:"upc,omitempty"`
 	Federal  string `json:"federal,omitempty"`
 	Website  string `json:"website,omitempty"`
 	PriceURL string `json:"price_url,omitempty"`
-	URL      string `json:"url,omitempty"` // generic (web results, offer link)
 }
 
 // DataCaptureCounts summarizes the hit inventory for quick validation by consumers.

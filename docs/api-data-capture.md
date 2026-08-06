@@ -1,8 +1,10 @@
 # Insight Forge API — JSON payload guide (for developers)
 
-**Stable machine contract:** `insight-forge.data-capture.v1` (version **1.1**)  
+**Stable machine contract:** `insight-forge.data-capture.v1` (version **1.2**)  
 **Primary integration endpoint:** `POST /api/analyze`  
 **UI / pricing-tool envelope:** `POST /api/insight`
+
+**1.2 change:** each hit has at most **one** primary evidence URL (`links.url` + `links.url_kind`). Multi-channel link bags (`shop` / `amazon` / `federal` / …) are no longer populated.
 
 There is no app-level API key. Auth (if any) is at the gateway (e.g. Sprites public vs sprite URL).
 
@@ -81,7 +83,7 @@ DataCaptureDocument
 | JSON field | Type | Description |
 |---|---|---|
 | `schema` | string | Always `insight-forge.data-capture.v1` |
-| `schema_version` | string | Currently `1.1` (pack/UOM + pricing fields) |
+| `schema_version` | string | Currently `1.2` (atomic prices + single evidence URL per hit) |
 | `purpose` | string | Short statement of intent (machine inventory for downstream apps) |
 | `exported_at` | RFC3339 time | When this document was built |
 | `generator` | object | Who produced it |
@@ -181,19 +183,16 @@ Each hit is **one discrete finding**: a commercial mapping, a price observation,
 
 **Normalize for comparison:** prefer `price_per_each` when present; otherwise treat `unit_price` as each if `quantity == 1`.
 
-### `hits[].links`
+### `hits[].links` (schema **1.2** — single primary URL)
 
 | Field | Description |
 |---|---|
-| `shop` | Preferred non-Amazon product (or search) URL |
-| `amazon` | Amazon `/dp/` or search URL |
-| `upc` | UPCItemDB identity page when known |
-| `federal` | AbilityOne.com (or federal catalog) URL |
-| `website` | Manufacturer homepage when known |
-| `price_url` | Best URL to verify the primary price |
-| `url` | Generic fallback URL |
+| `url` | **The** most accurate/reliable evidence URL for this hit |
+| `url_kind` | Classification: `merchant_pdp` \| `amazon_dp` \| `federal` \| `search` \| `web` \| `other` |
 
-Links are **evidence**, not guarantees. Server prefers merchant product pages and may strip dead/unverified URLs; some rows still use tight search fallbacks when no PDP exists.
+**Selection (high level):** verified merchant product pages win; Amazon `/dp/` for Amazon-channel prices; federal catalog for AbilityOne channel hits; tight search only as last resort. Dead/unverified links may be omitted entirely.
+
+Deprecated multi-channel fields (`shop`, `amazon`, `upc`, `federal`, `website`, `price_url`) may appear in **older ≤1.1** documents but are **not populated** in 1.2+.
 
 ### `counts`
 
@@ -286,7 +285,7 @@ Useful if you already consume the insight path; **prefer `data_capture.hits` for
 ```json
 {
   "schema": "insight-forge.data-capture.v1",
-  "schema_version": "1.1",
+  "schema_version": "1.2",
   "purpose": "…",
   "exported_at": "2026-08-05T12:00:00Z",
   "generator": {
@@ -326,8 +325,8 @@ Useful if you already consume the insight path; **prefer `data_capture.hits` for
         "price_source": "SERPAPI"
       },
       "links": {
-        "shop": "https://www.homedepot.com/p/…",
-        "price_url": "https://www.homedepot.com/p/…"
+        "url": "https://www.homedepot.com/p/…",
+        "url_kind": "merchant_pdp"
       }
     }
   ],

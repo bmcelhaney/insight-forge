@@ -26,6 +26,8 @@ const includePartsBaseInDataCapture = false
 
 // Pricing policy (schema 1.1+): every price is an atomic observation with
 // unit_price + quantity. Analysis UI ranges are not exported.
+// Links policy (schema 1.2+): at most one primary evidence URL per hit
+// (links.url + links.url_kind). Multi-channel link bags are not exported.
 // When includePartsBaseInDataCapture is true, PartsBase signals come from the
 // live snapshot in full (not the 25-row UI sample).
 func BuildDataCaptureDocument(result models.InsightResult, snaps []models.DataSnapshot, meta DataCaptureMeta) models.DataCaptureDocument {
@@ -44,7 +46,9 @@ func BuildDataCaptureDocument(result models.InsightResult, snaps []models.DataSn
 	doc := models.DataCaptureDocument{
 		Schema:        models.DataCaptureSchemaID,
 		SchemaVersion: models.DataCaptureSchemaVersion,
-		Purpose:       "Machine-readable inventory of NSN/SKU/UPC/ETS/commercial/procurement hits for downstream applications. Price hits are atomic (unit_price + quantity); no market ranges. Not the pricing-tool narrative export.",
+		Purpose: "Machine-readable inventory of NSN/SKU/UPC/ETS/commercial/procurement hits for downstream applications. " +
+			"Price hits are atomic (unit_price + quantity); no market ranges. " +
+			"Each hit has at most one primary evidence URL (links.url). Not the pricing-tool narrative export.",
 		ExportedAt:    time.Now().UTC(),
 		Generator: models.DataCaptureGenerator{
 			Name:        "insight-forge",
@@ -110,15 +114,8 @@ func BuildDataCaptureDocument(result models.InsightResult, snaps []models.DataSn
 			DateAdded:   strings.TrimSpace(c.DateAdded),
 			// Identity hits intentionally omit Pricing (ranges live only in UI/analysis).
 		}
-		if hasAnyLink(c) {
-			hit.Links = &models.DataCaptureLinks{
-				Shop:     c.LinkShop,
-				Amazon:   c.LinkAmazon,
-				UPC:      c.LinkUPC,
-				Federal:  c.LinkGSA,
-				Website:  c.LinkWebsite,
-				PriceURL: c.PriceURL,
-			}
+		if lnk := bestCommercialEvidenceLinks(c); lnk != nil {
+			hit.Links = lnk
 		}
 		doc.Hits = append(doc.Hits, hit)
 
@@ -180,8 +177,8 @@ func BuildDataCaptureDocument(result models.InsightResult, snaps []models.DataSn
 				}
 				priceHit.Attributes["offer_title"] = o.Title
 			}
-			if o.Link != "" {
-				priceHit.Links = &models.DataCaptureLinks{URL: o.Link, PriceURL: o.Link}
+			if lnk := bestPriceObservationLinks(o, c); lnk != nil {
+				priceHit.Links = lnk
 			}
 			doc.Hits = append(doc.Hits, priceHit)
 		}
@@ -212,10 +209,7 @@ func BuildDataCaptureDocument(result models.InsightResult, snaps []models.DataSn
 					PriceSource: firstNonEmpty(ao.Source, "ABILITYONE_COM"),
 					AsOf:        ao.AsOf,
 				},
-				Links: &models.DataCaptureLinks{
-					Federal: ao.URL,
-					URL:     ao.URL,
-				},
+				Links:   singleEvidenceLink(ao.URL, "federal"),
 				Context: strings.TrimSpace(ao.Note),
 				Attributes: map[string]any{
 					"catalog": "abilityone.com",
@@ -425,6 +419,145 @@ func hasAnyLink(c models.CommercialReference) bool {
 	return c.LinkShop != "" || c.LinkAmazon != "" || c.LinkUPC != "" || c.LinkGSA != "" || c.LinkWebsite != "" || c.PriceURL != ""
 }
 
+// singleEvidenceLink builds the schema 1.2 single-URL links object (or nil if empty).
+// When kind is empty, it is derived from the URL. Explicit kinds (e.g. federal, web) are kept
+// even if the URL looks like a catalog search page.
+func singleEvidenceLink(rawURL, kind string) *models.DataCaptureLinks {
+	rawURL = strings.TrimSpace(rawURL)
+	if rawURL == "" {
+		return nil
+	}
+	if kind == "" {
+		kind = classifyEvidenceURLKind(rawURL)
+	}
+	return &models.DataCaptureLinks{URL: rawURL, URLKind: kind}
+}
+
+// classifyEvidenceURLKind maps a URL to a consumer-facing url_kind.
+func classifyEvidenceURLKind(rawURL string) string {
+	u := strings.ToLower(strings.TrimSpace(rawURL))
+	if u == "" {
+		return ""
+	}
+	if isSearchOrHubURL(u) {
+		return "search"
+	}
+	if strings.Contains(u, "amazon.com/dp/") || strings.Contains(u, "amazon.com/gp/product/") {
+		return "amazon_dp"
+	}
+	if strings.Contains(u, "abilityone.com") {
+		return "federal"
+	}
+	if isMerchantProductURL(u) || isDirectProductURL(u) {
+		return "merchant_pdp"
+	}
+	return "other"
+}
+
+// bestCommercialEvidenceLinks picks one primary URL for an identity / mapping hit.
+func bestCommercialEvidenceLinks(c models.CommercialReference) *models.DataCaptureLinks {
+	type cand struct {
+		url  string
+		kind string
+		// Higher is better.
+		score int
+	}
+	// Prefer merchant PDPs and price-evidence pages over search hubs / manufacturer home.
+	cands := []cand{
+		{c.PriceURL, "", 0},
+		{c.LinkShop, "", 0},
+		{c.LinkAmazon, "", 0},
+		{c.LinkGSA, "federal", 0},
+		{c.LinkUPC, "other", 0},
+		// Website homepage is weak product evidence — only if nothing else.
+		{c.LinkWebsite, "other", 0},
+	}
+	bestScore := -1
+	best := cand{}
+	for _, cand := range cands {
+		u := strings.TrimSpace(cand.url)
+		if u == "" || isPermanentlyDeadHost(u) {
+			continue
+		}
+		kind := cand.kind
+		if kind == "" {
+			kind = classifyEvidenceURLKind(u)
+		}
+		sc := productURLQuality(u)
+		switch kind {
+		case "merchant_pdp":
+			sc += 30
+		case "amazon_dp":
+			sc += 28
+		case "federal":
+			sc += 10
+		case "search":
+			sc -= 20
+		case "other":
+			// UPC dossier / manufacturer site
+			if strings.Contains(strings.ToLower(u), "upcitemdb.com/upc/") {
+				sc += 5
+			}
+		}
+		// Prefer channel that matches a known shop merchant when available.
+		if c.LinkShopMerchant != "" && u == c.LinkShop {
+			sc += 5
+		}
+		if sc > bestScore {
+			bestScore = sc
+			best = cand
+			best.url = u
+			best.kind = kind
+		}
+	}
+	if best.url == "" {
+		return nil
+	}
+	return singleEvidenceLink(best.url, best.kind)
+}
+
+// bestPriceObservationLinks picks one URL for an atomic price hit.
+// Prefers the offer's own link when it is product-quality; else parent commercial best
+// matching channel (amazon → amazon link, shop → shop link).
+func bestPriceObservationLinks(o models.MarketOffer, parent models.CommercialReference) *models.DataCaptureLinks {
+	offerLink := strings.TrimSpace(o.Link)
+	if offerLink != "" && !isPermanentlyDeadHost(offerLink) {
+		// Accept merchant PDPs and amazon dp; allow search only if nothing better later.
+		q := productURLQuality(offerLink)
+		if q >= 50 || isDirectProductURL(offerLink) || isMerchantProductURL(offerLink) {
+			return singleEvidenceLink(offerLink, classifyEvidenceURLKind(offerLink))
+		}
+		// Weak offer link — still use if parent has nothing better for this channel.
+		if isSearchOrHubURL(offerLink) {
+			// fall through to parent selection, keep as backup
+		} else if q > 0 {
+			return singleEvidenceLink(offerLink, classifyEvidenceURLKind(offerLink))
+		}
+	}
+
+	ch := strings.ToLower(strings.TrimSpace(o.Channel))
+	var fallback string
+	switch {
+	case ch == "amazon" || strings.Contains(strings.ToLower(o.Merchant), "amazon"):
+		fallback = firstNonEmpty(parent.LinkAmazon, parent.PriceURL, parent.LinkShop)
+	case ch == "federal":
+		fallback = firstNonEmpty(parent.LinkGSA, parent.PriceURL)
+	default:
+		fallback = firstNonEmpty(parent.LinkShop, parent.PriceURL, parent.LinkAmazon)
+	}
+	if fallback == "" {
+		if offerLink != "" && !isPermanentlyDeadHost(offerLink) {
+			return singleEvidenceLink(offerLink, classifyEvidenceURLKind(offerLink))
+		}
+		return bestCommercialEvidenceLinks(parent)
+	}
+	// Prefer offer link if both exist and offer is at least as good.
+	if offerLink != "" && productURLQuality(offerLink) >= productURLQuality(fallback) {
+		return singleEvidenceLink(offerLink, classifyEvidenceURLKind(offerLink))
+	}
+	return singleEvidenceLink(fallback, classifyEvidenceURLKind(fallback))
+}
+
 func buildDataCaptureSources(snaps []models.DataSnapshot) []models.DataCaptureSource {
 	if len(snaps) == 0 {
 		return nil
@@ -590,9 +723,7 @@ func webHitFromMap(row map[string]any, idx int, nsn, niin, fsc string) models.Da
 		},
 		Description: title,
 		Context:     snippet,
-		Links: &models.DataCaptureLinks{
-			URL: url,
-		},
+		Links:      singleEvidenceLink(url, "web"),
 		Attributes: attrs,
 	}
 }

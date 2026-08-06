@@ -1,6 +1,7 @@
 package processing
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -25,12 +26,15 @@ func TestBuildDataCaptureDocument_AtomicPriceHits(t *testing.T) {
 				Price:            "$12.50 – $18.00 (4 offers)",
 				PriceShop:        "$12.50 – $18.00 (4 offers)",
 				PriceShopIsRange: true,
-				LinkAmazon:       "https://www.amazon.com/s?k=MOP-123",
-				LinkShop:         "https://www.google.com/search?tbm=shop&q=MOP-123",
+				// Prefer product PDP for shop evidence (schema 1.2 single URL).
+				LinkShop:         "https://www.homedepot.com/p/Acme-Mop/12345",
+				LinkShopMerchant: "Home Depot",
+				LinkAmazon:       "https://www.amazon.com/dp/B000TESTMOP1",
+				PriceURL:         "https://www.homedepot.com/p/Acme-Mop/12345",
 				MarketOffers: []models.MarketOffer{
-					{UnitPrice: 12.50, Quantity: 1, Currency: "USD", Channel: "shop", Merchant: "Home Depot", Source: "SERPAPI"},
-					{UnitPrice: 14.99, Quantity: 1, Currency: "USD", Channel: "amazon", Merchant: "Amazon", Source: "SERPAPI"},
-					{UnitPrice: 18.00, Quantity: 1, Currency: "USD", Channel: "shop", Merchant: "Walmart", Source: "SERPAPI"},
+					{UnitPrice: 12.50, Quantity: 1, Currency: "USD", Channel: "shop", Merchant: "Home Depot", Source: "SERPAPI", Link: "https://www.homedepot.com/p/Acme-Mop/12345"},
+					{UnitPrice: 14.99, Quantity: 1, Currency: "USD", Channel: "amazon", Merchant: "Amazon", Source: "SERPAPI", Link: "https://www.amazon.com/dp/B000TESTMOP1"},
+					{UnitPrice: 18.00, Quantity: 1, Currency: "USD", Channel: "shop", Merchant: "Walmart", Source: "SERPAPI", Link: "https://www.walmart.com/ip/Acme-Mop/999"},
 				},
 			},
 			{
@@ -93,8 +97,8 @@ func TestBuildDataCaptureDocument_AtomicPriceHits(t *testing.T) {
 
 	doc := BuildDataCaptureDocument(result, snaps, DataCaptureMeta{Commit: "abc123", BuildTime: "2026-07-31T00:00:00Z"})
 
-	if doc.SchemaVersion != "1.1" {
-		t.Fatalf("schema_version: got %q want 1.1", doc.SchemaVersion)
+	if doc.SchemaVersion != "1.2" {
+		t.Fatalf("schema_version: got %q want 1.2", doc.SchemaVersion)
 	}
 	// PartsBase is currently excluded from data-capture (includePartsBaseInDataCapture=false).
 	// Expect commercial market offers + GSA single + AbilityOne channel (no PB rows).
@@ -111,7 +115,17 @@ func TestBuildDataCaptureDocument_AtomicPriceHits(t *testing.T) {
 	}
 
 	// Every price hit must be atomic: unit_price > 0, quantity >= 1, no range fields.
+	// Schema 1.2: at most one primary URL per hit (links.url); no multi-channel link bag.
 	for _, h := range doc.Hits {
+		if h.Links != nil {
+			if h.Links.Shop != "" || h.Links.Amazon != "" || h.Links.UPC != "" ||
+				h.Links.Federal != "" || h.Links.Website != "" || h.Links.PriceURL != "" {
+				t.Fatalf("hit %s still has multi-channel link fields (1.2 is single url only): %+v", h.HitID, h.Links)
+			}
+			if h.Links.URL != "" && h.Links.URLKind == "" {
+				t.Fatalf("hit %s has url without url_kind", h.HitID)
+			}
+		}
 		if h.HitType != "price_observation" {
 			// Identity commercial hits must not carry range pricing
 			if h.Pricing != nil && (h.HitType == "ets_mapping" || h.HitType == "gsa_listing" || h.HitType == "commercial_supplier") {
@@ -130,6 +144,71 @@ func TestBuildDataCaptureDocument_AtomicPriceHits(t *testing.T) {
 		}
 	}
 
+	// ETS parent identity hit should resolve to a single merchant PDP (not multi-link).
+	var ets *models.DataCaptureHit
+	for i := range doc.Hits {
+		if doc.Hits[i].HitType == "ets_mapping" {
+			ets = &doc.Hits[i]
+			break
+		}
+	}
+	if ets == nil || ets.Links == nil || ets.Links.URL == "" {
+		t.Fatal("expected ets_mapping hit with single primary url")
+	}
+	if ets.Links.URLKind != "merchant_pdp" && ets.Links.URLKind != "amazon_dp" {
+		t.Fatalf("ets primary url_kind=%q want merchant_pdp or amazon_dp (url=%s)", ets.Links.URLKind, ets.Links.URL)
+	}
+
+	// AbilityOne channel price → federal kind
+	var ao *models.DataCaptureHit
+	for i := range doc.Hits {
+		if doc.Hits[i].HitType == "price_observation" && doc.Hits[i].Pricing != nil &&
+			doc.Hits[i].Pricing.Channel == "federal" {
+			ao = &doc.Hits[i]
+			break
+		}
+	}
+	if ao == nil || ao.Links == nil || ao.Links.URLKind != "federal" {
+		t.Fatalf("expected federal price hit with url_kind=federal, got %+v", ao)
+	}
+}
+
+func TestBestCommercialEvidenceLinksPrefersPDP(t *testing.T) {
+	c := models.CommercialReference{
+		SKU:        "R091",
+		LinkShop:   "https://www.homedepot.com/p/Wooster-R091/203150945",
+		LinkAmazon: "https://www.amazon.com/s?k=R091",
+		LinkGSA:    "https://www.abilityone.com/search?q=8020-01-596-4253",
+		PriceURL:   "https://www.homedepot.com/p/Wooster-R091/203150945",
+	}
+	lnk := bestCommercialEvidenceLinks(c)
+	if lnk == nil || !strings.Contains(lnk.URL, "homedepot.com/p/") {
+		t.Fatalf("want HD PDP, got %+v", lnk)
+	}
+	if lnk.URLKind != "merchant_pdp" {
+		t.Fatalf("url_kind=%q", lnk.URLKind)
+	}
+	if lnk.Shop != "" || lnk.Amazon != "" {
+		t.Fatalf("deprecated multi-link fields must be empty: %+v", lnk)
+	}
+}
+
+func TestBestPriceObservationLinksUsesOfferLink(t *testing.T) {
+	parent := models.CommercialReference{
+		LinkShop:   "https://www.homedepot.com/p/Other/1",
+		LinkAmazon: "https://www.amazon.com/dp/B000OTHER",
+	}
+	o := models.MarketOffer{
+		UnitPrice: 18, Channel: "shop", Merchant: "Walmart",
+		Link: "https://www.walmart.com/ip/Item/999",
+	}
+	lnk := bestPriceObservationLinks(o, parent)
+	if lnk == nil || !strings.Contains(lnk.URL, "walmart.com/ip/") {
+		t.Fatalf("want offer walmart link, got %+v", lnk)
+	}
+	if lnk.URLKind != "merchant_pdp" {
+		t.Fatalf("kind=%q", lnk.URLKind)
+	}
 }
 
 func TestParseSingleUnitPrice(t *testing.T) {
