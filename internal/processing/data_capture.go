@@ -662,11 +662,20 @@ func bestCommercialEvidenceLinks(c models.CommercialReference) *models.DataCaptu
 		case "other":
 			sc -= 10
 		}
+		// UPC dossier is multi-merchant, not a listing price page — never preferred evidence.
+		if strings.Contains(strings.ToLower(u), "upcitemdb.com") {
+			sc -= 80
+		}
 		if c.LinkShopMerchant != "" && hostMatchesMerchant(u, c.LinkShopMerchant) {
 			sc += 8
 		}
 		if isStrongPricingEvidenceURL(u) {
 			sc += 15
+		}
+		// Bonus when SKU appears in URL path (stronger product identity).
+		sku := strings.ToUpper(strings.TrimSpace(c.SKU))
+		if sku != "" && len(sku) >= 3 && strings.Contains(strings.ToUpper(u), sku) {
+			sc += 20
 		}
 		return kind, sc, true
 	}
@@ -682,23 +691,37 @@ func bestCommercialEvidenceLinks(c models.CommercialReference) *models.DataCaptu
 			bestScore, bestURL, bestKind = sc, cleanEvidenceURL(cnd.url), kind
 		}
 	}
-	// Only fall back to weak candidates if we have nothing strong.
+	// Weak candidates only if we still lack a real product page.
 	if bestURL == "" || !isStrongPricingEvidenceURL(bestURL) {
+		strongScore := bestScore
 		for _, cnd := range weak {
 			kind, sc, ok := scoreCand(cnd.url, cnd.kind)
 			if !ok {
+				continue
+			}
+			// Never let upcitemdb beat a real PDP we already have.
+			if isStrongPricingEvidenceURL(bestURL) && strings.Contains(strings.ToLower(cnd.url), "upcitemdb.com") {
 				continue
 			}
 			if bestURL == "" || sc > bestScore {
 				bestScore, bestURL, bestKind = sc, cleanEvidenceURL(cnd.url), kind
 			}
 		}
+		_ = strongScore
+	}
+	// Last resort: tight Google Shopping search (honest kind=search) — better than upcitemdb dossier.
+	if bestURL == "" || strings.Contains(strings.ToLower(bestURL), "upcitemdb.com") || !isStrongPricingEvidenceURL(bestURL) && bestKind == "other" {
+		if q := buildTightProductSearchQuery(c.Manufacturer, c.SKU, c.UPC, c.Description); q != "" {
+			searchURL := "https://www.google.com/search?tbm=shop&q=" + url.QueryEscape(q)
+			// Only replace weak/other; keep merchant_pdp / amazon_dp.
+			if bestURL == "" || bestKind == "other" || strings.Contains(strings.ToLower(bestURL), "upcitemdb.com") {
+				bestURL, bestKind = searchURL, "search"
+			}
+		}
 	}
 	if bestURL == "" {
 		return nil
 	}
-	// Prefer omitting search URLs on identity hits when we have zero strong options?
-	// Keep search as last resort so consumers still have a navigation target.
 	return singleEvidenceLink(bestURL, bestKind)
 }
 
