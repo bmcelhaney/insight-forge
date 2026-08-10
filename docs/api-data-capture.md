@@ -42,7 +42,7 @@ Content-Type: application/json
 |---|---|---|
 | `nsn` | **Yes** | 9-digit NIIN or 13-digit NSN |
 | `serp_immersive` | No | `true` = Google Shopping + Immersive multi-store (default). `false` = shopping-search only (less SerpAPI quota) |
-| `capture_screenshots` | No | `true` = sync-capture screenshots of eligible `links.url` → Tigris (`proof.screenshot`). Requires Chrome + Tigris config. |
+| `capture_screenshots` | No | `true` = **async** capture of eligible `links.url` → Tigris. Hits return with `proof.screenshot.status: "pending"`. Poll `GET /api/proofs/{analysis_id}`. Requires Chrome + Tigris. |
 
 Same body works for `POST /api/insight`. Query params: `?serp_immersive=false`, `?capture_screenshots=true`.
 
@@ -228,6 +228,27 @@ Present when screenshots were requested and a capture was attempted.
 | `error` | Safe failure text when `status=failed` |
 
 **Eligibility:** `price_observation` (or strong commercial identity) with `url_kind` in `merchant_pdp` \| `amazon_dp` \| `federal`, capped by `IF_SCREENSHOT_MAX_PER_RUN`.
+
+**Async poll API:**
+
+```http
+GET /api/proofs/{analysis_id}
+```
+
+```json
+{
+  "analysis_id": "…",
+  "status": "running",
+  "total": 12,
+  "done": 4,
+  "ready": 3,
+  "failed": 1,
+  "hits": { "price-obs-3": { "status": "ready", "url": "https://…presigned…", "object_key": "…" } },
+  "labels": { "price-obs-3": { "merchant": "Home Depot", "unit_price": 40.35, "sku": "R091" } }
+}
+```
+
+UI polls this endpoint and shows thumbnails as each shot becomes `ready`.
 
 ### `counts`
 

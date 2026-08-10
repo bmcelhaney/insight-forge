@@ -90,9 +90,10 @@ func main() {
 		cfg.UPCItemDBEnabled, cfg.UPCItemDBConfigured,
 	)
 
-	// Tigris object storage + optional evidence screenshots (never log secrets).
+	// Tigris object storage + async evidence screenshots (never log secrets).
 	var tigrisStore *storage.Client
 	var shotCapturer *screenshot.Capturer
+	var shotWorker *screenshot.Worker
 	if cfg.TigrisEnabled {
 		st, err := storage.NewTigrisClient(storage.TigrisConfig{
 			Enabled:   true,
@@ -125,13 +126,20 @@ func main() {
 			Width:   1280,
 			Height:  720,
 		})
-		if shotCapturer.Available() {
-			fmt.Printf("Screenshots: enabled (chrome ok, max=%d/run)\n", cfg.ScreenshotMaxPerRun)
+		if shotCapturer.Available() && tigrisStore != nil {
+			shotWorker = screenshot.NewWorker(tigrisStore, shotCapturer, screenshot.ProofOptions{
+				MaxPerRun:  cfg.ScreenshotMaxPerRun,
+				Timeout:    time.Duration(cfg.ScreenshotTimeoutMS) * time.Millisecond,
+				PresignTTL: time.Hour,
+			})
+			fmt.Printf("Screenshots: async enabled (chrome ok, max=%d/run) — poll GET /api/proofs/{analysis_id}\n", cfg.ScreenshotMaxPerRun)
+		} else if shotCapturer.Available() {
+			fmt.Printf("Screenshots: chrome ok but Tigris not configured\n")
 		} else {
 			fmt.Printf("Screenshots: enabled but Chrome/Chromium not found — install Chrome or set IF_CHROME_PATH\n")
 		}
 	} else {
-		fmt.Printf("Screenshots: disabled (IF_SCREENSHOT_ENABLED=false; pass capture_screenshots=true when enabled)\n")
+		fmt.Printf("Screenshots: disabled (IF_SCREENSHOT_ENABLED=false)\n")
 	}
 
 	// Surface PartsBase credential status without leaking secrets.
@@ -188,6 +196,11 @@ func main() {
 			"upcitemdb_enabled":    cfg.UPCItemDBEnabled,
 			"upcitemdb_configured": cfg.UPCItemDBConfigured && processing.UPCItemDBConfigured(),
 			"upcitemdb_plan":       map[bool]string{true: "v1", false: "trial"}[processing.UPCItemDBConfigured()],
+			"tigris_configured":    tigrisStore != nil,
+			"tigris_bucket":        cfg.TigrisBucket,
+			"screenshots_enabled":  shotWorker != nil && shotWorker.Available(),
+			"screenshots_async":    true,
+			"screenshots_max":      cfg.ScreenshotMaxPerRun,
 		}
 		// Last observed PartsBase fetch outcome (for UI source-status banner).
 		var pbStatus *models.PartsBaseStatus
@@ -259,7 +272,8 @@ func main() {
 	// runAnalyze synthesizes an NSN and builds the data-capture document.
 	// One builder for UI export, POST /api/analyze, and GET /api/export/data.
 	// serpImmersive nil → server default (IF_SERPAPI_IMMERSIVE, default true).
-	// captureScreenshots true → sync screenshot of eligible links.url → Tigris.
+	// captureScreenshots true → async screenshots of eligible links.url → Tigris
+	// (hits marked proof.screenshot.status=pending; poll GET /api/proofs/{analysis_id}).
 	runAnalyze := func(ctx context.Context, nsn string, serpImmersive *bool, captureScreenshots bool) (models.InsightResult, models.DataCaptureDocument) {
 		if serpImmersive != nil {
 			ctx = processing.WithSerpImmersive(ctx, *serpImmersive)
@@ -274,12 +288,11 @@ func main() {
 			BuildTime: buildTime,
 		})
 		wantShots := captureScreenshots || cfg.ScreenshotOnAnalyze
-		if wantShots && cfg.ScreenshotEnabled && tigrisStore != nil && shotCapturer != nil && shotCapturer.Available() {
-			screenshot.AttachProofs(ctx, &doc, tigrisStore, shotCapturer, screenshot.ProofOptions{
-				MaxPerRun:  cfg.ScreenshotMaxPerRun,
-				Timeout:    time.Duration(cfg.ScreenshotTimeoutMS) * time.Millisecond,
-				PresignTTL: time.Hour,
-			})
+		if wantShots && shotWorker != nil && shotWorker.Available() {
+			n := shotWorker.MarkPendingAndEnqueue(&doc)
+			if n > 0 {
+				// Non-blocking: jobs run in background worker.
+			}
 		}
 		return result, doc
 	}
@@ -327,6 +340,25 @@ func main() {
 		enc := json.NewEncoder(w)
 		enc.SetEscapeHTML(false)
 		_ = enc.Encode(payload)
+	})
+
+	// Async screenshot proof status for an analysis run (poll after capture_screenshots).
+	r.Get("/api/proofs/{analysisID}", func(w http.ResponseWriter, r *http.Request) {
+		id := strings.TrimSpace(chi.URLParam(r, "analysisID"))
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store")
+		if id == "" || shotWorker == nil {
+			w.WriteHeader(http.StatusNotFound)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "proofs unavailable"})
+			return
+		}
+		run := shotWorker.GetRun(id)
+		if run == nil {
+			w.WriteHeader(http.StatusNotFound)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "analysis_id not found or expired"})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(run)
 	})
 
 	// Primary machine API: data-capture document only — identical body to
@@ -386,11 +418,14 @@ func main() {
 		enc.SetEscapeHTML(false)
 		// data_capture is embedded for the UI export button — same struct as /api/analyze.
 		_ = enc.Encode(map[string]any{
-			"nsn":            req.NSN,
-			"result":         result,
-			"data_capture":   doc,
-			"serp_immersive": usedImmersive && processing.SerpAPIEnabled(),
-			"analysis_id":    doc.AnalysisID,
+			"nsn":                  req.NSN,
+			"result":               result,
+			"data_capture":         doc,
+			"serp_immersive":       usedImmersive && processing.SerpAPIEnabled(),
+			"analysis_id":          doc.AnalysisID,
+			"screenshots_queued":   shots || cfg.ScreenshotOnAnalyze,
+			"screenshots_async":    true,
+			"proofs_poll_url":      "/api/proofs/" + doc.AnalysisID,
 		})
 	})
 
