@@ -45,6 +45,18 @@ type Config struct {
 	UPCItemDBEnabled    bool
 	UPCItemDBConfigured bool
 	UPCItemDBKey        string
+	// Tigris (S3) for pricing-evidence screenshots
+	TigrisEnabled   bool
+	TigrisBucket    string
+	TigrisEndpoint  string
+	TigrisRegion    string
+	TigrisAccessKey string
+	TigrisSecretKey string
+	// Screenshots of links.url → Tigris
+	ScreenshotEnabled    bool
+	ScreenshotMaxPerRun  int
+	ScreenshotTimeoutMS  int
+	ScreenshotOnAnalyze  bool // if true, every analyze captures (slow); else request flag only
 }
 
 func Load() (*Config, error) {
@@ -55,6 +67,7 @@ func Load() (*Config, error) {
 		".env.partsbase",
 		".env.serpapi",
 		".env.upcitemdb",
+		".env.tigris",
 		".env.local",
 	)
 
@@ -82,6 +95,12 @@ func Load() (*Config, error) {
 	// Default on for richer merchant prices; set false to burn less quota.
 	viper.SetDefault("SERPAPI_IMMERSIVE", true)
 	viper.SetDefault("UPCITEMDB_ENABLED", true)
+	viper.SetDefault("TIGRIS_ENABLED", false)
+	viper.SetDefault("TIGRIS_REGION", "auto")
+	viper.SetDefault("SCREENSHOT_ENABLED", false)
+	viper.SetDefault("SCREENSHOT_MAX_PER_RUN", 15)
+	viper.SetDefault("SCREENSHOT_TIMEOUT_MS", 20000)
+	viper.SetDefault("SCREENSHOT_ON_ANALYZE", false)
 
 	partsBaseClientID := getConfiguredValue("PARTSBASE_CLIENT_ID")
 	partsBaseClientSecret := getConfiguredValue("PARTSBASE_CLIENT_SECRET")
@@ -116,6 +135,49 @@ func Load() (*Config, error) {
 		upcKey = strings.TrimSpace(os.Getenv("UPCITEMDB_USER_KEY"))
 	}
 
+	// Tigris: prefer IF_* then standard AWS_* names from Tigris console.
+	tigrisBucket := firstNonEmpty(
+		getConfiguredValue("TIGRIS_BUCKET"),
+		strings.TrimSpace(os.Getenv("BUCKET_NAME")),
+		strings.TrimSpace(os.Getenv("AWS_S3_BUCKET")),
+	)
+	tigrisEndpoint := firstNonEmpty(
+		getConfiguredValue("TIGRIS_ENDPOINT"),
+		strings.TrimSpace(os.Getenv("AWS_ENDPOINT_URL_S3")),
+	)
+	tigrisRegion := firstNonEmpty(
+		getConfiguredValue("TIGRIS_REGION"),
+		strings.TrimSpace(os.Getenv("AWS_REGION")),
+		"auto",
+	)
+	tigrisAK := firstNonEmpty(
+		getConfiguredValue("TIGRIS_ACCESS_KEY"),
+		getConfiguredValue("AWS_ACCESS_KEY_ID"),
+		strings.TrimSpace(os.Getenv("AWS_ACCESS_KEY_ID")),
+	)
+	tigrisSK := firstNonEmpty(
+		getConfiguredValue("TIGRIS_SECRET_KEY"),
+		getConfiguredValue("AWS_SECRET_ACCESS_KEY"),
+		strings.TrimSpace(os.Getenv("AWS_SECRET_ACCESS_KEY")),
+	)
+	tigrisEnabled := viper.GetBool("TIGRIS_ENABLED")
+	if !tigrisEnabled && tigrisBucket != "" && tigrisEndpoint != "" && tigrisAK != "" && tigrisSK != "" {
+		// Auto-enable when full credentials present (e.g. .env.tigris).
+		tigrisEnabled = true
+	}
+
+	shotMax := viper.GetInt("SCREENSHOT_MAX_PER_RUN")
+	if shotMax <= 0 {
+		shotMax = 15
+	}
+	if shotMax > 40 {
+		shotMax = 40
+	}
+	shotTO := viper.GetInt("SCREENSHOT_TIMEOUT_MS")
+	if shotTO <= 0 {
+		shotTO = 20000
+	}
+
 	cfg := &Config{
 		Env:                      viper.GetString("ENV"),
 		Port:                     viper.GetInt("PORT"),
@@ -145,6 +207,16 @@ func Load() (*Config, error) {
 		UPCItemDBEnabled:         viper.GetBool("UPCITEMDB_ENABLED"),
 		UPCItemDBConfigured:      upcKey != "",
 		UPCItemDBKey:             upcKey,
+		TigrisEnabled:            tigrisEnabled,
+		TigrisBucket:             tigrisBucket,
+		TigrisEndpoint:           tigrisEndpoint,
+		TigrisRegion:             tigrisRegion,
+		TigrisAccessKey:          tigrisAK,
+		TigrisSecretKey:          tigrisSK,
+		ScreenshotEnabled:        viper.GetBool("SCREENSHOT_ENABLED"),
+		ScreenshotMaxPerRun:      shotMax,
+		ScreenshotTimeoutMS:      shotTO,
+		ScreenshotOnAnalyze:      viper.GetBool("SCREENSHOT_ON_ANALYZE"),
 	}
 
 	levelStr := viper.GetString("LOG_LEVEL")
@@ -310,6 +382,15 @@ func getConfiguredValue(key string) string {
 		return v
 	}
 	return strings.TrimSpace(os.Getenv(key))
+}
+
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
 }
 
 func parseCSV(v string) []string {

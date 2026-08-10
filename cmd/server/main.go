@@ -10,10 +10,14 @@ import (
 	"strconv"
 	"strings"
 
+	"time"
+
 	"github.com/bmcelhaney/insight-forge/internal/config"
 	"github.com/bmcelhaney/insight-forge/internal/extraction"
 	"github.com/bmcelhaney/insight-forge/internal/models"
 	"github.com/bmcelhaney/insight-forge/internal/processing"
+	"github.com/bmcelhaney/insight-forge/internal/screenshot"
+	"github.com/bmcelhaney/insight-forge/internal/storage"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 )
@@ -85,6 +89,50 @@ func main() {
 		cfg.SerpAPIEnabled, cfg.SerpAPIConfigured,
 		cfg.UPCItemDBEnabled, cfg.UPCItemDBConfigured,
 	)
+
+	// Tigris object storage + optional evidence screenshots (never log secrets).
+	var tigrisStore *storage.Client
+	var shotCapturer *screenshot.Capturer
+	if cfg.TigrisEnabled {
+		st, err := storage.NewTigrisClient(storage.TigrisConfig{
+			Enabled:   true,
+			Bucket:    cfg.TigrisBucket,
+			Region:    cfg.TigrisRegion,
+			Endpoint:  cfg.TigrisEndpoint,
+			AccessKey: cfg.TigrisAccessKey,
+			SecretKey: cfg.TigrisSecretKey,
+		})
+		if err != nil {
+			fmt.Printf("Tigris: config error: %v\n", err)
+		} else if st != nil {
+			tigrisStore = st
+			fmt.Printf("Tigris: enabled (bucket=%s endpoint=%s)\n", cfg.TigrisBucket, cfg.TigrisEndpoint)
+			// Quick connectivity check (non-fatal).
+			pingCtx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+			if err := st.Ping(pingCtx); err != nil {
+				fmt.Printf("Tigris: ping failed (screenshots may fail): %v\n", err)
+			} else {
+				fmt.Printf("Tigris: bucket reachable\n")
+			}
+			cancel()
+		}
+	} else {
+		fmt.Printf("Tigris: disabled (set IF_TIGRIS_ENABLED + credentials in .env.tigris)\n")
+	}
+	if cfg.ScreenshotEnabled {
+		shotCapturer = screenshot.NewCapturer(screenshot.Options{
+			Timeout: time.Duration(cfg.ScreenshotTimeoutMS) * time.Millisecond,
+			Width:   1280,
+			Height:  720,
+		})
+		if shotCapturer.Available() {
+			fmt.Printf("Screenshots: enabled (chrome ok, max=%d/run)\n", cfg.ScreenshotMaxPerRun)
+		} else {
+			fmt.Printf("Screenshots: enabled but Chrome/Chromium not found — install Chrome or set IF_CHROME_PATH\n")
+		}
+	} else {
+		fmt.Printf("Screenshots: disabled (IF_SCREENSHOT_ENABLED=false; pass capture_screenshots=true when enabled)\n")
+	}
 
 	// Surface PartsBase credential status without leaking secrets.
 	if cfg.PartsBaseEnabled && cfg.PartsBaseConfigured {
@@ -211,7 +259,8 @@ func main() {
 	// runAnalyze synthesizes an NSN and builds the data-capture document.
 	// One builder for UI export, POST /api/analyze, and GET /api/export/data.
 	// serpImmersive nil → server default (IF_SERPAPI_IMMERSIVE, default true).
-	runAnalyze := func(ctx context.Context, nsn string, serpImmersive *bool) (models.InsightResult, models.DataCaptureDocument) {
+	// captureScreenshots true → sync screenshot of eligible links.url → Tigris.
+	runAnalyze := func(ctx context.Context, nsn string, serpImmersive *bool, captureScreenshots bool) (models.InsightResult, models.DataCaptureDocument) {
 		if serpImmersive != nil {
 			ctx = processing.WithSerpImmersive(ctx, *serpImmersive)
 		} else {
@@ -224,6 +273,14 @@ func main() {
 			Commit:    commit,
 			BuildTime: buildTime,
 		})
+		wantShots := captureScreenshots || cfg.ScreenshotOnAnalyze
+		if wantShots && cfg.ScreenshotEnabled && tigrisStore != nil && shotCapturer != nil && shotCapturer.Available() {
+			screenshot.AttachProofs(ctx, &doc, tigrisStore, shotCapturer, screenshot.ProofOptions{
+				MaxPerRun:  cfg.ScreenshotMaxPerRun,
+				Timeout:    time.Duration(cfg.ScreenshotTimeoutMS) * time.Millisecond,
+				PresignTTL: time.Hour,
+			})
+		}
 		return result, doc
 	}
 
@@ -275,10 +332,19 @@ func main() {
 	// Primary machine API: data-capture document only — identical body to
 	// GET /api/export/data/{nsn} and to the UI Data Capture export (same builder).
 	// Optional: "serp_immersive": true|false (default true / server IF_SERPAPI_IMMERSIVE).
+	parseCaptureScreenshots := func(body *bool, query string) bool {
+		if body != nil {
+			return *body
+		}
+		q := strings.TrimSpace(strings.ToLower(query))
+		return q == "1" || q == "true" || q == "yes" || q == "on"
+	}
+
 	r.Post("/api/analyze", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
-			NSN           string `json:"nsn"`
-			SerpImmersive *bool  `json:"serp_immersive"`
+			NSN                 string `json:"nsn"`
+			SerpImmersive       *bool  `json:"serp_immersive"`
+			CaptureScreenshots  *bool  `json:"capture_screenshots"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.NSN == "" {
 			w.Header().Set("Content-Type", "application/json")
@@ -287,7 +353,8 @@ func main() {
 			return
 		}
 
-		_, doc := runAnalyze(r.Context(), req.NSN, parseSerpImmersive(req.SerpImmersive, r.URL.Query().Get("serp_immersive")))
+		shots := parseCaptureScreenshots(req.CaptureScreenshots, r.URL.Query().Get("capture_screenshots"))
+		_, doc := runAnalyze(r.Context(), req.NSN, parseSerpImmersive(req.SerpImmersive, r.URL.Query().Get("serp_immersive")), shots)
 		writeDataCaptureJSON(w, doc, req.NSN, false)
 	})
 
@@ -295,8 +362,9 @@ func main() {
 	// data_capture is the same document type as POST /api/analyze (same builder).
 	r.Post("/api/insight", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
-			NSN           string `json:"nsn"`
-			SerpImmersive *bool  `json:"serp_immersive"`
+			NSN                string `json:"nsn"`
+			SerpImmersive      *bool  `json:"serp_immersive"`
+			CaptureScreenshots *bool  `json:"capture_screenshots"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.NSN == "" {
 			w.Header().Set("Content-Type", "application/json")
@@ -306,7 +374,8 @@ func main() {
 		}
 
 		imm := parseSerpImmersive(req.SerpImmersive, r.URL.Query().Get("serp_immersive"))
-		result, doc := runAnalyze(r.Context(), req.NSN, imm)
+		shots := parseCaptureScreenshots(req.CaptureScreenshots, r.URL.Query().Get("capture_screenshots"))
+		result, doc := runAnalyze(r.Context(), req.NSN, imm, shots)
 		usedImmersive := processing.SerpAPIImmersiveDefault()
 		if imm != nil {
 			usedImmersive = *imm
@@ -321,6 +390,7 @@ func main() {
 			"result":         result,
 			"data_capture":   doc,
 			"serp_immersive": usedImmersive && processing.SerpAPIEnabled(),
+			"analysis_id":    doc.AnalysisID,
 		})
 	})
 
@@ -328,7 +398,8 @@ func main() {
 	r.Get("/api/export/json/{nsn}", func(w http.ResponseWriter, r *http.Request) {
 		nsn := chi.URLParam(r, "nsn")
 		imm := parseSerpImmersive(nil, r.URL.Query().Get("serp_immersive"))
-		result, _ := runAnalyze(r.Context(), nsn, imm)
+		shots := parseCaptureScreenshots(nil, r.URL.Query().Get("capture_screenshots"))
+		result, _ := runAnalyze(r.Context(), nsn, imm, shots)
 
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="insight-forge-pricing-%s.json"`, nsn))
@@ -339,7 +410,8 @@ func main() {
 	r.Get("/api/export/data/{nsn}", func(w http.ResponseWriter, r *http.Request) {
 		nsn := chi.URLParam(r, "nsn")
 		imm := parseSerpImmersive(nil, r.URL.Query().Get("serp_immersive"))
-		_, doc := runAnalyze(r.Context(), nsn, imm)
+		shots := parseCaptureScreenshots(nil, r.URL.Query().Get("capture_screenshots"))
+		_, doc := runAnalyze(r.Context(), nsn, imm, shots)
 		writeDataCaptureJSON(w, doc, nsn, true)
 	})
 

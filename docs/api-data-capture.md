@@ -1,10 +1,11 @@
 # Insight Forge API — JSON payload guide (for developers)
 
-**Stable machine contract:** `insight-forge.data-capture.v1` (version **1.2**)  
+**Stable machine contract:** `insight-forge.data-capture.v1` (version **1.3**)  
 **Primary integration endpoint:** `POST /api/analyze`  
 **UI / pricing-tool envelope:** `POST /api/insight`
 
-**1.2 change:** each hit has at most **one** primary evidence URL (`links.url` + `links.url_kind`). Multi-channel link bags (`shop` / `amazon` / `federal` / …) are no longer populated.
+**1.2:** each hit has at most **one** primary evidence URL (`links.url` + `links.url_kind`).  
+**1.3:** `analysis_id` + optional `proof.screenshot` (Tigris object for visual pricing proof of `links.url`).
 
 There is no app-level API key. Auth (if any) is at the gateway (e.g. Sprites public vs sprite URL).
 
@@ -41,8 +42,9 @@ Content-Type: application/json
 |---|---|---|
 | `nsn` | **Yes** | 9-digit NIIN or 13-digit NSN |
 | `serp_immersive` | No | `true` = Google Shopping + Immersive multi-store (default). `false` = shopping-search only (less SerpAPI quota) |
+| `capture_screenshots` | No | `true` = sync-capture screenshots of eligible `links.url` → Tigris (`proof.screenshot`). Requires Chrome + Tigris config. |
 
-Same body works for `POST /api/insight`. Query param also accepted: `?serp_immersive=false`.
+Same body works for `POST /api/insight`. Query params: `?serp_immersive=false`, `?capture_screenshots=true`.
 
 ---
 
@@ -83,9 +85,10 @@ DataCaptureDocument
 | JSON field | Type | Description |
 |---|---|---|
 | `schema` | string | Always `insight-forge.data-capture.v1` |
-| `schema_version` | string | Currently `1.2` (atomic prices + single evidence URL per hit) |
+| `schema_version` | string | Currently `1.3` (single evidence URL + optional screenshot proof) |
 | `purpose` | string | Short statement of intent (machine inventory for downstream apps) |
 | `exported_at` | RFC3339 time | When this document was built |
+| `analysis_id` | string | UUID for this run; keys Tigris objects under `…/{nsn}/{analysis_id}/hits/` |
 | `generator` | object | Who produced it |
 | `query` | object | What was searched |
 | `item` | object | Primary federal item identity |
@@ -195,6 +198,37 @@ Each hit is **one discrete finding**: a commercial mapping, a price observation,
 
 Deprecated multi-channel fields (`shop`, `amazon`, `upc`, `federal`, `website`, `price_url`) may appear in **older ≤1.1** documents but are **not populated** in 1.2+.
 
+### `hits[].proof` (schema **1.3** — optional)
+
+Present when screenshots were requested and a capture was attempted.
+
+```json
+"proof": {
+  "screenshot": {
+    "status": "ready",
+    "bucket": "fair-market-pricing",
+    "object_key": "insight-forge/2026/08/10/8020015964253/{analysis_id}/hits/price-obs-12.png",
+    "content_type": "image/png",
+    "captured_at": "2026-08-10T18:00:00Z",
+    "source_url": "https://www.homedepot.com/p/…",
+    "width": 1280,
+    "height": 720,
+    "sha256": "…",
+    "url": "https://…presigned GET…"
+  }
+}
+```
+
+| Field | Description |
+|---|---|
+| `status` | `ready` \| `failed` \| `pending` \| `skipped` |
+| `object_key` | Durable Tigris/S3 key (use for re-presign / archival) |
+| `url` | Time-limited presigned download (typically ~1h) |
+| `source_url` | Exact page captured (= `links.url` at capture time) |
+| `error` | Safe failure text when `status=failed` |
+
+**Eligibility:** `price_observation` (or strong commercial identity) with `url_kind` in `merchant_pdp` \| `amazon_dp` \| `federal`, capped by `IF_SCREENSHOT_MAX_PER_RUN`.
+
 ### `counts`
 
 | Field | Description |
@@ -286,9 +320,10 @@ Useful if you already consume the insight path; **prefer `data_capture.hits` for
 ```json
 {
   "schema": "insight-forge.data-capture.v1",
-  "schema_version": "1.2",
+  "schema_version": "1.3",
   "purpose": "…",
   "exported_at": "2026-08-05T12:00:00Z",
+  "analysis_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
   "generator": {
     "name": "insight-forge",
     "commit": "cc0ab98",

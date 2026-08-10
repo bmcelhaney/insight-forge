@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/bmcelhaney/insight-forge/internal/models"
+	"github.com/google/uuid"
 )
 
 // DataCaptureMeta supplies build identity for the data-capture document.
@@ -29,6 +30,8 @@ const includePartsBaseInDataCapture = false
 // unit_price + quantity. Analysis UI ranges are not exported.
 // Links policy (schema 1.2+): at most one primary evidence URL per hit
 // (links.url + links.url_kind). Multi-channel link bags are not exported.
+// Schema 1.3: analysis_id for Tigris proof objects; screenshots attached optionally
+// after build via screenshot.AttachProofs.
 // When includePartsBaseInDataCapture is true, PartsBase signals come from the
 // live snapshot in full (not the 25-row UI sample).
 func BuildDataCaptureDocument(result models.InsightResult, snaps []models.DataSnapshot, meta DataCaptureMeta) models.DataCaptureDocument {
@@ -49,8 +52,11 @@ func BuildDataCaptureDocument(result models.InsightResult, snaps []models.DataSn
 		SchemaVersion: models.DataCaptureSchemaVersion,
 		Purpose: "Machine-readable inventory of NSN/SKU/UPC/ETS/commercial/procurement hits for downstream applications. " +
 			"Price hits are atomic (unit_price + quantity); no market ranges. " +
-			"Each hit has at most one primary evidence URL (links.url). Not the pricing-tool narrative export.",
-		ExportedAt:    time.Now().UTC(),
+			"Each hit has at most one primary evidence URL (links.url). " +
+			"Optional proof.screenshot stores visual capture of that URL in object storage. " +
+			"Not the pricing-tool narrative export.",
+		ExportedAt: time.Now().UTC(),
+		AnalysisID: uuid.NewString(),
 		Generator: models.DataCaptureGenerator{
 			Name:        "insight-forge",
 			Commit:      meta.Commit,

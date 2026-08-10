@@ -13,9 +13,9 @@ import "time"
 
 const (
 	DataCaptureSchemaID = "insight-forge.data-capture.v1"
-	// 1.2: single primary evidence URL per hit (links.url + url_kind); multi-channel
-	// link fields are no longer populated on export.
-	DataCaptureSchemaVersion = "1.2"
+	// 1.3: analysis_id + optional proof.screenshot (Tigris) for links.url evidence.
+	// 1.2: single primary evidence URL per hit (links.url + url_kind).
+	DataCaptureSchemaVersion = "1.3"
 )
 
 // DataCaptureDocument is a machine-readable inventory of every structured hit
@@ -26,11 +26,13 @@ type DataCaptureDocument struct {
 	SchemaVersion string               `json:"schema_version"`
 	Purpose       string               `json:"purpose"`
 	ExportedAt    time.Time            `json:"exported_at"`
-	Generator     DataCaptureGenerator `json:"generator"`
-	Query         DataCaptureQuery     `json:"query"`
-	Item          DataCaptureItem      `json:"item"`
-	Hits          []DataCaptureHit     `json:"hits"`
-	Counts        DataCaptureCounts    `json:"counts"`
+	// AnalysisID ties all hits and Tigris screenshot objects for this run.
+	AnalysisID string               `json:"analysis_id,omitempty"`
+	Generator  DataCaptureGenerator `json:"generator"`
+	Query      DataCaptureQuery     `json:"query"`
+	Item       DataCaptureItem      `json:"item"`
+	Hits       []DataCaptureHit     `json:"hits"`
+	Counts     DataCaptureCounts    `json:"counts"`
 	// Sources lists extractor/snapshot provenance for this run (not narrative analysis).
 	Sources []DataCaptureSource `json:"sources,omitempty"`
 	// Scores are optional context only; consumers should not treat them as hits.
@@ -69,11 +71,37 @@ type DataCaptureHit struct {
 	Identifiers DataCaptureIdentifiers `json:"identifiers"`
 	Description string                 `json:"description,omitempty"`
 	// Pricing is set only for atomic price hits (unit_price + quantity). Never a range.
-	Pricing    *DataCapturePricing `json:"pricing,omitempty"`
-	Links      *DataCaptureLinks   `json:"links,omitempty"`
-	Context    string              `json:"context,omitempty"`
-	DateAdded  string              `json:"date_added,omitempty"`
-	Attributes map[string]any      `json:"attributes,omitempty"`
+	Pricing *DataCapturePricing `json:"pricing,omitempty"`
+	Links   *DataCaptureLinks   `json:"links,omitempty"`
+	// Proof holds durable evidence artifacts (e.g. Tigris screenshot of links.url).
+	Proof      *DataCaptureProof `json:"proof,omitempty"`
+	Context    string            `json:"context,omitempty"`
+	DateAdded  string            `json:"date_added,omitempty"`
+	Attributes map[string]any    `json:"attributes,omitempty"`
+}
+
+// DataCaptureProof groups non-URL evidence artifacts for a hit (schema 1.3+).
+type DataCaptureProof struct {
+	Screenshot *DataCaptureScreenshot `json:"screenshot,omitempty"`
+}
+
+// DataCaptureScreenshot is a visual capture of links.url stored in object storage.
+type DataCaptureScreenshot struct {
+	// Status: pending | ready | failed | skipped
+	Status      string    `json:"status"`
+	Bucket      string    `json:"bucket,omitempty"`
+	ObjectKey   string    `json:"object_key,omitempty"`
+	ContentType string    `json:"content_type,omitempty"`
+	CapturedAt  time.Time `json:"captured_at,omitempty"`
+	// SourceURL is the page that was captured (copy of links.url at capture time).
+	SourceURL  string `json:"source_url,omitempty"`
+	HTTPStatus int    `json:"http_status,omitempty"`
+	Width      int    `json:"width,omitempty"`
+	Height     int    `json:"height,omitempty"`
+	SHA256     string `json:"sha256,omitempty"`
+	// URL is an optional time-limited presigned GET URL (not a permanent public ACL).
+	URL   string `json:"url,omitempty"`
+	Error string `json:"error,omitempty"`
 }
 
 // DataCaptureIdentifiers groups product/entity keys commonly used by downstream systems.

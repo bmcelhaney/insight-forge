@@ -97,8 +97,11 @@ func TestBuildDataCaptureDocument_AtomicPriceHits(t *testing.T) {
 
 	doc := BuildDataCaptureDocument(result, snaps, DataCaptureMeta{Commit: "abc123", BuildTime: "2026-07-31T00:00:00Z"})
 
-	if doc.SchemaVersion != "1.2" {
-		t.Fatalf("schema_version: got %q want 1.2", doc.SchemaVersion)
+	if doc.SchemaVersion != "1.3" {
+		t.Fatalf("schema_version: got %q want 1.3", doc.SchemaVersion)
+	}
+	if doc.AnalysisID == "" {
+		t.Fatal("expected analysis_id")
 	}
 	// PartsBase is currently excluded from data-capture (includePartsBaseInDataCapture=false).
 	// Expect commercial market offers + GSA single + AbilityOne channel (no PB rows).
