@@ -118,27 +118,72 @@ func (c *Capturer) CapturePNG(ctx context.Context, pageURL string) (*Result, err
 }
 
 func findChrome() string {
-	// Explicit override.
+	// Explicit override (preferred on sprites: Chrome for Testing / headless shell).
 	if p := strings.TrimSpace(os.Getenv("IF_CHROME_PATH")); p != "" {
-		if st, err := os.Stat(p); err == nil && !st.IsDir() {
+		if isRunnableChrome(p) {
 			return p
 		}
 	}
+	// Common install locations (real binaries first; skip Ubuntu snap stubs).
+	home := strings.TrimSpace(os.Getenv("HOME"))
 	candidates := []string{
+		// Chrome for Testing (installed under home on sprites)
+		home + "/chrome-for-testing/chrome-headless-shell-linux64/chrome-headless-shell",
+		home + "/chrome-for-testing/chrome-linux64/chrome",
+		"/home/sprite/chrome-for-testing/chrome-headless-shell-linux64/chrome-headless-shell",
+		"/home/sprite/chrome-for-testing/chrome-linux64/chrome",
 		"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
 		"/Applications/Chromium.app/Contents/MacOS/Chromium",
 		"/usr/bin/google-chrome",
 		"/usr/bin/google-chrome-stable",
+		"/snap/bin/chromium", // real snap binary when installed
 		"/usr/bin/chromium",
+		// /usr/bin/chromium-browser is often a snap *wrapper* that fails without snap — check last.
 		"/usr/bin/chromium-browser",
-		"/snap/bin/chromium",
 	}
 	for _, p := range candidates {
-		if st, err := os.Stat(p); err == nil && !st.IsDir() {
+		if isRunnableChrome(p) {
 			return p
 		}
 	}
 	return ""
+}
+
+// isRunnableChrome is true for a real Chrome/Chromium binary (not the Ubuntu apt snap stub script).
+func isRunnableChrome(p string) bool {
+	p = strings.TrimSpace(p)
+	if p == "" {
+		return false
+	}
+	st, err := os.Stat(p)
+	if err != nil || st.IsDir() {
+		return false
+	}
+	// Reject the common Ubuntu stub:
+	//   #!/bin/sh
+	//   ... requires the chromium snap to be installed ...
+	f, err := os.Open(p)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	buf := make([]byte, 512)
+	n, _ := f.Read(buf)
+	head := string(buf[:n])
+	if strings.HasPrefix(head, "#!") {
+		// Shell/python wrappers are only OK if they are the real snap launcher that exists.
+		if strings.Contains(head, "requires the chromium snap") ||
+			strings.Contains(head, "snap install chromium") ||
+			(strings.Contains(head, "/snap/bin/chromium") && !fileExists("/snap/bin/chromium")) {
+			return false
+		}
+	}
+	return true
+}
+
+func fileExists(p string) bool {
+	st, err := os.Stat(p)
+	return err == nil && !st.IsDir()
 }
 
 // validatePublicHTTPURL blocks SSRF to private/link-local hosts.
