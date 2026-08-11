@@ -50,7 +50,7 @@ Open http://localhost:8080
   - Analyst Recommendation
   - Full narrative report
 - Clean APIs for external tools:
-  - `POST /api/analyze` — **primary machine API**: data-capture document only (`insight-forge.data-capture.v1` / v1.3); optional `capture_screenshots: true`
+  - `POST /api/analyze` — **primary machine API**: data-capture document only (`insight-forge.data-capture.v1` / v1.3); screenshots **on by default** (Tigris); opt out with `capture_screenshots: false`
   - `GET /api/export/data/{nsn}` — **identical JSON body** to `POST /api/analyze` (file download; also used by UI “Export JSON (Data Capture)”)
   - `POST /api/insight` — full InsightResult + embedded `data_capture` (web UI / pricing consumers)
   - `GET /api/export/json/{nsn}` — full InsightResult download for pricing tools

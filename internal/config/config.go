@@ -100,7 +100,9 @@ func Load() (*Config, error) {
 	viper.SetDefault("SCREENSHOT_ENABLED", false)
 	viper.SetDefault("SCREENSHOT_MAX_PER_RUN", 15)
 	viper.SetDefault("SCREENSHOT_TIMEOUT_MS", 30000)
-	viper.SetDefault("SCREENSHOT_ON_ANALYZE", false)
+	// Default true: every analyze/export captures evidence when Tigris is configured.
+	// Opt out per request with capture_screenshots=false, or set IF_SCREENSHOT_ON_ANALYZE=false.
+	viper.SetDefault("SCREENSHOT_ON_ANALYZE", true)
 
 	partsBaseClientID := getConfiguredValue("PARTSBASE_CLIENT_ID")
 	partsBaseClientSecret := getConfiguredValue("PARTSBASE_CLIENT_SECRET")

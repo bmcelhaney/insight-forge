@@ -12,7 +12,7 @@
 | Field | Where | Notes |
 |---|---|---|
 | `analysis_id` | document root | Correlates the run + Tigris object keys |
-| `hits[].proof.screenshot` | on eligible hits only | Present when `capture_screenshots: true` |
+| `hits[].proof.screenshot` | on eligible hits only | Present when screenshots run (default **on** if Tigris configured; opt out with `capture_screenshots: false`) |
 | `hits[].proof.screenshot.status` | | `pending` → `ready` \| `failed` |
 | `hits[].proof.screenshot.kind` | | `page_screenshot` (full page) or `product_image` (bot-wall fallback) |
 | `hits[].proof.screenshot.source_url` | | **Durable product/page URL** for the hit (merchant link) |
@@ -59,9 +59,9 @@ Content-Type: application/json
 |---|---|---|
 | `nsn` | **Yes** | 9-digit NIIN or 13-digit NSN |
 | `serp_immersive` | No | `true` = Google Shopping + Immersive multi-store (default). `false` = shopping-search only (less SerpAPI quota) |
-| `capture_screenshots` | No | `true` = **async** visual evidence of eligible `links.url` → Tigris. Hits return with `proof.screenshot.status: "pending"`. Poll `GET /api/proofs/{analysis_id}` — response includes full `data_capture` with Tigris `url` on each ready hit. Requires Tigris (+ screenshot backend, default thum.io). |
+| `capture_screenshots` | No | **Default `true`** when Tigris/screenshot worker is available. Async visual evidence → Tigris (`bucket` + `object_key`). Hits start `pending`; poll `GET /api/proofs/{analysis_id}` for `data_capture` with proofs filled. Set `false` / `?capture_screenshots=false` to skip. |
 
-Same body works for `POST /api/insight`. Query params: `?serp_immersive=false`, `?capture_screenshots=true`.
+Same body works for `POST /api/insight`. Query params: `?serp_immersive=false`, `?capture_screenshots=false` to disable.
 
 ---
 
@@ -253,10 +253,12 @@ Do **not** expect a long-lived `url` field. Short-lived presigned URLs are not e
 
 ```http
 POST /api/analyze
-{ "nsn": "8020015964253", "capture_screenshots": true }
+{ "nsn": "8020015964253" }
 ```
 
-1. Read `analysis_id` and initial `hits[]` (screenshots are `pending`).
+(Screenshots default on. Only add `"capture_screenshots": false` to skip.)
+
+1. Read `analysis_id` and initial `hits[]` (screenshots are `pending` when capture ran).
 2. Poll until complete:
 
 ```http

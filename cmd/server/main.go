@@ -416,12 +416,25 @@ func main() {
 	// Primary machine API: data-capture document only — identical body to
 	// GET /api/export/data/{nsn} and to the UI Data Capture export (same builder).
 	// Optional: "serp_immersive": true|false (default true / server IF_SERPAPI_IMMERSIVE).
+	//
+	// Screenshots default ON when the worker is available (Tigris + backend ready).
+	// Opt out: {"capture_screenshots":false} or ?capture_screenshots=false
+	// (was opt-in before — Windmill export/data runs never uploaded to Tigris).
 	parseCaptureScreenshots := func(body *bool, query string) bool {
+		defaultOn := shotWorker != nil && shotWorker.Available()
 		if body != nil {
 			return *body
 		}
 		q := strings.TrimSpace(strings.ToLower(query))
-		return q == "1" || q == "true" || q == "yes" || q == "on"
+		switch q {
+		case "1", "true", "yes", "on":
+			return true
+		case "0", "false", "no", "off":
+			return false
+		default:
+			// Omitted → default on when screenshots are configured.
+			return defaultOn
+		}
 	}
 
 	r.Post("/api/analyze", func(w http.ResponseWriter, r *http.Request) {
