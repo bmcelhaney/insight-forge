@@ -68,7 +68,7 @@ func NewWorker(store *storage.Client, capturer *Capturer, opts ProofOptions) *Wo
 		opts.MaxPerRun = 15
 	}
 	if opts.Timeout <= 0 {
-		opts.Timeout = 25 * time.Second
+		opts.Timeout = 18 * time.Second
 	}
 	if opts.PresignTTL <= 0 {
 		opts.PresignTTL = time.Hour
@@ -211,13 +211,12 @@ func (w *Worker) loop() {
 
 func (w *Worker) processJob(job captureJob) {
 	// Don't use request context — it is cancelled when the HTTP handler returns.
-	// Budget: hard page timeout + small grace (browser kill) + Tigris upload.
-	// Keep this tight so one bad URL cannot stall the queue for minutes.
+	// Budget: page timeout + browser start + hard-kill wait + Tigris upload.
 	pageTO := job.timeout
 	if pageTO <= 0 {
-		pageTO = 25 * time.Second
+		pageTO = 18 * time.Second
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), pageTO+40*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), pageTO+35*time.Second)
 	defer cancel()
 
 	result := &models.DataCaptureScreenshot{

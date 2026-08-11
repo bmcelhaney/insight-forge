@@ -123,18 +123,18 @@ func main() {
 	if cfg.ScreenshotEnabled {
 		shotTO := time.Duration(cfg.ScreenshotTimeoutMS) * time.Millisecond
 		if shotTO <= 0 {
-			shotTO = 25 * time.Second
+			shotTO = 18 * time.Second
 		}
 		// Cap runaway env values — long timeouts stall the serial screenshot queue.
-		if shotTO > 60*time.Second {
-			shotTO = 60 * time.Second
+		if shotTO > 45*time.Second {
+			shotTO = 45 * time.Second
 		}
 		shotCapturer = screenshot.NewCapturer(screenshot.Options{
 			Timeout:             shotTO,
 			Width:               1280,
 			Height:              720,
-			BrowserStartTimeout: 45 * time.Second,
-			Settle:              2500 * time.Millisecond,
+			BrowserStartTimeout: 30 * time.Second,
+			Settle:              2 * time.Second,
 		})
 		if shotCapturer.Available() && tigrisStore != nil {
 			shotWorker = screenshot.NewWorker(tigrisStore, shotCapturer, screenshot.ProofOptions{
@@ -300,10 +300,7 @@ func main() {
 		})
 		wantShots := captureScreenshots || cfg.ScreenshotOnAnalyze
 		if wantShots && shotWorker != nil && shotWorker.Available() {
-			n := shotWorker.MarkPendingAndEnqueue(&doc)
-			if n > 0 {
-				// Non-blocking: jobs run in background worker.
-			}
+			_ = shotWorker.MarkPendingAndEnqueue(&doc)
 		}
 		return result, doc
 	}

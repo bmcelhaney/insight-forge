@@ -879,20 +879,39 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
     function startProofPolling(analysisId) {
       stopProofPolling();
       let ticks = 0;
-      const maxTicks = 90; // ~3 min at 2s
+      // Backend captures serially (~2–20s each, up to 15). Allow ~12 min before giving up.
+      const maxTicks = 360; // 360 * 2s = 12 min
       const poll = async () => {
         ticks++;
         try {
           const res = await fetch('/api/proofs/' + encodeURIComponent(analysisId));
           if (res.status === 404) {
-            if (ticks > 5) stopProofPolling();
+            if (ticks > 5) {
+              stopProofPolling();
+              const statusEl = document.getElementById('evidence-screenshots-status');
+              if (statusEl) statusEl.textContent = 'Proof run not found (server may have restarted)';
+            }
             return;
           }
           if (!res.ok) return;
           const run = await res.json();
           renderEvidenceScreenshots(run);
-          if (run.status === 'complete' || ticks >= maxTicks) {
+          if (run.status === 'complete') {
             stopProofPolling();
+            return;
+          }
+          if (ticks >= maxTicks) {
+            stopProofPolling();
+            // Mark any still-pending thumbs so the UI does not spin forever.
+            markPendingEvidenceTimedOut(run);
+            const statusEl = document.getElementById('evidence-screenshots-status');
+            if (statusEl) {
+              const ready = run.ready || 0;
+              const failed = run.failed || 0;
+              const total = run.total || 0;
+              statusEl.textContent = ready + ' ready, ' + failed + ' failed, ' +
+                Math.max(0, total - (run.done || 0)) + ' timed out · stopped polling';
+            }
           }
         } catch (e) {
           console.warn('proof poll', e);
@@ -900,6 +919,26 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
       };
       poll();
       proofPollTimer = setInterval(poll, 2000);
+    }
+
+    function markPendingEvidenceTimedOut(run) {
+      const grid = document.getElementById('evidence-screenshots-grid');
+      if (!grid || !run || !run.hits) return;
+      const labels = run.labels || {};
+      Object.keys(run.hits).forEach(id => {
+        const shot = run.hits[id];
+        const st = (shot && (shot.status || shot.Status)) || 'pending';
+        if (st === 'pending' || st === 'running') {
+          const timed = Object.assign({}, shot, {
+            status: 'failed',
+            error: (shot && shot.error) || 'Timed out waiting for capture (UI poll limit)',
+          });
+          run.hits[id] = timed;
+        }
+      });
+      renderEvidenceScreenshots(run);
+      // silence unused if labels referenced for future
+      void labels;
     }
 
     function initEvidenceScreenshotsFromDataCapture(doc) {
@@ -1003,11 +1042,20 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
         img.src = imgUrl;
         img.alt = merchant || sku || 'evidence';
         img.loading = 'lazy';
+        img.referrerPolicy = 'no-referrer';
         img.className = 'w-full h-full object-cover object-top hover:opacity-95';
+        img.onerror = () => {
+          media.innerHTML = '<div class="text-[10px] text-amber-400/90 px-2 text-center">Image URL expired or blocked — <a class="underline" target="_blank" rel="noopener" href="' +
+            imgUrl.replace(/"/g, '&quot;') + '">open</a></div>';
+        };
         a.appendChild(img);
         media.appendChild(a);
+      } else if (st === 'ready' && !imgUrl) {
+        media.innerHTML = '<div class="text-[10px] text-amber-400/90 px-2 text-center">Ready but no image URL</div>';
       } else if (st === 'failed') {
-        media.innerHTML = '<div class="text-[10px] text-red-400/90 px-2 text-center">Capture failed</div>';
+        const errMsg = (shot && (shot.error || shot.Error)) || 'Capture failed';
+        media.innerHTML = '<div class="text-[10px] text-red-400/90 px-2 text-center leading-snug">Capture failed</div>';
+        media.title = errMsg;
       } else {
         media.innerHTML = '<div class="text-[10px] text-zinc-500 flex flex-col items-center gap-1"><i class="fa-solid fa-spinner fa-spin"></i><span>Capturing…</span></div>';
       }
