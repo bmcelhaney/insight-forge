@@ -121,20 +121,26 @@ func main() {
 		fmt.Printf("Tigris: disabled (set IF_TIGRIS_ENABLED + credentials in .env.tigris)\n")
 	}
 	if cfg.ScreenshotEnabled {
+		shotTO := time.Duration(cfg.ScreenshotTimeoutMS) * time.Millisecond
+		if shotTO <= 0 {
+			shotTO = 45 * time.Second
+		}
 		shotCapturer = screenshot.NewCapturer(screenshot.Options{
-			Timeout: time.Duration(cfg.ScreenshotTimeoutMS) * time.Millisecond,
-			Width:   1280,
-			Height:  720,
+			Timeout:             shotTO,
+			Width:               1280,
+			Height:              720,
+			BrowserStartTimeout: 60 * time.Second,
 		})
 		if shotCapturer.Available() && tigrisStore != nil {
 			shotWorker = screenshot.NewWorker(tigrisStore, shotCapturer, screenshot.ProofOptions{
 				MaxPerRun:  cfg.ScreenshotMaxPerRun,
-				Timeout:    time.Duration(cfg.ScreenshotTimeoutMS) * time.Millisecond,
+				Timeout:    shotTO,
 				PresignTTL: time.Hour,
 			})
-			fmt.Printf("Screenshots: async enabled (chrome ok, max=%d/run) — poll GET /api/proofs/{analysis_id}\n", cfg.ScreenshotMaxPerRun)
+			fmt.Printf("Screenshots: async enabled (chrome=%s, page_timeout=%s, max=%d/run) — poll GET /api/proofs/{analysis_id}\n",
+				shotCapturer.ChromePath(), shotTO, cfg.ScreenshotMaxPerRun)
 		} else if shotCapturer.Available() {
-			fmt.Printf("Screenshots: chrome ok but Tigris not configured\n")
+			fmt.Printf("Screenshots: chrome ok (%s) but Tigris not configured\n", shotCapturer.ChromePath())
 		} else {
 			fmt.Printf("Screenshots: enabled but Chrome/Chromium not found — install Chrome or set IF_CHROME_PATH\n")
 		}
