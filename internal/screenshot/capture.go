@@ -139,14 +139,19 @@ func isBrowserStartError(err error) bool {
 		return false
 	}
 	s := strings.ToLower(err.Error())
+	// Do NOT treat generic "context canceled" / page deadlines as start errors —
+	// those are usually page timeouts, and retry thrashing makes them worse.
 	return strings.Contains(s, "websocket url timeout") ||
 		strings.Contains(s, "chrome failed to start") ||
-		strings.Contains(s, "invalid context") ||
-		strings.Contains(s, "context canceled") ||
-		strings.Contains(s, "context deadline exceeded") && strings.Contains(s, "browser")
+		strings.Contains(s, "browser start") ||
+		strings.Contains(s, "invalid context")
 }
 
 func (c *Capturer) captureOnce(ctx context.Context, pageURL string) (*Result, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	browserCtx, err := c.ensureBrowser()
 	if err != nil {
 		return nil, fmt.Errorf("screenshot capture: %w", err)
@@ -154,6 +159,8 @@ func (c *Capturer) captureOnce(ctx context.Context, pageURL string) (*Result, er
 
 	// Tab context inherits the live browser; page timeout is separate so a slow
 	// PDP does not tear down the shared Chrome process.
+	// IMPORTANT: do not wrap browserCtx itself in WithTimeout+cancel — chromedp
+	// treats cancel of the context used to start/run the browser as browser death.
 	tabCtx, tabCancel := chromedp.NewContext(browserCtx)
 	defer tabCancel()
 
@@ -161,12 +168,14 @@ func (c *Capturer) captureOnce(ctx context.Context, pageURL string) (*Result, er
 	tabCtx, timeoutCancel := context.WithTimeout(tabCtx, timeout)
 	defer timeoutCancel()
 
-	// Honour caller cancel without killing the shared browser (tab cancel only).
+	// If the job context is cancelled, close only this tab.
+	stopWatch := make(chan struct{})
+	defer close(stopWatch)
 	go func() {
 		select {
 		case <-ctx.Done():
 			tabCancel()
-		case <-tabCtx.Done():
+		case <-stopWatch:
 		}
 	}()
 
@@ -215,6 +224,8 @@ func (c *Capturer) ensureBrowser() (context.Context, error) {
 
 	startTO := c.opts.BrowserStartTimeout
 	// Allocator parent must outlive individual captures — use Background.
+	// Never attach a cancelable timeout context as the browser root: chromedp
+	// shuts the browser down when that context is cancelled.
 	allocOpts := append(chromedp.DefaultExecAllocatorOptions[:],
 		chromedp.ExecPath(c.opts.ChromePath),
 		chromedp.Flag("headless", true),
@@ -232,15 +243,23 @@ func (c *Capturer) ensureBrowser() (context.Context, error) {
 	allocCtx, allocCancel := chromedp.NewExecAllocator(context.Background(), allocOpts...)
 	browserCtx, browserCancel := chromedp.NewContext(allocCtx)
 
-	// Start Chrome now (connect DevTools) so the first capture doesn't absorb start cost
-	// into the page timeout, and so we surface start errors clearly.
-	startCtx, startCancel := context.WithTimeout(browserCtx, startTO)
-	err := chromedp.Run(startCtx)
-	startCancel()
-	if err != nil {
+	// Start Chrome now (connect DevTools). Must Run on browserCtx itself — not a
+	// child WithTimeout — or canceling the child kills the shared browser.
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- chromedp.Run(browserCtx)
+	}()
+	select {
+	case err := <-errCh:
+		if err != nil {
+			browserCancel()
+			allocCancel()
+			return nil, fmt.Errorf("browser start (%s): %w", c.opts.ChromePath, err)
+		}
+	case <-time.After(startTO):
 		browserCancel()
 		allocCancel()
-		return nil, fmt.Errorf("browser start (%s): %w", c.opts.ChromePath, err)
+		return nil, fmt.Errorf("browser start (%s): timed out after %s", c.opts.ChromePath, startTO)
 	}
 
 	c.allocCancel = allocCancel
