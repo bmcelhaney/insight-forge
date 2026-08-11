@@ -26,16 +26,21 @@ type HitLabel struct {
 
 // RunStatus is the pollable state of an analysis screenshot batch.
 type RunStatus struct {
-	AnalysisID string                                `json:"analysis_id"`
-	NSN        string                                `json:"nsn,omitempty"`
-	Status     string                                `json:"status"` // pending | running | complete
-	Total      int                                   `json:"total"`
-	Done       int                                   `json:"done"`
-	Ready      int                                   `json:"ready"`
-	Failed     int                                   `json:"failed"`
+	AnalysisID string                                   `json:"analysis_id"`
+	NSN        string                                   `json:"nsn,omitempty"`
+	Status     string                                   `json:"status"` // pending | running | complete
+	Total      int                                      `json:"total"`
+	Done       int                                      `json:"done"`
+	Ready      int                                      `json:"ready"`
+	Failed     int                                      `json:"failed"`
 	Hits       map[string]*models.DataCaptureScreenshot `json:"hits"` // hit_id → screenshot
-	Labels     map[string]HitLabel                   `json:"labels,omitempty"`
-	UpdatedAt  time.Time                             `json:"updated_at"`
+	Labels     map[string]HitLabel                      `json:"labels,omitempty"`
+	// DataCapture is the full data-capture document for this run with
+	// hits[].proof.screenshot updated as each capture finishes (includes
+	// Tigris presigned url when status=ready). Preferred payload for
+	// downstream apps that want images attached to each hit.
+	DataCapture *models.DataCaptureDocument `json:"data_capture,omitempty"`
+	UpdatedAt   time.Time                   `json:"updated_at"`
 }
 
 type captureJob struct {
@@ -246,6 +251,9 @@ func (w *Worker) MarkPendingAndEnqueue(doc *models.DataCaptureDocument) int {
 	} else {
 		run.Status = "running"
 	}
+	// Snapshot document AFTER pending proofs are attached so poll payload has
+	// hits[].proof.screenshot (status pending → ready with Tigris url).
+	run.DataCapture = cloneDataCaptureDocument(doc)
 	w.mu.Lock()
 	// Evict old runs if map is large.
 	if len(w.runs) > 200 {
@@ -367,8 +375,14 @@ func (w *Worker) finishJob(job captureJob, shot *models.DataCaptureScreenshot) {
 	if run == nil {
 		return
 	}
-	run.Hits[job.hitID] = shot
+	// Store a copy so later mutations cannot race readers.
+	cp := *shot
+	run.Hits[job.hitID] = &cp
 	run.Labels[job.hitID] = job.label
+	// Attach Tigris URL (and full proof) onto the matching data-capture hit.
+	if run.DataCapture != nil {
+		applyScreenshotToDocument(run.DataCapture, job.hitID, &cp)
+	}
 	run.Done++
 	if shot.Status == "ready" {
 		run.Ready++
@@ -381,6 +395,67 @@ func (w *Worker) finishJob(job captureJob, shot *models.DataCaptureScreenshot) {
 		run.Status = "running"
 	}
 	run.UpdatedAt = time.Now().UTC()
+}
+
+func applyScreenshotToDocument(doc *models.DataCaptureDocument, hitID string, shot *models.DataCaptureScreenshot) {
+	if doc == nil || shot == nil || hitID == "" {
+		return
+	}
+	for i := range doc.Hits {
+		if doc.Hits[i].HitID != hitID {
+			continue
+		}
+		if doc.Hits[i].Proof == nil {
+			doc.Hits[i].Proof = &models.DataCaptureProof{}
+		}
+		cp := *shot
+		doc.Hits[i].Proof.Screenshot = &cp
+		return
+	}
+}
+
+func cloneDataCaptureDocument(src *models.DataCaptureDocument) *models.DataCaptureDocument {
+	if src == nil {
+		return nil
+	}
+	// Shallow-copy struct then deep-copy hits slice + nested proof pointers we mutate.
+	out := *src
+	if src.Hits != nil {
+		out.Hits = make([]models.DataCaptureHit, len(src.Hits))
+		copy(out.Hits, src.Hits)
+		for i := range out.Hits {
+			if src.Hits[i].Proof != nil {
+				p := *src.Hits[i].Proof
+				if src.Hits[i].Proof.Screenshot != nil {
+					s := *src.Hits[i].Proof.Screenshot
+					p.Screenshot = &s
+				}
+				out.Hits[i].Proof = &p
+			}
+			if src.Hits[i].Pricing != nil {
+				pr := *src.Hits[i].Pricing
+				out.Hits[i].Pricing = &pr
+			}
+			if src.Hits[i].Links != nil {
+				ln := *src.Hits[i].Links
+				out.Hits[i].Links = &ln
+			}
+			if src.Hits[i].Attributes != nil {
+				out.Hits[i].Attributes = map[string]any{}
+				for k, v := range src.Hits[i].Attributes {
+					out.Hits[i].Attributes[k] = v
+				}
+			}
+		}
+	}
+	if src.Sources != nil {
+		out.Sources = append([]models.DataCaptureSource(nil), src.Sources...)
+	}
+	if src.Scores != nil {
+		sc := *src.Scores
+		out.Scores = &sc
+	}
+	return &out
 }
 
 func (w *Worker) evictOldestLocked(n int) {
@@ -413,16 +488,17 @@ func cloneRun(src *RunStatus) *RunStatus {
 		return nil
 	}
 	out := &RunStatus{
-		AnalysisID: src.AnalysisID,
-		NSN:        src.NSN,
-		Status:     src.Status,
-		Total:      src.Total,
-		Done:       src.Done,
-		Ready:      src.Ready,
-		Failed:     src.Failed,
-		UpdatedAt:  src.UpdatedAt,
-		Hits:       map[string]*models.DataCaptureScreenshot{},
-		Labels:     map[string]HitLabel{},
+		AnalysisID:  src.AnalysisID,
+		NSN:         src.NSN,
+		Status:      src.Status,
+		Total:       src.Total,
+		Done:        src.Done,
+		Ready:       src.Ready,
+		Failed:      src.Failed,
+		UpdatedAt:   src.UpdatedAt,
+		Hits:        map[string]*models.DataCaptureScreenshot{},
+		Labels:      map[string]HitLabel{},
+		DataCapture: cloneDataCaptureDocument(src.DataCapture),
 	}
 	for k, v := range src.Hits {
 		if v == nil {

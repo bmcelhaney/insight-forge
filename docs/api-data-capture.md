@@ -7,6 +7,21 @@
 **1.2:** each hit has at most **one** primary evidence URL (`links.url` + `links.url_kind`).  
 **1.3:** `analysis_id` + optional `proof.screenshot` (Tigris object for visual pricing proof of `links.url`).
 
+### Screenshot-related payload fields (1.3 + recent)
+
+| Field | Where | Notes |
+|---|---|---|
+| `analysis_id` | document root | Correlates the run + Tigris object keys |
+| `hits[].proof.screenshot` | on eligible hits only | Present when `capture_screenshots: true` |
+| `hits[].proof.screenshot.status` | | `pending` → `ready` \| `failed` |
+| `hits[].proof.screenshot.kind` | | `page_screenshot` (full page) or `product_image` (bot-wall fallback) |
+| `hits[].proof.screenshot.url` | | **Presigned Tigris GET URL** when `status=ready` (~1h TTL) |
+| `hits[].proof.screenshot.object_key` | | Durable Tigris key (re-presign later) |
+| `hits[].proof.screenshot.bucket` | | Tigris bucket name |
+| `hits[].attributes.product_image` | optional | Upstream SerpAPI thumbnail URL (source material, not Tigris) |
+
+**Async flow:** initial `POST /api/analyze` returns screenshots as `status: "pending"` (no Tigris URL yet). Poll `GET /api/proofs/{analysis_id}` until `status: "complete"`. The poll response includes **`data_capture`** — the full document with `hits[].proof.screenshot.url` filled in for every ready image.
+
 There is no app-level API key. Auth (if any) is at the gateway (e.g. Sprites public vs sprite URL).
 
 ---
@@ -42,7 +57,7 @@ Content-Type: application/json
 |---|---|---|
 | `nsn` | **Yes** | 9-digit NIIN or 13-digit NSN |
 | `serp_immersive` | No | `true` = Google Shopping + Immersive multi-store (default). `false` = shopping-search only (less SerpAPI quota) |
-| `capture_screenshots` | No | `true` = **async** capture of eligible `links.url` → Tigris. Hits return with `proof.screenshot.status: "pending"`. Poll `GET /api/proofs/{analysis_id}`. Requires Chrome + Tigris. |
+| `capture_screenshots` | No | `true` = **async** visual evidence of eligible `links.url` → Tigris. Hits return with `proof.screenshot.status: "pending"`. Poll `GET /api/proofs/{analysis_id}` — response includes full `data_capture` with Tigris `url` on each ready hit. Requires Tigris (+ screenshot backend, default thum.io). |
 
 Same body works for `POST /api/insight`. Query params: `?serp_immersive=false`, `?capture_screenshots=true`.
 
@@ -206,6 +221,7 @@ Present when screenshots were requested and a capture was attempted.
 "proof": {
   "screenshot": {
     "status": "ready",
+    "kind": "page_screenshot",
     "bucket": "fair-market-pricing",
     "object_key": "insight-forge/2026/08/10/8020015964253/{analysis_id}/hits/price-obs-12.png",
     "content_type": "image/png",
@@ -214,7 +230,7 @@ Present when screenshots were requested and a capture was attempted.
     "width": 1280,
     "height": 720,
     "sha256": "…",
-    "url": "https://…presigned GET…"
+    "url": "https://t3.storage.dev/fair-market-pricing/…?X-Amz-Signature=…"
   }
 }
 ```
@@ -222,14 +238,24 @@ Present when screenshots were requested and a capture was attempted.
 | Field | Description |
 |---|---|
 | `status` | `ready` \| `failed` \| `pending` \| `skipped` |
+| `kind` | `page_screenshot` (full page) or `product_image` (catalog photo when merchant bot-walls page capture) |
 | `object_key` | Durable Tigris/S3 key (use for re-presign / archival) |
-| `url` | Time-limited presigned download (typically ~1h) |
-| `source_url` | Exact page captured (= `links.url` at capture time) |
+| **`url`** | **Time-limited presigned Tigris download (~1h)** — this is the image URL to attach to the hit |
+| `bucket` | Tigris bucket |
+| `source_url` | Page associated with the evidence (= `links.url` at capture time) |
 | `error` | Safe failure text when `status=failed` |
 
-**Eligibility:** `price_observation` (or strong commercial identity) with `url_kind` in `merchant_pdp` \| `amazon_dp` \| `federal`, capped by `IF_SCREENSHOT_MAX_PER_RUN`.
+**Eligibility:** `price_observation` / strong commercial identity with `url_kind` in `merchant_pdp` \| `amazon_dp` \| `federal`, capped by `IF_SCREENSHOT_MAX_PER_RUN`.
 
-**Async poll API:**
+**How to get Tigris URLs on each hit (recommended consumer flow):**
+
+```http
+POST /api/analyze
+{ "nsn": "8020015964253", "capture_screenshots": true }
+```
+
+1. Read `analysis_id` and initial `hits[]` (screenshots are `pending`).
+2. Poll until complete:
 
 ```http
 GET /api/proofs/{analysis_id}
@@ -238,15 +264,45 @@ GET /api/proofs/{analysis_id}
 ```json
 {
   "analysis_id": "…",
-  "status": "running",
+  "status": "complete",
   "total": 12,
-  "done": 4,
-  "ready": 3,
-  "failed": 1,
-  "hits": { "price-obs-3": { "status": "ready", "url": "https://…presigned…", "object_key": "…" } },
-  "labels": { "price-obs-3": { "merchant": "Home Depot", "unit_price": 40.35, "sku": "R091" } }
+  "done": 12,
+  "ready": 10,
+  "failed": 2,
+  "hits": {
+    "price-obs-3": {
+      "status": "ready",
+      "kind": "product_image",
+      "url": "https://t3.storage.dev/…presigned…",
+      "object_key": "insight-forge/…/price-obs-3.png",
+      "bucket": "fair-market-pricing"
+    }
+  },
+  "data_capture": {
+    "schema": "insight-forge.data-capture.v1",
+    "schema_version": "1.3",
+    "analysis_id": "…",
+    "hits": [
+      {
+        "hit_id": "price-obs-3",
+        "links": { "url": "https://www.walmart.com/…", "url_kind": "merchant_pdp" },
+        "proof": {
+          "screenshot": {
+            "status": "ready",
+            "kind": "product_image",
+            "url": "https://t3.storage.dev/…presigned…",
+            "object_key": "insight-forge/…/price-obs-3.png",
+            "bucket": "fair-market-pricing"
+          }
+        }
+      }
+    ]
+  }
 }
 ```
+
+**Use `data_capture` from the proofs poll** as the final machine payload — every hit that has an image includes `proof.screenshot.url` (Tigris).  
+Alternatively map `proofs.hits[hit_id].url` onto your copy of the analyze response by `hit_id`.
 
 UI polls this endpoint and shows thumbnails as each shot becomes `ready`.
 
