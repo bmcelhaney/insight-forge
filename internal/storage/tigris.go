@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"path"
 	"strings"
 	"time"
@@ -137,7 +138,8 @@ func (c *Client) PutObject(ctx context.Context, key string, body []byte, content
 	return nil
 }
 
-// PresignGet returns a time-limited GET URL for an object.
+// PresignGet returns a time-limited GET URL for an object (UI/proxy use only;
+// not embedded in data-capture JSON for long-term storage).
 func (c *Client) PresignGet(ctx context.Context, key string, ttl time.Duration) (string, error) {
 	if c == nil {
 		return "", fmt.Errorf("tigris: client not configured")
@@ -156,6 +158,34 @@ func (c *Client) PresignGet(ctx context.Context, key string, ttl time.Duration) 
 		return "", fmt.Errorf("tigris presign: %w", err)
 	}
 	return out.URL, nil
+}
+
+// GetObject downloads object bytes from the bucket (for UI image proxy).
+func (c *Client) GetObject(ctx context.Context, key string) (body []byte, contentType string, err error) {
+	if c == nil {
+		return nil, "", fmt.Errorf("tigris: client not configured")
+	}
+	key = strings.TrimPrefix(key, "/")
+	out, err := c.s3.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(c.bucket),
+		Key:    aws.String(key),
+	})
+	if err != nil {
+		return nil, "", fmt.Errorf("tigris get %s: %w", key, err)
+	}
+	defer out.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(out.Body, 15<<20)) // 15 MiB cap
+	if err != nil {
+		return nil, "", fmt.Errorf("tigris get read %s: %w", key, err)
+	}
+	ct := ""
+	if out.ContentType != nil {
+		ct = *out.ContentType
+	}
+	if ct == "" {
+		ct = "application/octet-stream"
+	}
+	return data, ct, nil
 }
 
 // Ping does a cheap HeadBucket to verify credentials/bucket (no secrets logged).

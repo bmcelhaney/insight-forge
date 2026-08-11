@@ -379,6 +379,40 @@ func main() {
 		_ = json.NewEncoder(w).Encode(run)
 	})
 
+	// UI image proxy — serves Tigris objects without embedding short-lived URLs in JSON.
+	// Path is stable for the session: /api/proofs/{analysis_id}/hits/{hit_id}/image
+	r.Get("/api/proofs/{analysisID}/hits/{hitID}/image", func(w http.ResponseWriter, r *http.Request) {
+		id := strings.TrimSpace(chi.URLParam(r, "analysisID"))
+		hitID := strings.TrimSpace(chi.URLParam(r, "hitID"))
+		if id == "" || hitID == "" || shotWorker == nil || tigrisStore == nil {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		run := shotWorker.GetRun(id)
+		if run == nil {
+			http.Error(w, "analysis not found", http.StatusNotFound)
+			return
+		}
+		shot := run.Hits[hitID]
+		if shot == nil || shot.Status != "ready" || strings.TrimSpace(shot.ObjectKey) == "" {
+			http.Error(w, "image not ready", http.StatusNotFound)
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+		defer cancel()
+		data, ct, err := tigrisStore.GetObject(ctx, shot.ObjectKey)
+		if err != nil {
+			http.Error(w, "image fetch failed", http.StatusBadGateway)
+			return
+		}
+		if ct == "" {
+			ct = "image/png"
+		}
+		w.Header().Set("Content-Type", ct)
+		w.Header().Set("Cache-Control", "private, max-age=300")
+		_, _ = w.Write(data)
+	})
+
 	// Primary machine API: data-capture document only — identical body to
 	// GET /api/export/data/{nsn} and to the UI Data Capture export (same builder).
 	// Optional: "serp_immersive": true|false (default true / server IF_SERPAPI_IMMERSIVE).

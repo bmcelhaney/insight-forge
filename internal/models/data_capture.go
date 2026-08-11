@@ -95,13 +95,16 @@ type DataCaptureScreenshot struct {
 	ObjectKey   string    `json:"object_key,omitempty"`
 	ContentType string    `json:"content_type,omitempty"`
 	CapturedAt  time.Time `json:"captured_at,omitempty"`
-	// SourceURL is the page (or image origin) associated with this evidence.
+	// SourceURL is the durable product/page URL for this hit (same intent as links.url).
+	// Store this for human/merchant reference — not the Tigris object.
 	SourceURL  string `json:"source_url,omitempty"`
 	HTTPStatus int    `json:"http_status,omitempty"`
 	Width      int    `json:"width,omitempty"`
 	Height     int    `json:"height,omitempty"`
 	SHA256     string `json:"sha256,omitempty"`
-	// URL is an optional time-limited presigned GET URL (not a permanent public ACL).
+	// URL is intentionally not populated. Short-lived presigned links are unsuitable
+	// for DB storage. Use bucket + object_key for durable Tigris reference.
+	// (Field retained omitempty for older documents only.)
 	URL   string `json:"url,omitempty"`
 	Error string `json:"error,omitempty"`
 }

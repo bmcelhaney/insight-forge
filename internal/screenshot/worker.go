@@ -36,9 +36,9 @@ type RunStatus struct {
 	Hits       map[string]*models.DataCaptureScreenshot `json:"hits"` // hit_id → screenshot
 	Labels     map[string]HitLabel                      `json:"labels,omitempty"`
 	// DataCapture is the full data-capture document for this run with
-	// hits[].proof.screenshot updated as each capture finishes (includes
-	// Tigris presigned url when status=ready). Preferred payload for
-	// downstream apps that want images attached to each hit.
+	// hits[].proof.screenshot updated as each capture finishes.
+	// Ready shots include durable Tigris bucket + object_key (not a temporary URL).
+	// Preferred payload for downstream apps that want images attached to each hit.
 	DataCapture *models.DataCaptureDocument `json:"data_capture,omitempty"`
 	UpdatedAt   time.Time                   `json:"updated_at"`
 }
@@ -351,7 +351,9 @@ func (w *Worker) processJob(job captureJob) {
 		w.finishJob(job, result)
 		return
 	}
-	presign, _ := w.store.PresignGet(ctx, key, job.presignTTL)
+	// No short-lived presigned URL in the payload — consumers store bucket+object_key
+	// and re-presign (or fetch via credentials) for long-term access. source_url is the
+	// durable product/page link for the hit.
 	result = &models.DataCaptureScreenshot{
 		Status:      "ready",
 		Kind:        kind,
@@ -363,7 +365,6 @@ func (w *Worker) processJob(job captureJob) {
 		Width:       shot.Width,
 		Height:      shot.Height,
 		SHA256:      shot.SHA256,
-		URL:         presign,
 	}
 	w.finishJob(job, result)
 }

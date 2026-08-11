@@ -981,7 +981,7 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
       if (statusEl) statusEl.textContent = 'Capturing 0/' + pending.length + '…';
       grid.innerHTML = '';
       pending.forEach(p => {
-        grid.appendChild(buildEvidenceThumbCard(p.hit_id, p.shot, p.label));
+        grid.appendChild(buildEvidenceThumbCard(p.hit_id, p.shot, p.label, currentAnalysisId || ''));
       });
     }
 
@@ -1011,18 +1011,25 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
       // Rebuild grid in stable hit_id order
       ids.sort();
       grid.innerHTML = '';
+      const analysisId = run.analysis_id || run.AnalysisID || currentAnalysisId || '';
       ids.forEach(id => {
         const shot = hits[id];
         const label = labels[id] || { hit_id: id };
-        grid.appendChild(buildEvidenceThumbCard(id, shot, label));
+        grid.appendChild(buildEvidenceThumbCard(id, shot, label, analysisId));
       });
     }
 
-    function buildEvidenceThumbCard(hitId, shot, label) {
+    function buildEvidenceThumbCard(hitId, shot, label, analysisId) {
       const st = (shot && (shot.status || shot.Status)) || 'pending';
       const kind = (shot && (shot.kind || shot.Kind)) || '';
       const srcUrl = (shot && (shot.source_url || shot.SourceURL)) || label.source_url || label.SourceURL || '';
-      const imgUrl = (shot && (shot.url || shot.URL)) || '';
+      // Images are served via app proxy (no short-lived Tigris URL in JSON).
+      const objectKey = (shot && (shot.object_key || shot.ObjectKey)) || '';
+      let imgUrl = '';
+      if (st === 'ready' && analysisId && objectKey) {
+        imgUrl = '/api/proofs/' + encodeURIComponent(analysisId) +
+          '/hits/' + encodeURIComponent(hitId) + '/image';
+      }
       const merchant = label.merchant || label.Merchant || '';
       const sku = label.sku || label.SKU || '';
       const price = label.unit_price || label.UnitPrice || 0;
@@ -1046,13 +1053,12 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
         img.referrerPolicy = 'no-referrer';
         img.className = 'w-full h-full object-cover object-top hover:opacity-95';
         img.onerror = () => {
-          media.innerHTML = '<div class="text-[10px] text-amber-400/90 px-2 text-center">Image URL expired or blocked — <a class="underline" target="_blank" rel="noopener" href="' +
-            imgUrl.replace(/"/g, '&quot;') + '">open</a></div>';
+          media.innerHTML = '<div class="text-[10px] text-amber-400/90 px-2 text-center">Image unavailable</div>';
         };
         a.appendChild(img);
         media.appendChild(a);
       } else if (st === 'ready' && !imgUrl) {
-        media.innerHTML = '<div class="text-[10px] text-amber-400/90 px-2 text-center">Ready but no image URL</div>';
+        media.innerHTML = '<div class="text-[10px] text-amber-400/90 px-2 text-center">Ready (object stored; open product page)</div>';
       } else if (st === 'failed') {
         const errMsg = (shot && (shot.error || shot.Error)) || 'Capture failed';
         media.innerHTML = '<div class="text-[10px] text-red-400/90 px-2 text-center leading-snug">Capture failed</div>';

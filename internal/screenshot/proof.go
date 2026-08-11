@@ -103,9 +103,9 @@ func AttachProofs(ctx context.Context, doc *models.DataCaptureDocument, store *s
 			h.Proof.Screenshot.Error = truncateErr(err.Error(), 240)
 			continue
 		}
-		presign, _ := store.PresignGet(ctx, key, opts.PresignTTL)
 		h.Proof.Screenshot = &models.DataCaptureScreenshot{
 			Status:      "ready",
+			Kind:        KindPageScreenshot,
 			Bucket:      store.Bucket(),
 			ObjectKey:   key,
 			ContentType: "image/png",
@@ -114,7 +114,6 @@ func AttachProofs(ctx context.Context, doc *models.DataCaptureDocument, store *s
 			Width:       shot.Width,
 			Height:      shot.Height,
 			SHA256:      shot.SHA256,
-			URL:         presign,
 		}
 	}
 }

@@ -15,12 +15,14 @@
 | `hits[].proof.screenshot` | on eligible hits only | Present when `capture_screenshots: true` |
 | `hits[].proof.screenshot.status` | | `pending` → `ready` \| `failed` |
 | `hits[].proof.screenshot.kind` | | `page_screenshot` (full page) or `product_image` (bot-wall fallback) |
-| `hits[].proof.screenshot.url` | | **Presigned Tigris GET URL** when `status=ready` (~1h TTL) |
-| `hits[].proof.screenshot.object_key` | | Durable Tigris key (re-presign later) |
-| `hits[].proof.screenshot.bucket` | | Tigris bucket name |
+| `hits[].proof.screenshot.source_url` | | **Durable product/page URL** for the hit (merchant link) |
+| `hits[].proof.screenshot.object_key` | | **Durable Tigris key — store this in your DB** |
+| `hits[].proof.screenshot.bucket` | | Tigris bucket name — store with object_key |
 | `hits[].attributes.product_image` | optional | Upstream SerpAPI thumbnail URL (source material, not Tigris) |
 
-**Async flow:** initial `POST /api/analyze` returns screenshots as `status: "pending"` (no Tigris URL yet). Poll `GET /api/proofs/{analysis_id}` until `status: "complete"`. The poll response includes **`data_capture`** — the full document with `hits[].proof.screenshot.url` filled in for every ready image.
+**No short-lived `url` field is populated.** Presigned links expire; they are unsuitable for DB storage. Store `bucket` + `object_key` and re-presign (or fetch with credentials) when you need to display the image.
+
+**Async flow:** initial `POST /api/analyze` returns screenshots as `status: "pending"`. Poll `GET /api/proofs/{analysis_id}` until `status: "complete"`. Use **`data_capture`** — ready hits have `bucket`, `object_key`, and `source_url`.
 
 There is no app-level API key. Auth (if any) is at the gateway (e.g. Sprites public vs sprite URL).
 
@@ -229,8 +231,7 @@ Present when screenshots were requested and a capture was attempted.
     "source_url": "https://www.homedepot.com/p/…",
     "width": 1280,
     "height": 720,
-    "sha256": "…",
-    "url": "https://t3.storage.dev/fair-market-pricing/…?X-Amz-Signature=…"
+    "sha256": "…"
   }
 }
 ```
@@ -239,11 +240,12 @@ Present when screenshots were requested and a capture was attempted.
 |---|---|
 | `status` | `ready` \| `failed` \| `pending` \| `skipped` |
 | `kind` | `page_screenshot` (full page) or `product_image` (catalog photo when merchant bot-walls page capture) |
-| `object_key` | Durable Tigris/S3 key (use for re-presign / archival) |
-| **`url`** | **Time-limited presigned Tigris download (~1h)** — this is the image URL to attach to the hit |
-| `bucket` | Tigris bucket |
-| `source_url` | Page associated with the evidence (= `links.url` at capture time) |
+| **`bucket` + `object_key`** | **Durable Tigris location — store these in your DB** |
+| **`source_url`** | **Durable product/page URL** for the hit (merchant link; same role as `links.url`) |
+| `content_type` / `sha256` | Optional integrity / MIME metadata |
 | `error` | Safe failure text when `status=failed` |
+
+Do **not** expect a long-lived `url` field. Short-lived presigned URLs are not emitted in the machine payload.
 
 **Eligibility:** `price_observation` / strong commercial identity with `url_kind` in `merchant_pdp` \| `amazon_dp` \| `federal`, capped by `IF_SCREENSHOT_MAX_PER_RUN`.
 
@@ -273,9 +275,9 @@ GET /api/proofs/{analysis_id}
     "price-obs-3": {
       "status": "ready",
       "kind": "product_image",
-      "url": "https://t3.storage.dev/…presigned…",
       "object_key": "insight-forge/…/price-obs-3.png",
-      "bucket": "fair-market-pricing"
+      "bucket": "fair-market-pricing",
+      "source_url": "https://www.walmart.com/…"
     }
   },
   "data_capture": {
@@ -290,9 +292,9 @@ GET /api/proofs/{analysis_id}
           "screenshot": {
             "status": "ready",
             "kind": "product_image",
-            "url": "https://t3.storage.dev/…presigned…",
+            "bucket": "fair-market-pricing",
             "object_key": "insight-forge/…/price-obs-3.png",
-            "bucket": "fair-market-pricing"
+            "source_url": "https://www.walmart.com/…"
           }
         }
       }
@@ -301,10 +303,15 @@ GET /api/proofs/{analysis_id}
 }
 ```
 
-**Use `data_capture` from the proofs poll** as the final machine payload — every hit that has an image includes `proof.screenshot.url` (Tigris).  
-Alternatively map `proofs.hits[hit_id].url` onto your copy of the analyze response by `hit_id`.
+**Use `data_capture` from the proofs poll** as the final machine payload.  
+For each ready image hit, persist:
 
-UI polls this endpoint and shows thumbnails as each shot becomes `ready`.
+- `proof.screenshot.bucket` + `proof.screenshot.object_key` → Tigris object (long-term)
+- `proof.screenshot.source_url` (or `links.url`) → product/page link (long-term)
+
+To re-display the image later, re-presign `object_key` with your Tigris credentials (or `GetObject`).
+
+UI polls this endpoint; thumbnails load via `GET /api/proofs/{analysis_id}/hits/{hit_id}/image` (session proxy, not stored in JSON).
 
 ### `counts`
 
