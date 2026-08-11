@@ -279,7 +279,7 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
             <span>Pricing evidence screenshots</span>
             <span id="evidence-screenshots-status" class="text-[10px] font-normal text-zinc-500"></span>
           </div>
-          <p class="text-[11px] text-zinc-500 mb-3">Visual evidence for price hits (async → Tigris). Big-box sites (Amazon/Walmart/Home Depot) use product photos — they block automated page screenshots with bot walls. Other merchants get a full page capture. Click a thumbnail to open full size.</p>
+          <p class="text-[11px] text-zinc-500 mb-3">Page screenshots of product URLs when capture succeeds (async → Tigris). Bot-walled merchants and slow captures are skipped after a short budget — product URL is always kept. Click a ready thumbnail to open full size.</p>
           <div id="evidence-screenshots-grid" class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3"></div>
         </div>
 
@@ -1063,6 +1063,10 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
         const errMsg = (shot && (shot.error || shot.Error)) || 'Capture failed';
         media.innerHTML = '<div class="text-[10px] text-red-400/90 px-2 text-center leading-snug">Capture failed</div>';
         media.title = errMsg;
+      } else if (st === 'skipped') {
+        const errMsg = (shot && (shot.error || shot.Error)) || 'Skipped';
+        media.innerHTML = '<div class="text-[10px] text-zinc-500 px-2 text-center leading-snug">No screenshot<br/><span class="text-zinc-600">URL kept</span></div>';
+        media.title = errMsg;
       } else {
         media.innerHTML = '<div class="text-[10px] text-zinc-500 flex flex-col items-center gap-1"><i class="fa-solid fa-spinner fa-spin"></i><span>Capturing…</span></div>';
       }
@@ -1075,11 +1079,15 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
       line1.textContent = merchant || sku || hitId;
       line1.title = merchant || sku || hitId;
       cap.appendChild(line1);
-      if (kind) {
+      if (st === 'skipped') {
         const kindEl = document.createElement('div');
-        kindEl.className = 'text-[9px] uppercase tracking-wide ' +
-          (kind === 'product_image' ? 'text-amber-400/80' : 'text-sky-400/80');
-        kindEl.textContent = kind === 'product_image' ? 'product photo (bot-wall fallback)' : 'page screenshot';
+        kindEl.className = 'text-[9px] uppercase tracking-wide text-zinc-500';
+        kindEl.textContent = 'screenshot skipped · URL kept';
+        cap.appendChild(kindEl);
+      } else if (kind) {
+        const kindEl = document.createElement('div');
+        kindEl.className = 'text-[9px] uppercase tracking-wide text-sky-400/80';
+        kindEl.textContent = 'page screenshot';
         cap.appendChild(kindEl);
       }
       if (price > 0) {

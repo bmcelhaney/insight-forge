@@ -123,12 +123,12 @@ func main() {
 	if cfg.ScreenshotEnabled {
 		shotTO := time.Duration(cfg.ScreenshotTimeoutMS) * time.Millisecond
 		if shotTO <= 0 {
-			shotTO = 20 * time.Second
+			shotTO = 10 * time.Second
 		}
-		if shotTO > 45*time.Second {
-			shotTO = 45 * time.Second
+		if shotTO > 30*time.Second {
+			shotTO = 30 * time.Second
 		}
-		// Default backend is thum.io (HTTP) — local Chrome on sprites hard-timeouts on retail PDPs.
+		// Default backend is thum.io (HTTP) — page screenshots of product URLs only.
 		backend := strings.TrimSpace(os.Getenv("IF_SCREENSHOT_BACKEND"))
 		if backend == "" {
 			backend = screenshot.BackendThum
@@ -141,13 +141,20 @@ func main() {
 			ThumAuth: strings.TrimSpace(os.Getenv("IF_THUM_AUTH")),
 		})
 		if shotCapturer.Available() && tigrisStore != nil {
+			batchTO := 45 * time.Second
+			if v := strings.TrimSpace(os.Getenv("IF_SCREENSHOT_BATCH_TIMEOUT_MS")); v != "" {
+				if ms, err := strconv.Atoi(v); err == nil && ms > 0 {
+					batchTO = time.Duration(ms) * time.Millisecond
+				}
+			}
 			shotWorker = screenshot.NewWorker(tigrisStore, shotCapturer, screenshot.ProofOptions{
-				MaxPerRun:  cfg.ScreenshotMaxPerRun,
-				Timeout:    shotTO,
-				PresignTTL: time.Hour,
+				MaxPerRun:    cfg.ScreenshotMaxPerRun,
+				Timeout:      shotTO,
+				BatchTimeout: batchTO,
+				PresignTTL:   time.Hour,
 			})
-			fmt.Printf("Screenshots: async enabled (backend=%s parallel=%d timeout=%s max=%d/run) — poll GET /api/proofs/{analysis_id}\n",
-				shotCapturer.Backend(), shotCapturer.Parallelism(), shotTO, cfg.ScreenshotMaxPerRun)
+			fmt.Printf("Screenshots: async page-capture (backend=%s parallel=%d page_timeout=%s batch_budget=%s max=%d/run) — poll GET /api/proofs/{analysis_id}\n",
+				shotCapturer.Backend(), shotCapturer.Parallelism(), shotTO, batchTO, cfg.ScreenshotMaxPerRun)
 		} else if shotCapturer.Available() {
 			fmt.Printf("Screenshots: backend=%s ok but Tigris not configured\n", shotCapturer.Backend())
 		} else {

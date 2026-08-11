@@ -156,21 +156,10 @@ func (c *Capturer) Available() bool {
 	}
 }
 
-// CapturePNG is a convenience wrapper (page capture only, no product-image fallback).
+// CapturePNG captures a full-page screenshot of pageURL (pricing proof).
+// SerpAPI/catalog product photos are NOT used — they do not prove the listed price.
+// Bot-walled hosts should be skipped by the worker before calling this.
 func (c *Capturer) CapturePNG(ctx context.Context, pageURL string) (*Result, error) {
-	return c.CaptureEvidence(ctx, pageURL, "")
-}
-
-// CaptureEvidence returns visual proof for a price hit.
-//
-// Strategy (why this exists):
-//   Amazon / Walmart / Home Depot / etc. serve CAPTCHA / "robot or human" /
-//   "continue shopping" interstitial pages to datacenter screenshotters
-//   (thum, microlink, headless Chrome). Those images are useless as price
-//   evidence. For bot-walled hosts we instead archive a product catalog photo
-//   (SerpAPI Google Shopping thumbnail). Friendly hosts still get a full-page
-//   screenshot of the PDP.
-func (c *Capturer) CaptureEvidence(ctx context.Context, pageURL, productImageURL string) (*Result, error) {
 	if c == nil {
 		return nil, fmt.Errorf("screenshot: capturer nil")
 	}
@@ -180,30 +169,11 @@ func (c *Capturer) CaptureEvidence(ctx context.Context, pageURL, productImageURL
 	if !c.Available() {
 		return nil, fmt.Errorf("screenshot: backend %q unavailable", c.opts.Backend)
 	}
-
-	productImageURL = strings.TrimSpace(productImageURL)
 	host := hostOf(pageURL)
-
-	// Fast path (preferred for Windmill latency): SerpAPI / catalog product photo.
-	// Typically 200–800ms vs 2–5s for a full page render — and works on bot-walled hosts.
-	if productImageURL != "" && validatePublicHTTPURL(productImageURL) == nil {
-		if res, err := c.downloadAsResult(ctx, productImageURL, "product_image"); err == nil {
-			res.Kind = KindProductImage
-			res.Backend = "product_image"
-			return res, nil
-		}
-		// Fall through to page capture on friendly hosts only.
-	}
-
-	// Bot-walled big-box: never full-page render (CAPTCHA / interstitial only).
 	if isBotWalledHost(host) {
-		if productImageURL != "" {
-			return nil, fmt.Errorf("screenshot: bot-protected host %s — product image fetch failed", host)
-		}
-		return nil, fmt.Errorf("screenshot: bot-protected host %s — page capture skipped; no product image on hit", host)
+		return nil, fmt.Errorf("screenshot: bot-protected host %s (page capture not useful)", host)
 	}
 
-	// Friendly hosts without a product photo: full page screenshot (slower).
 	var res *Result
 	var err error
 	switch c.opts.Backend {

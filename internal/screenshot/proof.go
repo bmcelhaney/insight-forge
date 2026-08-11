@@ -12,11 +12,14 @@ import (
 
 // ProofOptions controls batch evidence capture for a data-capture document.
 type ProofOptions struct {
-	// MaxPerRun caps screenshots per analyze call (default 15).
+	// MaxPerRun caps page-capture attempts per analyze (default 6).
 	MaxPerRun int
-	// Timeout per page.
+	// Timeout per page capture attempt (default 10s).
 	Timeout time.Duration
-	// PresignTTL for proof.screenshot.url (default 1h).
+	// BatchTimeout is wall-clock budget for the whole batch after enqueue (default 45s).
+	// Remaining pending jobs become status=skipped; product source_url is kept.
+	BatchTimeout time.Duration
+	// PresignTTL unused in machine payload (no short-lived URLs); kept for API compat.
 	PresignTTL time.Duration
 }
 

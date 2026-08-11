@@ -33,26 +33,27 @@ type RunStatus struct {
 	Done       int                                      `json:"done"`
 	Ready      int                                      `json:"ready"`
 	Failed     int                                      `json:"failed"`
+	Skipped    int                                      `json:"skipped"`
 	Hits       map[string]*models.DataCaptureScreenshot `json:"hits"` // hit_id → screenshot
 	Labels     map[string]HitLabel                      `json:"labels,omitempty"`
 	// DataCapture is the full data-capture document for this run with
 	// hits[].proof.screenshot updated as each capture finishes.
-	// Ready shots include durable Tigris bucket + object_key (not a temporary URL).
-	// Preferred payload for downstream apps that want images attached to each hit.
+	// Ready shots include durable Tigris bucket + object_key.
+	// Skipped/failed still retain source_url (product page).
 	DataCapture *models.DataCaptureDocument `json:"data_capture,omitempty"`
 	UpdatedAt   time.Time                   `json:"updated_at"`
+	// Deadline is when remaining pending captures are abandoned (not exported).
+	deadline time.Time
 }
 
 type captureJob struct {
-	analysisID      string
-	nsn             string
-	hitID           string
-	pageURL         string
-	productImageURL string // SerpAPI thumbnail etc. — used when page is bot-walled
-	urlKind         string
-	label           HitLabel
-	timeout         time.Duration
-	presignTTL      time.Duration
+	analysisID string
+	nsn        string
+	hitID      string
+	pageURL    string
+	urlKind    string
+	label      HitLabel
+	timeout    time.Duration
 }
 
 // Worker runs screenshot jobs in the background and stores results by analysis_id.
@@ -71,10 +72,14 @@ type Worker struct {
 // NewWorker creates a background screenshot worker. start() is called on first enqueue.
 func NewWorker(store *storage.Client, capturer *Capturer, opts ProofOptions) *Worker {
 	if opts.MaxPerRun <= 0 {
-		opts.MaxPerRun = 8
+		opts.MaxPerRun = 6
 	}
 	if opts.Timeout <= 0 {
-		opts.Timeout = 20 * time.Second
+		opts.Timeout = 10 * time.Second
+	}
+	if opts.BatchTimeout <= 0 {
+		// Whole batch budget — after this, remaining jobs are skipped; product URLs kept.
+		opts.BatchTimeout = 45 * time.Second
 	}
 	if opts.PresignTTL <= 0 {
 		opts.PresignTTL = time.Hour
@@ -120,38 +125,15 @@ func (w *Worker) MarkPendingAndEnqueue(doc *models.DataCaptureDocument) int {
 		nsn = doc.Query.EntityID
 	}
 
+	now := time.Now().UTC()
 	run := &RunStatus{
 		AnalysisID: doc.AnalysisID,
 		NSN:        nsn,
 		Status:     "pending",
 		Hits:       map[string]*models.DataCaptureScreenshot{},
 		Labels:     map[string]HitLabel{},
-		UpdatedAt:  time.Now().UTC(),
-	}
-
-	// Index any product images on the document so bot-walled hits without their
-	// own thumbnail can reuse a SerpAPI photo from a sibling hit.
-	anyProductImg := ""
-	imgByMerchant := map[string]string{}
-	for i := range doc.Hits {
-		h := &doc.Hits[i]
-		if h.Attributes == nil {
-			continue
-		}
-		v, _ := h.Attributes["product_image"].(string)
-		v = strings.TrimSpace(v)
-		if v == "" {
-			continue
-		}
-		if anyProductImg == "" {
-			anyProductImg = v
-		}
-		if h.Pricing != nil {
-			m := strings.ToLower(strings.TrimSpace(h.Pricing.Merchant))
-			if m != "" {
-				imgByMerchant[m] = v
-			}
-		}
+		UpdatedAt:  now,
+		deadline:   now.Add(w.opts.BatchTimeout),
 	}
 
 	queued := 0
@@ -160,26 +142,7 @@ func (w *Worker) MarkPendingAndEnqueue(doc *models.DataCaptureDocument) int {
 		if !eligibleForScreenshot(h) {
 			continue
 		}
-		if queued >= w.opts.MaxPerRun {
-			break
-		}
 		src := strings.TrimSpace(h.Links.URL)
-		productImg := ""
-		if h.Attributes != nil {
-			if v, ok := h.Attributes["product_image"].(string); ok {
-				productImg = strings.TrimSpace(v)
-			}
-		}
-		if productImg == "" && h.Pricing != nil {
-			m := strings.ToLower(strings.TrimSpace(h.Pricing.Merchant))
-			if m != "" {
-				productImg = imgByMerchant[m]
-			}
-		}
-		// Same product family in one analysis — better a catalog photo than CAPTCHA.
-		if productImg == "" && isBotWalledHost(hostOf(src)) {
-			productImg = anyProductImg
-		}
 		label := HitLabel{
 			HitID:        h.HitID,
 			HitType:      h.HitType,
@@ -193,53 +156,77 @@ func (w *Worker) MarkPendingAndEnqueue(doc *models.DataCaptureDocument) int {
 			label.UnitPrice = h.Pricing.UnitPrice
 			label.Channel = h.Pricing.Channel
 		}
-		// Anticipate kind for UI while pending.
-		pendingKind := "page_screenshot"
-		if isBotWalledHost(hostOf(src)) {
-			if productImg != "" {
-				pendingKind = "product_image"
-			} else {
-				pendingKind = "product_image" // may still fail without image
-			}
-		}
-		pending := &models.DataCaptureScreenshot{
-			Status:    "pending",
-			Kind:      pendingKind,
-			SourceURL: src,
-		}
 		if h.Proof == nil {
 			h.Proof = &models.DataCaptureProof{}
 		}
-		h.Proof.Screenshot = pending
 
-		// Store snapshot for polling (copy).
+		// Bot-walled hosts: skip page capture immediately; keep product URL.
+		if isBotWalledHost(hostOf(src)) {
+			skipped := &models.DataCaptureScreenshot{
+				Status:    "skipped",
+				Kind:      KindPageScreenshot,
+				SourceURL: src,
+				Error:     "bot-protected merchant; product URL retained without page capture",
+			}
+			h.Proof.Screenshot = skipped
+			cp := *skipped
+			run.Hits[h.HitID] = &cp
+			run.Labels[h.HitID] = label
+			run.Total++
+			run.Done++
+			run.Skipped++
+			continue
+		}
+
+		// Cap live page-capture attempts (bot-walled skips don't consume the cap).
+		if queued >= w.opts.MaxPerRun {
+			skipped := &models.DataCaptureScreenshot{
+				Status:    "skipped",
+				Kind:      KindPageScreenshot,
+				SourceURL: src,
+				Error:     "screenshot cap reached; product URL retained without page capture",
+			}
+			h.Proof.Screenshot = skipped
+			cp := *skipped
+			run.Hits[h.HitID] = &cp
+			run.Labels[h.HitID] = label
+			run.Total++
+			run.Done++
+			run.Skipped++
+			continue
+		}
+
+		pending := &models.DataCaptureScreenshot{
+			Status:    "pending",
+			Kind:      KindPageScreenshot,
+			SourceURL: src,
+		}
+		h.Proof.Screenshot = pending
 		cp := *pending
 		run.Hits[h.HitID] = &cp
 		run.Labels[h.HitID] = label
 		run.Total++
 
 		job := captureJob{
-			analysisID:      doc.AnalysisID,
-			nsn:             nsn,
-			hitID:           h.HitID,
-			pageURL:         src,
-			productImageURL: productImg,
-			urlKind:         h.Links.URLKind,
-			label:           label,
-			timeout:         w.opts.Timeout,
-			presignTTL:      w.opts.PresignTTL,
+			analysisID: doc.AnalysisID,
+			nsn:        nsn,
+			hitID:      h.HitID,
+			pageURL:    src,
+			urlKind:    h.Links.URLKind,
+			label:      label,
+			timeout:    w.opts.Timeout,
 		}
 		select {
 		case w.jobs <- job:
 			queued++
 		default:
-			// Queue full — mark failed.
-			pending.Status = "failed"
-			pending.Error = "screenshot queue full"
+			pending.Status = "skipped"
+			pending.Error = "screenshot queue full; product URL retained"
 			cp2 := *pending
 			run.Hits[h.HitID] = &cp2
+			h.Proof.Screenshot = &cp2
 			run.Done++
-			run.Failed++
+			run.Skipped++
 		}
 	}
 
@@ -251,11 +238,8 @@ func (w *Worker) MarkPendingAndEnqueue(doc *models.DataCaptureDocument) int {
 	} else {
 		run.Status = "running"
 	}
-	// Snapshot document AFTER pending proofs are attached so poll payload has
-	// hits[].proof.screenshot (status pending → ready with Tigris url).
 	run.DataCapture = cloneDataCaptureDocument(doc)
 	w.mu.Lock()
-	// Evict old runs if map is large.
 	if len(w.runs) > 200 {
 		w.evictOldestLocked(50)
 	}
@@ -285,40 +269,52 @@ func (w *Worker) loop() {
 }
 
 func (w *Worker) processJob(job captureJob) {
-	// Don't use request context — it is cancelled when the HTTP handler returns.
+	// If the batch budget is exhausted, skip without another network call.
+	// Product URL stays on the proof object for Windmill/DB storage.
+	if w.batchExpired(job.analysisID) {
+		w.finishJob(job, &models.DataCaptureScreenshot{
+			Status:    "skipped",
+			Kind:      KindPageScreenshot,
+			SourceURL: job.pageURL,
+			Error:     "batch time budget exceeded; product URL retained without page capture",
+		})
+		return
+	}
+
 	pageTO := job.timeout
 	if pageTO <= 0 {
-		pageTO = 30 * time.Second
+		pageTO = 10 * time.Second
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), pageTO+20*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), pageTO+5*time.Second)
 	defer cancel()
 
 	result := &models.DataCaptureScreenshot{
 		Status:    "pending",
+		Kind:      KindPageScreenshot,
 		SourceURL: job.pageURL,
 	}
 
-	shot, err := w.capturer.CaptureEvidence(ctx, job.pageURL, job.productImageURL)
+	shot, err := w.capturer.CapturePNG(ctx, job.pageURL)
 	if err != nil {
 		result.Status = "failed"
 		result.Error = truncateErr(err.Error(), 240)
-		if isBotWalledHost(hostOf(job.pageURL)) {
-			result.Kind = KindProductImage
-		} else {
-			result.Kind = KindPageScreenshot
-		}
 		w.finishJob(job, result)
 		return
+	}
+	// Re-check budget after slow capture so we don't spend more time on Tigris if already late.
+	if w.batchExpired(job.analysisID) {
+		// Still upload if we already have pixels — capture work is done.
 	}
 	capturedAt := time.Now().UTC()
 	key := w.store.EvidenceObjectKey(job.nsn, job.analysisID, job.hitID, capturedAt)
 	meta := map[string]string{
-		"nsn":         job.nsn,
-		"analysis-id": job.analysisID,
-		"hit-id":      job.hitID,
-		"source-url":  job.pageURL,
-		"url-kind":    job.urlKind,
-		"content-sha": shot.SHA256,
+		"nsn":           job.nsn,
+		"analysis-id":   job.analysisID,
+		"hit-id":        job.hitID,
+		"source-url":    job.pageURL,
+		"url-kind":      job.urlKind,
+		"content-sha":   shot.SHA256,
+		"evidence-kind": KindPageScreenshot,
 	}
 	if job.label.Merchant != "" {
 		meta["merchant"] = job.label.Merchant
@@ -332,31 +328,22 @@ func (w *Worker) processJob(job captureJob) {
 	if shot.Backend != "" {
 		meta["capture-backend"] = shot.Backend
 	}
-	kind := shot.Kind
-	if kind == "" {
-		kind = KindPageScreenshot
-	}
-	meta["evidence-kind"] = kind
 	ct := shot.ContentType
 	if ct == "" {
 		ct = "image/png"
 	}
-	putCtx, putCancel := context.WithTimeout(ctx, 30*time.Second)
+	putCtx, putCancel := context.WithTimeout(ctx, 15*time.Second)
 	err = w.store.PutObject(putCtx, key, shot.PNG, ct, meta)
 	putCancel()
 	if err != nil {
 		result.Status = "failed"
 		result.Error = truncateErr(err.Error(), 240)
-		result.Kind = kind
 		w.finishJob(job, result)
 		return
 	}
-	// No short-lived presigned URL in the payload — consumers store bucket+object_key
-	// and re-presign (or fetch via credentials) for long-term access. source_url is the
-	// durable product/page link for the hit.
 	result = &models.DataCaptureScreenshot{
 		Status:      "ready",
-		Kind:        kind,
+		Kind:        KindPageScreenshot,
 		Bucket:      w.store.Bucket(),
 		ObjectKey:   key,
 		ContentType: ct,
@@ -369,6 +356,16 @@ func (w *Worker) processJob(job captureJob) {
 	w.finishJob(job, result)
 }
 
+func (w *Worker) batchExpired(analysisID string) bool {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	run := w.runs[analysisID]
+	if run == nil || run.deadline.IsZero() {
+		return false
+	}
+	return time.Now().After(run.deadline)
+}
+
 func (w *Worker) finishJob(job captureJob, shot *models.DataCaptureScreenshot) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -376,19 +373,24 @@ func (w *Worker) finishJob(job captureJob, shot *models.DataCaptureScreenshot) {
 	if run == nil {
 		return
 	}
-	// Store a copy so later mutations cannot race readers.
+	// Only count once: upgrade from pending (or first write).
+	if prev := run.Hits[job.hitID]; prev != nil && prev.Status != "pending" {
+		return
+	}
 	cp := *shot
 	run.Hits[job.hitID] = &cp
 	run.Labels[job.hitID] = job.label
-	// Attach Tigris URL (and full proof) onto the matching data-capture hit.
 	if run.DataCapture != nil {
 		applyScreenshotToDocument(run.DataCapture, job.hitID, &cp)
 	}
 	run.Done++
-	if shot.Status == "ready" {
+	switch shot.Status {
+	case "ready":
 		run.Ready++
-	} else if shot.Status == "failed" {
+	case "failed":
 		run.Failed++
+	case "skipped":
+		run.Skipped++
 	}
 	if run.Done >= run.Total {
 		run.Status = "complete"
@@ -496,10 +498,12 @@ func cloneRun(src *RunStatus) *RunStatus {
 		Done:        src.Done,
 		Ready:       src.Ready,
 		Failed:      src.Failed,
+		Skipped:     src.Skipped,
 		UpdatedAt:   src.UpdatedAt,
 		Hits:        map[string]*models.DataCaptureScreenshot{},
 		Labels:      map[string]HitLabel{},
 		DataCapture: cloneDataCaptureDocument(src.DataCapture),
+		deadline:    src.deadline,
 	}
 	for k, v := range src.Hits {
 		if v == nil {
