@@ -98,8 +98,9 @@ func Load() (*Config, error) {
 	viper.SetDefault("TIGRIS_ENABLED", false)
 	viper.SetDefault("TIGRIS_REGION", "auto")
 	viper.SetDefault("SCREENSHOT_ENABLED", false)
-	viper.SetDefault("SCREENSHOT_MAX_PER_RUN", 15)
-	viper.SetDefault("SCREENSHOT_TIMEOUT_MS", 30000)
+	// Fewer shots finish faster for Windmill; override with IF_SCREENSHOT_MAX_PER_RUN.
+	viper.SetDefault("SCREENSHOT_MAX_PER_RUN", 8)
+	viper.SetDefault("SCREENSHOT_TIMEOUT_MS", 20000)
 	// Default true: every analyze/export captures evidence when Tigris is configured.
 	// Opt out per request with capture_screenshots=false, or set IF_SCREENSHOT_ON_ANALYZE=false.
 	viper.SetDefault("SCREENSHOT_ON_ANALYZE", true)
@@ -170,14 +171,14 @@ func Load() (*Config, error) {
 
 	shotMax := viper.GetInt("SCREENSHOT_MAX_PER_RUN")
 	if shotMax <= 0 {
-		shotMax = 15
+		shotMax = 8
 	}
 	if shotMax > 40 {
 		shotMax = 40
 	}
 	shotTO := viper.GetInt("SCREENSHOT_TIMEOUT_MS")
 	if shotTO <= 0 {
-		shotTO = 30000
+		shotTO = 20000
 	}
 
 	cfg := &Config{

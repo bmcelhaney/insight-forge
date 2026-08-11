@@ -71,10 +71,10 @@ type Worker struct {
 // NewWorker creates a background screenshot worker. start() is called on first enqueue.
 func NewWorker(store *storage.Client, capturer *Capturer, opts ProofOptions) *Worker {
 	if opts.MaxPerRun <= 0 {
-		opts.MaxPerRun = 15
+		opts.MaxPerRun = 8
 	}
 	if opts.Timeout <= 0 {
-		opts.Timeout = 30 * time.Second
+		opts.Timeout = 20 * time.Second
 	}
 	if opts.PresignTTL <= 0 {
 		opts.PresignTTL = time.Hour
@@ -107,8 +107,8 @@ func (w *Worker) MarkPendingAndEnqueue(doc *models.DataCaptureDocument) int {
 		if n < 1 {
 			n = 1
 		}
-		if n > 6 {
-			n = 6
+		if n > 10 {
+			n = 10
 		}
 		for i := 0; i < n; i++ {
 			go w.loop()

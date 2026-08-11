@@ -129,7 +129,7 @@ func (c *Capturer) Parallelism() int {
 	case BackendChrome:
 		return 1 // Chrome on a sprite cannot safely parallelize
 	default:
-		return 4 // HTTP screenshot APIs handle concurrency fine
+		return 8 // HTTP image fetch / thum — keep queue short for Windmill
 	}
 }
 
@@ -184,24 +184,26 @@ func (c *Capturer) CaptureEvidence(ctx context.Context, pageURL, productImageURL
 	productImageURL = strings.TrimSpace(productImageURL)
 	host := hostOf(pageURL)
 
-	// Bot-walled big-box: never waste a page render (challenge screens only).
-	if isBotWalledHost(host) {
-		if productImageURL != "" {
-			if err := validatePublicHTTPURL(productImageURL); err == nil {
-				res, err := c.downloadAsResult(ctx, productImageURL, BackendThum)
-				if err == nil {
-					res.Kind = KindProductImage
-					res.Backend = "product_image"
-					return res, nil
-				}
-				// fall through to explicit error with download detail
-				return nil, fmt.Errorf("screenshot: bot-protected host %s — product image fetch failed: %w", host, err)
-			}
+	// Fast path (preferred for Windmill latency): SerpAPI / catalog product photo.
+	// Typically 200–800ms vs 2–5s for a full page render — and works on bot-walled hosts.
+	if productImageURL != "" && validatePublicHTTPURL(productImageURL) == nil {
+		if res, err := c.downloadAsResult(ctx, productImageURL, "product_image"); err == nil {
+			res.Kind = KindProductImage
+			res.Backend = "product_image"
+			return res, nil
 		}
-		return nil, fmt.Errorf("screenshot: bot-protected host %s (Amazon/Walmart/HD/etc.) — page capture skipped; no product image on hit", host)
+		// Fall through to page capture on friendly hosts only.
 	}
 
-	// Friendly hosts: full page screenshot.
+	// Bot-walled big-box: never full-page render (CAPTCHA / interstitial only).
+	if isBotWalledHost(host) {
+		if productImageURL != "" {
+			return nil, fmt.Errorf("screenshot: bot-protected host %s — product image fetch failed", host)
+		}
+		return nil, fmt.Errorf("screenshot: bot-protected host %s — page capture skipped; no product image on hit", host)
+	}
+
+	// Friendly hosts without a product photo: full page screenshot (slower).
 	var res *Result
 	var err error
 	switch c.opts.Backend {
@@ -213,13 +215,6 @@ func (c *Capturer) CaptureEvidence(ctx context.Context, pageURL, productImageURL
 		res, err = c.captureThum(ctx, pageURL)
 	}
 	if err != nil {
-		// Last resort: product image even for non-blocked hosts if page shot fails.
-		if productImageURL != "" && validatePublicHTTPURL(productImageURL) == nil {
-			if img, e2 := c.downloadAsResult(ctx, productImageURL, "product_image"); e2 == nil {
-				img.Kind = KindProductImage
-				return img, nil
-			}
-		}
 		return nil, err
 	}
 	if res != nil && res.Kind == "" {
@@ -300,7 +295,8 @@ func (c *Capturer) captureThum(ctx context.Context, pageURL string) (*Result, er
 		b.WriteString(c.opts.ThumAuth)
 		b.WriteByte('/')
 	}
-	b.WriteString(fmt.Sprintf("width/%d/crop/%d/noanimate/wait/2/", c.opts.Width, c.opts.Height))
+	// wait/1 keeps latency down; product photos are preferred when available.
+	b.WriteString(fmt.Sprintf("width/%d/crop/%d/noanimate/wait/1/", c.opts.Width, c.opts.Height))
 	// Target URL is appended raw (thum accepts full https://... including query).
 	b.WriteString(pageURL)
 

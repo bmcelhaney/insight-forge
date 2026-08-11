@@ -123,10 +123,10 @@ func main() {
 	if cfg.ScreenshotEnabled {
 		shotTO := time.Duration(cfg.ScreenshotTimeoutMS) * time.Millisecond
 		if shotTO <= 0 {
-			shotTO = 30 * time.Second
+			shotTO = 20 * time.Second
 		}
-		if shotTO > 60*time.Second {
-			shotTO = 60 * time.Second
+		if shotTO > 45*time.Second {
+			shotTO = 45 * time.Second
 		}
 		// Default backend is thum.io (HTTP) — local Chrome on sprites hard-timeouts on retail PDPs.
 		backend := strings.TrimSpace(os.Getenv("IF_SCREENSHOT_BACKEND"))
