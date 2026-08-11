@@ -123,18 +123,22 @@ func main() {
 	if cfg.ScreenshotEnabled {
 		shotTO := time.Duration(cfg.ScreenshotTimeoutMS) * time.Millisecond
 		if shotTO <= 0 {
-			shotTO = 18 * time.Second
+			shotTO = 30 * time.Second
 		}
-		// Cap runaway env values — long timeouts stall the serial screenshot queue.
-		if shotTO > 45*time.Second {
-			shotTO = 45 * time.Second
+		if shotTO > 60*time.Second {
+			shotTO = 60 * time.Second
+		}
+		// Default backend is thum.io (HTTP) — local Chrome on sprites hard-timeouts on retail PDPs.
+		backend := strings.TrimSpace(os.Getenv("IF_SCREENSHOT_BACKEND"))
+		if backend == "" {
+			backend = screenshot.BackendThum
 		}
 		shotCapturer = screenshot.NewCapturer(screenshot.Options{
-			Timeout:             shotTO,
-			Width:               1280,
-			Height:              720,
-			BrowserStartTimeout: 30 * time.Second,
-			Settle:              2 * time.Second,
+			Backend:  backend,
+			Timeout:  shotTO,
+			Width:    1280,
+			Height:   720,
+			ThumAuth: strings.TrimSpace(os.Getenv("IF_THUM_AUTH")),
 		})
 		if shotCapturer.Available() && tigrisStore != nil {
 			shotWorker = screenshot.NewWorker(tigrisStore, shotCapturer, screenshot.ProofOptions{
@@ -142,12 +146,12 @@ func main() {
 				Timeout:    shotTO,
 				PresignTTL: time.Hour,
 			})
-			fmt.Printf("Screenshots: async enabled (chrome=%s, page_timeout=%s, max=%d/run) — poll GET /api/proofs/{analysis_id}\n",
-				shotCapturer.ChromePath(), shotTO, cfg.ScreenshotMaxPerRun)
+			fmt.Printf("Screenshots: async enabled (backend=%s parallel=%d timeout=%s max=%d/run) — poll GET /api/proofs/{analysis_id}\n",
+				shotCapturer.Backend(), shotCapturer.Parallelism(), shotTO, cfg.ScreenshotMaxPerRun)
 		} else if shotCapturer.Available() {
-			fmt.Printf("Screenshots: chrome ok (%s) but Tigris not configured\n", shotCapturer.ChromePath())
+			fmt.Printf("Screenshots: backend=%s ok but Tigris not configured\n", shotCapturer.Backend())
 		} else {
-			fmt.Printf("Screenshots: enabled but Chrome/Chromium not found — install Chrome or set IF_CHROME_PATH\n")
+			fmt.Printf("Screenshots: enabled but backend %q unavailable\n", backend)
 		}
 	} else {
 		fmt.Printf("Screenshots: disabled (IF_SCREENSHOT_ENABLED=false)\n")
@@ -212,6 +216,12 @@ func main() {
 			"screenshots_enabled":  shotWorker != nil && shotWorker.Available(),
 			"screenshots_async":    true,
 			"screenshots_max":      cfg.ScreenshotMaxPerRun,
+			"screenshots_backend": func() string {
+				if shotCapturer != nil {
+					return shotCapturer.Backend()
+				}
+				return ""
+			}(),
 		}
 		// Last observed PartsBase fetch outcome (for UI source-status banner).
 		var pbStatus *models.PartsBaseStatus

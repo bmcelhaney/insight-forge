@@ -5,15 +5,13 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"strings"
-	"sync"
 	"time"
-
-	"github.com/chromedp/cdproto/page"
-	"github.com/chromedp/chromedp"
 )
 
 // Result is a captured page image.
@@ -24,43 +22,57 @@ type Result struct {
 	Height      int
 	SHA256      string
 	HTTPStatus  int
+	Backend     string
 }
 
-// Options controls a capture session.
+// Backend identifiers.
+const (
+	BackendThum      = "thum"      // image.thum.io HTTP screenshots (default)
+	BackendMicrolink = "microlink" // api.microlink.io
+	BackendChrome    = "chrome"    // local chromedp (legacy; often fails on retail PDPs)
+)
+
+// Options controls capture.
 type Options struct {
-	// Timeout is the hard wall-clock limit per page (default 18s).
+	// Backend: thum | microlink | chrome (default thum).
+	Backend string
+	// Timeout per capture (default 25s for HTTP backends).
 	Timeout time.Duration
 	Width   int
 	Height  int
-	// ChromePath overrides binary discovery (optional).
+	// ChromePath only used when Backend=chrome.
 	ChromePath string
-	// BrowserStartTimeout for DevTools websocket (default 30s).
-	BrowserStartTimeout time.Duration
-	// Settle after navigation starts before screenshot (default 2s).
-	Settle time.Duration
+	// ThumAuth optional thum.io auth token (IF_THUM_AUTH).
+	ThumAuth string
+	// MicrolinkKey optional API key (IF_MICROLINK_KEY).
+	MicrolinkKey string
+	// HTTPClient optional override.
+	HTTPClient *http.Client
 }
 
-// Capturer takes screenshots of public HTTPS pages (SSRF-safe).
-//
-// Critical concurrency rule: only one CapturePNG runs end-to-end at a time
-// (opMu). A prior bug returned on hard-timeout while the inner chromedp
-// goroutine was still alive, so the next job raced a dying browser and the
-// whole queue degraded into "context deadline exceeded" / endless pending.
+// Capturer fetches page screenshots via a pluggable backend.
+// Default is thum.io — no local Chrome. Local Chrome on sprites repeatedly
+// hard-timeouts on retail PDPs (bot walls / never-fire load events).
 type Capturer struct {
-	opts Options
-
-	opMu sync.Mutex // serializes entire capture operations (including cleanup)
-
-	mu            sync.Mutex
-	allocCancel   context.CancelFunc
-	browserCtx    context.Context
-	browserCancel context.CancelFunc
+	opts   Options
+	client *http.Client
 }
 
-// NewCapturer builds a capturer. Chrome/Chromium must be installed on the host.
+// NewCapturer builds a capturer.
 func NewCapturer(opts Options) *Capturer {
+	opts.Backend = strings.ToLower(strings.TrimSpace(opts.Backend))
+	if opts.Backend == "" {
+		opts.Backend = strings.ToLower(strings.TrimSpace(os.Getenv("IF_SCREENSHOT_BACKEND")))
+	}
+	if opts.Backend == "" {
+		opts.Backend = BackendThum
+	}
 	if opts.Timeout <= 0 {
-		opts.Timeout = 18 * time.Second
+		if opts.Backend == BackendChrome {
+			opts.Timeout = 18 * time.Second
+		} else {
+			opts.Timeout = 30 * time.Second
+		}
 	}
 	if opts.Width <= 0 {
 		opts.Width = 1280
@@ -68,19 +80,53 @@ func NewCapturer(opts Options) *Capturer {
 	if opts.Height <= 0 {
 		opts.Height = 720
 	}
-	if opts.BrowserStartTimeout <= 0 {
-		opts.BrowserStartTimeout = 30 * time.Second
+	if opts.ThumAuth == "" {
+		opts.ThumAuth = strings.TrimSpace(os.Getenv("IF_THUM_AUTH"))
 	}
-	if opts.Settle <= 0 {
-		opts.Settle = 2 * time.Second
+	if opts.MicrolinkKey == "" {
+		opts.MicrolinkKey = strings.TrimSpace(os.Getenv("IF_MICROLINK_KEY"))
 	}
-	if opts.ChromePath == "" {
+	if opts.ChromePath == "" && opts.Backend == BackendChrome {
 		opts.ChromePath = findChrome()
 	}
-	return &Capturer{opts: opts}
+	cli := opts.HTTPClient
+	if cli == nil {
+		cli = &http.Client{
+			Timeout: opts.Timeout + 10*time.Second,
+			// Follow redirects; thum/microlink may redirect to CDN.
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				if len(via) >= 8 {
+					return fmt.Errorf("too many redirects")
+				}
+				return nil
+			},
+		}
+	}
+	return &Capturer{opts: opts, client: cli}
 }
 
-// ChromePath returns the resolved browser binary (empty if unavailable).
+// Backend returns the active backend name.
+func (c *Capturer) Backend() string {
+	if c == nil {
+		return ""
+	}
+	return c.opts.Backend
+}
+
+// Parallelism is how many captures may run concurrently for this backend.
+func (c *Capturer) Parallelism() int {
+	if c == nil {
+		return 1
+	}
+	switch c.opts.Backend {
+	case BackendChrome:
+		return 1 // Chrome on a sprite cannot safely parallelize
+	default:
+		return 4 // HTTP screenshot APIs handle concurrency fine
+	}
+}
+
+// ChromePath returns chrome path when backend is chrome.
 func (c *Capturer) ChromePath() string {
 	if c == nil {
 		return ""
@@ -88,29 +134,22 @@ func (c *Capturer) ChromePath() string {
 	return c.opts.ChromePath
 }
 
-// Available reports whether a Chrome binary was found.
+// Available is true when the configured backend can run.
 func (c *Capturer) Available() bool {
-	return c != nil && c.opts.ChromePath != ""
-}
-
-// Close shuts down the shared browser.
-func (c *Capturer) Close() {
 	if c == nil {
-		return
+		return false
 	}
-	c.opMu.Lock()
-	defer c.opMu.Unlock()
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.shutdownLocked()
+	switch c.opts.Backend {
+	case BackendChrome:
+		return c.opts.ChromePath != ""
+	case BackendThum, BackendMicrolink:
+		return true
+	default:
+		return false
+	}
 }
 
-type captureOutcome struct {
-	res *Result
-	err error
-}
-
-// CapturePNG loads pageURL and returns a viewport PNG (not full-page).
+// CapturePNG returns a PNG (or other image bytes) for pageURL.
 func (c *Capturer) CapturePNG(ctx context.Context, pageURL string) (*Result, error) {
 	if c == nil {
 		return nil, fmt.Errorf("screenshot: capturer nil")
@@ -118,231 +157,253 @@ func (c *Capturer) CapturePNG(ctx context.Context, pageURL string) (*Result, err
 	if err := validatePublicHTTPURL(pageURL); err != nil {
 		return nil, err
 	}
-	if c.opts.ChromePath == "" {
-		return nil, fmt.Errorf("screenshot: chrome/chromium not found on host")
-	}
-	if err := ctx.Err(); err != nil {
-		return nil, err
+	if !c.Available() {
+		return nil, fmt.Errorf("screenshot: backend %q unavailable", c.opts.Backend)
 	}
 
-	// Serialize captures so a timed-out job cannot race the next one.
-	c.opMu.Lock()
-	defer c.opMu.Unlock()
-
-	hardLimit := c.opts.Timeout + 5*time.Second
-	if dl, ok := ctx.Deadline(); ok {
-		if remain := time.Until(dl); remain > 0 && remain < hardLimit {
-			hardLimit = remain
-		}
-	}
-
-	outCh := make(chan captureOutcome, 1)
-	go func() {
-		// Fresh browser per capture: retail pages poison long-lived Chrome
-		// (zombie targets, hung network). Cold start is ~0.5–1.5s on the sprite.
-		res, err := c.captureIsolated(ctx, pageURL)
-		outCh <- captureOutcome{res, err}
-	}()
-
-	timer := time.NewTimer(hardLimit)
-	defer timer.Stop()
-
-	select {
-	case out := <-outCh:
-		return out.res, out.err
-	case <-timer.C:
-		c.forceKillBrowser()
-		// Wait for the worker goroutine to exit so the next CapturePNG is clean.
-		select {
-		case <-outCh:
-		case <-time.After(4 * time.Second):
-		}
-		return nil, fmt.Errorf("screenshot capture: hard timeout after %s", hardLimit.Round(time.Millisecond))
-	case <-ctx.Done():
-		c.forceKillBrowser()
-		select {
-		case <-outCh:
-		case <-time.After(4 * time.Second):
-		}
-		return nil, fmt.Errorf("screenshot capture: %w", ctx.Err())
+	switch c.opts.Backend {
+	case BackendChrome:
+		return c.captureChrome(ctx, pageURL)
+	case BackendMicrolink:
+		return c.captureMicrolink(ctx, pageURL)
+	default:
+		return c.captureThum(ctx, pageURL)
 	}
 }
 
-func (c *Capturer) forceKillBrowser() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.shutdownLocked()
-}
-
-// captureIsolated starts a one-shot Chrome, captures, and always tears it down.
-func (c *Capturer) captureIsolated(ctx context.Context, pageURL string) (*Result, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
+// captureThum uses image.thum.io — no browser process on the sprite.
+// Docs: https://www.thum.io/documentation
+func (c *Capturer) captureThum(ctx context.Context, pageURL string) (*Result, error) {
+	// Prefer cropped viewport for evidence cards.
+	// Path segments before the target URL control render options.
+	// auth/{token}/ is optional for higher limits.
+	var b strings.Builder
+	b.WriteString("https://image.thum.io/get/")
+	if c.opts.ThumAuth != "" {
+		b.WriteString("auth/")
+		b.WriteString(c.opts.ThumAuth)
+		b.WriteByte('/')
 	}
+	b.WriteString(fmt.Sprintf("width/%d/crop/%d/noanimate/wait/2/", c.opts.Width, c.opts.Height))
+	// Target URL is appended raw (thum accepts full https://... including query).
+	b.WriteString(pageURL)
 
-	startTO := c.opts.BrowserStartTimeout
-	allocOpts := append(chromedp.DefaultExecAllocatorOptions[:],
-		chromedp.ExecPath(c.opts.ChromePath),
-		chromedp.Flag("headless", true),
-		chromedp.Flag("disable-gpu", true),
-		chromedp.Flag("no-sandbox", true),
-		chromedp.Flag("disable-dev-shm-usage", true),
-		chromedp.Flag("hide-scrollbars", true),
-		chromedp.Flag("mute-audio", true),
-		chromedp.Flag("disable-background-networking", true),
-		chromedp.Flag("disable-extensions", true),
-		chromedp.Flag("disable-sync", true),
-		chromedp.Flag("disable-translate", true),
-		chromedp.Flag("no-first-run", true),
-		chromedp.UserAgent("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 InsightForge/1.0"),
-		chromedp.WindowSize(c.opts.Width, c.opts.Height),
-		chromedp.WSURLReadTimeout(startTO),
-	)
-
-	allocCtx, allocCancel := chromedp.NewExecAllocator(context.Background(), allocOpts...)
-	defer allocCancel()
-
-	browserCtx, browserCancel := chromedp.NewContext(allocCtx)
-	defer browserCancel()
-
-	// Track for forceKillBrowser from the outer hard-timeout path.
-	c.mu.Lock()
-	c.allocCancel = allocCancel
-	c.browserCtx = browserCtx
-	c.browserCancel = browserCancel
-	c.mu.Unlock()
-	defer func() {
-		c.mu.Lock()
-		// Only clear if we still own this browser (forceKill may have nil'd already).
-		if c.browserCtx == browserCtx {
-			c.browserCtx = nil
-			c.browserCancel = nil
-			c.allocCancel = nil
-		}
-		c.mu.Unlock()
-		browserCancel()
-		allocCancel()
-	}()
-
-	// Start browser.
-	errCh := make(chan error, 1)
-	go func() { errCh <- chromedp.Run(browserCtx) }()
-	select {
-	case err := <-errCh:
-		if err != nil {
-			return nil, fmt.Errorf("screenshot capture: browser start: %w", err)
-		}
-	case <-time.After(startTO):
-		return nil, fmt.Errorf("screenshot capture: browser start timed out after %s", startTO)
-	case <-ctx.Done():
-		return nil, fmt.Errorf("screenshot capture: %w", ctx.Err())
-	}
-
-	pageTO := c.opts.Timeout
-	tabCtx, tabCancel := chromedp.NewContext(browserCtx)
-	defer tabCancel()
-	tabCtx, timeoutCancel := context.WithTimeout(tabCtx, pageTO)
-	defer timeoutCancel()
-
-	var buf []byte
-	settle := c.opts.Settle
-	err := chromedp.Run(tabCtx,
-		chromedp.EmulateViewport(int64(c.opts.Width), int64(c.opts.Height)),
-		// Do not wait for full load — retail SPAs hang forever on load events.
-		chromedp.ActionFunc(func(ctx context.Context) error {
-			_, _, _, _, e := page.Navigate(pageURL).Do(ctx)
-			return e
-		}),
-		chromedp.Sleep(settle),
-		chromedp.CaptureScreenshot(&buf),
-	)
+	reqURL := b.String()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
-		return nil, fmt.Errorf("screenshot capture: %w", err)
+		return nil, fmt.Errorf("screenshot thum: build request: %w", err)
 	}
-	if len(buf) < 100 {
-		return nil, fmt.Errorf("screenshot: empty image")
+	req.Header.Set("User-Agent", "InsightForge/1.0 (+pricing-evidence-capture)")
+	req.Header.Set("Accept", "image/png,image/*;q=0.8,*/*;q=0.5")
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("screenshot thum: %w", err)
 	}
-	sum := sha256.Sum256(buf)
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 12<<20)) // 12 MiB cap
+	if err != nil {
+		return nil, fmt.Errorf("screenshot thum: read: %w", err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("screenshot thum: http %d (%s)", resp.StatusCode, truncateBytes(body, 120))
+	}
+	if len(body) < 100 || !looksLikeImage(body) {
+		return nil, fmt.Errorf("screenshot thum: non-image response (%d bytes)", len(body))
+	}
+	ct := resp.Header.Get("Content-Type")
+	if ct == "" {
+		ct = "image/png"
+	}
+	sum := sha256.Sum256(body)
 	return &Result{
-		PNG:         buf,
-		ContentType: "image/png",
+		PNG:         body,
+		ContentType: ct,
 		Width:       c.opts.Width,
 		Height:      c.opts.Height,
 		SHA256:      hex.EncodeToString(sum[:]),
+		HTTPStatus:  resp.StatusCode,
+		Backend:     BackendThum,
 	}, nil
 }
 
-func (c *Capturer) shutdownLocked() {
-	if c.browserCancel != nil {
-		c.browserCancel()
-		c.browserCancel = nil
-	}
-	if c.allocCancel != nil {
-		c.allocCancel()
-		c.allocCancel = nil
-	}
-	c.browserCtx = nil
-}
+// captureMicrolink uses api.microlink.io screenshot endpoint.
+func (c *Capturer) captureMicrolink(ctx context.Context, pageURL string) (*Result, error) {
+	q := url.Values{}
+	q.Set("url", pageURL)
+	q.Set("screenshot", "true")
+	q.Set("meta", "false")
+	q.Set("embed", "screenshot.url")
+	apiURL := "https://api.microlink.io/?" + q.Encode()
 
-func findChrome() string {
-	if p := strings.TrimSpace(os.Getenv("IF_CHROME_PATH")); p != "" {
-		if isRunnableChrome(p) {
-			return p
-		}
-	}
-	home := strings.TrimSpace(os.Getenv("HOME"))
-	candidates := []string{
-		home + "/chrome-for-testing/chrome-headless-shell-linux64/chrome-headless-shell",
-		home + "/chrome-for-testing/chrome-linux64/chrome",
-		"/home/sprite/chrome-for-testing/chrome-headless-shell-linux64/chrome-headless-shell",
-		"/home/sprite/chrome-for-testing/chrome-linux64/chrome",
-		"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-		"/Applications/Chromium.app/Contents/MacOS/Chromium",
-		"/usr/bin/google-chrome",
-		"/usr/bin/google-chrome-stable",
-		"/snap/bin/chromium",
-		"/usr/bin/chromium",
-		"/usr/bin/chromium-browser",
-	}
-	for _, p := range candidates {
-		if isRunnableChrome(p) {
-			return p
-		}
-	}
-	return ""
-}
-
-func isRunnableChrome(p string) bool {
-	p = strings.TrimSpace(p)
-	if p == "" {
-		return false
-	}
-	st, err := os.Stat(p)
-	if err != nil || st.IsDir() {
-		return false
-	}
-	f, err := os.Open(p)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
 	if err != nil {
-		return false
+		return nil, fmt.Errorf("screenshot microlink: build request: %w", err)
 	}
-	defer f.Close()
-	buf := make([]byte, 512)
-	n, _ := f.Read(buf)
-	head := string(buf[:n])
-	if strings.HasPrefix(head, "#!") {
-		if strings.Contains(head, "requires the chromium snap") ||
-			strings.Contains(head, "snap install chromium") ||
-			(strings.Contains(head, "/snap/bin/chromium") && !fileExists("/snap/bin/chromium")) {
-			return false
-		}
+	req.Header.Set("User-Agent", "InsightForge/1.0 (+pricing-evidence-capture)")
+	if c.opts.MicrolinkKey != "" {
+		req.Header.Set("x-api-key", c.opts.MicrolinkKey)
 	}
-	return true
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("screenshot microlink: %w", err)
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	if err != nil {
+		return nil, fmt.Errorf("screenshot microlink: read: %w", err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("screenshot microlink: http %d (%s)", resp.StatusCode, truncateBytes(raw, 120))
+	}
+	// Parse JSON for data.screenshot.url
+	shotURL, width, height, err := parseMicrolinkScreenshot(raw)
+	if err != nil {
+		return nil, err
+	}
+	img, ct, err := c.downloadImage(ctx, shotURL)
+	if err != nil {
+		return nil, fmt.Errorf("screenshot microlink download: %w", err)
+	}
+	if width <= 0 {
+		width = c.opts.Width
+	}
+	if height <= 0 {
+		height = c.opts.Height
+	}
+	sum := sha256.Sum256(img)
+	return &Result{
+		PNG:         img,
+		ContentType: ct,
+		Width:       width,
+		Height:      height,
+		SHA256:      hex.EncodeToString(sum[:]),
+		Backend:     BackendMicrolink,
+	}, nil
 }
 
-func fileExists(p string) bool {
-	st, err := os.Stat(p)
-	return err == nil && !st.IsDir()
+func (c *Capturer) downloadImage(ctx context.Context, imgURL string) ([]byte, string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, imgURL, nil)
+	if err != nil {
+		return nil, "", err
+	}
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, "", err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 12<<20))
+	if err != nil {
+		return nil, "", err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, "", fmt.Errorf("http %d", resp.StatusCode)
+	}
+	if !looksLikeImage(body) {
+		return nil, "", fmt.Errorf("not an image")
+	}
+	ct := resp.Header.Get("Content-Type")
+	if ct == "" {
+		ct = "image/png"
+	}
+	return body, ct, nil
 }
+
+func parseMicrolinkScreenshot(raw []byte) (shotURL string, width, height int, err error) {
+	// Minimal parse without heavy deps — look for screenshot url field structure.
+	// Expected: {"status":"success","data":{"screenshot":{"url":"...","width":N,"height":N}}}
+	s := string(raw)
+	if !strings.Contains(s, `"success"`) && !strings.Contains(s, `"status":"success"`) {
+		// still try to extract url
+	}
+	// crude extraction
+	if i := strings.Index(s, `"screenshot"`); i >= 0 {
+		rest := s[i:]
+		if u := jsonStringField(rest, "url"); u != "" {
+			shotURL = u
+		}
+		width = jsonIntField(rest, "width")
+		height = jsonIntField(rest, "height")
+	}
+	if shotURL == "" {
+		// top-level data.screenshot.url alternate
+		shotURL = jsonStringField(s, "url")
+	}
+	if shotURL == "" || !strings.HasPrefix(shotURL, "http") {
+		return "", 0, 0, fmt.Errorf("screenshot microlink: no screenshot url in response")
+	}
+	return shotURL, width, height, nil
+}
+
+func jsonStringField(s, key string) string {
+	// Find "key":"value"
+	pat := `"` + key + `":"`
+	i := strings.Index(s, pat)
+	if i < 0 {
+		return ""
+	}
+	rest := s[i+len(pat):]
+	j := strings.IndexByte(rest, '"')
+	if j < 0 {
+		return ""
+	}
+	// unescape simple \/
+	return strings.ReplaceAll(rest[:j], `\/`, `/`)
+}
+
+func jsonIntField(s, key string) int {
+	pat := `"` + key + `":`
+	i := strings.Index(s, pat)
+	if i < 0 {
+		return 0
+	}
+	rest := strings.TrimSpace(s[i+len(pat):])
+	n := 0
+	for _, r := range rest {
+		if r < '0' || r > '9' {
+			break
+		}
+		n = n*10 + int(r-'0')
+		if n > 100000 {
+			break
+		}
+	}
+	return n
+}
+
+func looksLikeImage(b []byte) bool {
+	if len(b) < 8 {
+		return false
+	}
+	// PNG
+	if b[0] == 0x89 && b[1] == 'P' && b[2] == 'N' && b[3] == 'G' {
+		return true
+	}
+	// JPEG
+	if b[0] == 0xFF && b[1] == 0xD8 {
+		return true
+	}
+	// GIF
+	if string(b[:3]) == "GIF" {
+		return true
+	}
+	// WEBP (RIFF....WEBP)
+	if len(b) >= 12 && string(b[:4]) == "RIFF" && string(b[8:12]) == "WEBP" {
+		return true
+	}
+	return false
+}
+
+func truncateBytes(b []byte, n int) string {
+	s := strings.TrimSpace(string(b))
+	s = strings.ReplaceAll(s, "\n", " ")
+	if len(s) > n {
+		return s[:n] + "…"
+	}
+	return s
+}
+
+// --- SSRF guard (shared) ---
 
 func validatePublicHTTPURL(raw string) error {
 	raw = strings.TrimSpace(raw)
@@ -377,4 +438,54 @@ func validatePublicHTTPURL(raw string) error {
 		}
 	}
 	return nil
+}
+
+// findChrome is only used when Backend=chrome (legacy).
+func findChrome() string {
+	if p := strings.TrimSpace(os.Getenv("IF_CHROME_PATH")); p != "" {
+		if isRunnableChrome(p) {
+			return p
+		}
+	}
+	home := strings.TrimSpace(os.Getenv("HOME"))
+	candidates := []string{
+		home + "/chrome-for-testing/chrome-headless-shell-linux64/chrome-headless-shell",
+		"/home/sprite/chrome-for-testing/chrome-headless-shell-linux64/chrome-headless-shell",
+		"/usr/bin/google-chrome",
+		"/usr/bin/google-chrome-stable",
+		"/snap/bin/chromium",
+		"/usr/bin/chromium",
+	}
+	for _, p := range candidates {
+		if isRunnableChrome(p) {
+			return p
+		}
+	}
+	return ""
+}
+
+func isRunnableChrome(p string) bool {
+	p = strings.TrimSpace(p)
+	if p == "" {
+		return false
+	}
+	st, err := os.Stat(p)
+	if err != nil || st.IsDir() {
+		return false
+	}
+	f, err := os.Open(p)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	buf := make([]byte, 512)
+	n, _ := f.Read(buf)
+	head := string(buf[:n])
+	if strings.HasPrefix(head, "#!") {
+		if strings.Contains(head, "requires the chromium snap") ||
+			strings.Contains(head, "snap install chromium") {
+			return false
+		}
+	}
+	return true
 }

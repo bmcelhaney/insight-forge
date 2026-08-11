@@ -68,7 +68,7 @@ func NewWorker(store *storage.Client, capturer *Capturer, opts ProofOptions) *Wo
 		opts.MaxPerRun = 15
 	}
 	if opts.Timeout <= 0 {
-		opts.Timeout = 18 * time.Second
+		opts.Timeout = 30 * time.Second
 	}
 	if opts.PresignTTL <= 0 {
 		opts.PresignTTL = time.Hour
@@ -93,7 +93,21 @@ func (w *Worker) MarkPendingAndEnqueue(doc *models.DataCaptureDocument) int {
 	if !w.Available() || doc == nil || doc.AnalysisID == "" {
 		return 0
 	}
-	w.once.Do(func() { go w.loop() })
+	w.once.Do(func() {
+		n := 1
+		if w.capturer != nil {
+			n = w.capturer.Parallelism()
+		}
+		if n < 1 {
+			n = 1
+		}
+		if n > 6 {
+			n = 6
+		}
+		for i := 0; i < n; i++ {
+			go w.loop()
+		}
+	})
 
 	nsn := doc.Query.NSN
 	if nsn == "" {
@@ -211,12 +225,11 @@ func (w *Worker) loop() {
 
 func (w *Worker) processJob(job captureJob) {
 	// Don't use request context — it is cancelled when the HTTP handler returns.
-	// Budget: page timeout + browser start + hard-kill wait + Tigris upload.
 	pageTO := job.timeout
 	if pageTO <= 0 {
-		pageTO = 18 * time.Second
+		pageTO = 30 * time.Second
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), pageTO+35*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), pageTO+20*time.Second)
 	defer cancel()
 
 	result := &models.DataCaptureScreenshot{
@@ -250,8 +263,15 @@ func (w *Worker) processJob(job captureJob) {
 	if job.label.UnitPrice > 0 {
 		meta["unit-price"] = fmt.Sprintf("%.4f", job.label.UnitPrice)
 	}
+	if shot.Backend != "" {
+		meta["capture-backend"] = shot.Backend
+	}
+	ct := shot.ContentType
+	if ct == "" {
+		ct = "image/png"
+	}
 	putCtx, putCancel := context.WithTimeout(ctx, 30*time.Second)
-	err = w.store.PutObject(putCtx, key, shot.PNG, "image/png", meta)
+	err = w.store.PutObject(putCtx, key, shot.PNG, ct, meta)
 	putCancel()
 	if err != nil {
 		result.Status = "failed"
@@ -264,7 +284,7 @@ func (w *Worker) processJob(job captureJob) {
 		Status:      "ready",
 		Bucket:      w.store.Bucket(),
 		ObjectKey:   key,
-		ContentType: "image/png",
+		ContentType: ct,
 		CapturedAt:  capturedAt,
 		SourceURL:   job.pageURL,
 		Width:       shot.Width,
