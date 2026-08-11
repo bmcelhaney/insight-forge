@@ -254,7 +254,27 @@ func pickBestImmersiveToken(hits []shoppingHit, preferSKU, mfr string) string {
 }
 
 // mergeImmersiveStoreHits appends store-level offers not already present by merchant+price.
+// Store rows often omit thumbnails — inherit the best base shopping thumbnail so
+// bot-walled merchants still get product_image evidence.
 func mergeImmersiveStoreHits(base, stores []shoppingHit) []shoppingHit {
+	fallbackThumb := ""
+	for _, h := range base {
+		if t := strings.TrimSpace(h.Thumbnail); t != "" {
+			fallbackThumb = t
+			break
+		}
+	}
+	if fallbackThumb != "" {
+		for i := range stores {
+			if strings.TrimSpace(stores[i].Thumbnail) == "" {
+				stores[i].Thumbnail = fallbackThumb
+			}
+		}
+	}
+	return mergeImmersiveStoreHitsCore(base, stores)
+}
+
+func mergeImmersiveStoreHitsCore(base, stores []shoppingHit) []shoppingHit {
 	if len(stores) == 0 {
 		return base
 	}
@@ -793,14 +813,16 @@ func serpImmersiveProduct(ctx context.Context, pageToken string) ([]shoppingHit,
 	var payload struct {
 		Error          string `json:"error"`
 		ProductResults struct {
-			Title  string `json:"title"`
-			Brand  string `json:"brand"`
-			Stores []struct {
+			Title     string `json:"title"`
+			Brand     string `json:"brand"`
+			Thumbnail string `json:"thumbnail"`
+			Stores    []struct {
 				Name           string  `json:"name"`
 				Link           string  `json:"link"`
 				Title          string  `json:"title"`
 				Price          string  `json:"price"`
 				ExtractedPrice float64 `json:"extracted_price"`
+				Thumbnail      string  `json:"thumbnail"`
 			} `json:"stores"`
 		} `json:"product_results"`
 	}
@@ -823,6 +845,7 @@ func serpImmersiveProduct(ctx context.Context, pageToken string) ([]shoppingHit,
 	recordSerpAPIStatus(true, 200, "", "SerpAPI Google Shopping + Immersive Product is live.")
 
 	productTitle := strings.TrimSpace(payload.ProductResults.Title)
+	productThumb := strings.TrimSpace(payload.ProductResults.Thumbnail)
 	var hits []shoppingHit
 	for _, s := range payload.ProductResults.Stores {
 		price := s.ExtractedPrice
@@ -838,11 +861,16 @@ func serpImmersiveProduct(ctx context.Context, pageToken string) ([]shoppingHit,
 		}
 		// Prefer merchant product URLs over Google Shopping aggregate links.
 		link := strings.TrimSpace(s.Link)
+		thumb := strings.TrimSpace(s.Thumbnail)
+		if thumb == "" {
+			thumb = productThumb // product-level photo applies to every store row
+		}
 		hits = append(hits, shoppingHit{
-			Title:  title,
-			Price:  price,
-			Link:   link,
-			Source: nonEmpty(strings.TrimSpace(s.Name), "Retail"),
+			Title:     title,
+			Price:     price,
+			Link:      link,
+			Source:    nonEmpty(strings.TrimSpace(s.Name), "Retail"),
+			Thumbnail: thumb,
 		})
 	}
 	if len(hits) == 0 {

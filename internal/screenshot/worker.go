@@ -124,6 +124,31 @@ func (w *Worker) MarkPendingAndEnqueue(doc *models.DataCaptureDocument) int {
 		UpdatedAt:  time.Now().UTC(),
 	}
 
+	// Index any product images on the document so bot-walled hits without their
+	// own thumbnail can reuse a SerpAPI photo from a sibling hit.
+	anyProductImg := ""
+	imgByMerchant := map[string]string{}
+	for i := range doc.Hits {
+		h := &doc.Hits[i]
+		if h.Attributes == nil {
+			continue
+		}
+		v, _ := h.Attributes["product_image"].(string)
+		v = strings.TrimSpace(v)
+		if v == "" {
+			continue
+		}
+		if anyProductImg == "" {
+			anyProductImg = v
+		}
+		if h.Pricing != nil {
+			m := strings.ToLower(strings.TrimSpace(h.Pricing.Merchant))
+			if m != "" {
+				imgByMerchant[m] = v
+			}
+		}
+	}
+
 	queued := 0
 	for i := range doc.Hits {
 		h := &doc.Hits[i]
@@ -139,6 +164,16 @@ func (w *Worker) MarkPendingAndEnqueue(doc *models.DataCaptureDocument) int {
 			if v, ok := h.Attributes["product_image"].(string); ok {
 				productImg = strings.TrimSpace(v)
 			}
+		}
+		if productImg == "" && h.Pricing != nil {
+			m := strings.ToLower(strings.TrimSpace(h.Pricing.Merchant))
+			if m != "" {
+				productImg = imgByMerchant[m]
+			}
+		}
+		// Same product family in one analysis — better a catalog photo than CAPTCHA.
+		if productImg == "" && isBotWalledHost(hostOf(src)) {
+			productImg = anyProductImg
 		}
 		label := HitLabel{
 			HitID:        h.HitID,
