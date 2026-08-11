@@ -99,7 +99,7 @@ func Load() (*Config, error) {
 	viper.SetDefault("TIGRIS_REGION", "auto")
 	viper.SetDefault("SCREENSHOT_ENABLED", false)
 	viper.SetDefault("SCREENSHOT_MAX_PER_RUN", 15)
-	viper.SetDefault("SCREENSHOT_TIMEOUT_MS", 45000)
+	viper.SetDefault("SCREENSHOT_TIMEOUT_MS", 25000)
 	viper.SetDefault("SCREENSHOT_ON_ANALYZE", false)
 
 	partsBaseClientID := getConfiguredValue("PARTSBASE_CLIENT_ID")
@@ -175,7 +175,7 @@ func Load() (*Config, error) {
 	}
 	shotTO := viper.GetInt("SCREENSHOT_TIMEOUT_MS")
 	if shotTO <= 0 {
-		shotTO = 45000
+		shotTO = 25000
 	}
 
 	cfg := &Config{

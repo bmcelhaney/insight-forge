@@ -30,7 +30,7 @@ func AttachProofs(ctx context.Context, doc *models.DataCaptureDocument, store *s
 		opts.MaxPerRun = 15
 	}
 	if opts.Timeout <= 0 {
-		opts.Timeout = 45 * time.Second
+		opts.Timeout = 25 * time.Second
 	}
 	if opts.PresignTTL <= 0 {
 		opts.PresignTTL = time.Hour

@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/chromedp"
 )
 
@@ -27,21 +28,27 @@ type Result struct {
 
 // Options controls a capture session.
 type Options struct {
-	// Timeout per page navigation+screenshot (default 45s).
+	// Timeout per page (hard wall-clock; default 25s).
 	Timeout time.Duration
 	// Viewport width/height (default 1280x720).
 	Width  int
 	Height int
 	// ChromePath overrides binary discovery (optional).
 	ChromePath string
-	// BrowserStartTimeout is how long to wait for Chrome DevTools websocket (default 60s).
+	// BrowserStartTimeout is how long to wait for Chrome DevTools websocket (default 45s).
 	BrowserStartTimeout time.Duration
+	// Settle is how long to wait after navigation starts before screenshot (default 2.5s).
+	Settle time.Duration
 }
 
 // Capturer takes screenshots of public HTTPS pages (SSRF-safe).
-// It keeps a single long-lived Chrome process and opens a tab per capture —
-// spawning a new browser per URL is slow and is the main source of
-// "websocket url timeout reached" under load on small hosts.
+//
+// Design notes (sprite / retail sites):
+//   - One shared Chrome process for speed.
+//   - Navigate does NOT wait for full page load (Walmart/HomeDepot SPAs hang forever
+//     on chromedp.Navigate's load-event wait → worker stuck "running" for 10+ min).
+//   - Every capture has a hard wall-clock deadline that force-kills Chrome if chromedp
+//     ignores context cancel, so the async worker can never block the queue indefinitely.
 type Capturer struct {
 	opts Options
 
@@ -49,12 +56,13 @@ type Capturer struct {
 	allocCancel   context.CancelFunc
 	browserCtx    context.Context
 	browserCancel context.CancelFunc
+	captureN      int // successful or attempted captures on current browser
 }
 
 // NewCapturer builds a capturer. Chrome/Chromium must be installed on the host.
 func NewCapturer(opts Options) *Capturer {
 	if opts.Timeout <= 0 {
-		opts.Timeout = 45 * time.Second
+		opts.Timeout = 25 * time.Second
 	}
 	if opts.Width <= 0 {
 		opts.Width = 1280
@@ -63,7 +71,10 @@ func NewCapturer(opts Options) *Capturer {
 		opts.Height = 720
 	}
 	if opts.BrowserStartTimeout <= 0 {
-		opts.BrowserStartTimeout = 60 * time.Second
+		opts.BrowserStartTimeout = 45 * time.Second
+	}
+	if opts.Settle <= 0 {
+		opts.Settle = 2500 * time.Millisecond
 	}
 	if opts.ChromePath == "" {
 		opts.ChromePath = findChrome()
@@ -94,6 +105,11 @@ func (c *Capturer) Close() {
 	c.shutdownLocked()
 }
 
+type captureOutcome struct {
+	res *Result
+	err error
+}
+
 // CapturePNG loads pageURL and returns a viewport PNG (not full-page).
 func (c *Capturer) CapturePNG(ctx context.Context, pageURL string) (*Result, error) {
 	if c == nil {
@@ -105,20 +121,57 @@ func (c *Capturer) CapturePNG(ctx context.Context, pageURL string) (*Result, err
 	if c.opts.ChromePath == "" {
 		return nil, fmt.Errorf("screenshot: chrome/chromium not found on host")
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 
-	// One retry after recycling the browser — covers cold-start races and
-	// "websocket url timeout reached" after a hung/zombie Chrome.
+	// Hard wall-clock: never block the worker longer than Timeout+grace,
+	// even if chromedp/Chrome ignore context cancellation.
+	hardLimit := c.opts.Timeout + 8*time.Second
+	if dl, ok := ctx.Deadline(); ok {
+		if remain := time.Until(dl); remain > 0 && remain < hardLimit {
+			hardLimit = remain
+		}
+	}
+
+	outCh := make(chan captureOutcome, 1)
+	go func() {
+		res, err := c.captureWithRetry(ctx, pageURL)
+		outCh <- captureOutcome{res, err}
+	}()
+
+	timer := time.NewTimer(hardLimit)
+	defer timer.Stop()
+
+	select {
+	case out := <-outCh:
+		return out.res, out.err
+	case <-timer.C:
+		// Nuclear: kill Chrome so the inner goroutine can unblock.
+		c.mu.Lock()
+		c.shutdownLocked()
+		c.mu.Unlock()
+		// Don't wait forever for the goroutine — return immediately so the worker advances.
+		return nil, fmt.Errorf("screenshot capture: hard timeout after %s (browser recycled)", hardLimit)
+	case <-ctx.Done():
+		c.mu.Lock()
+		c.shutdownLocked()
+		c.mu.Unlock()
+		return nil, fmt.Errorf("screenshot capture: %w", ctx.Err())
+	}
+}
+
+func (c *Capturer) captureWithRetry(ctx context.Context, pageURL string) (*Result, error) {
 	var lastErr error
 	for attempt := 0; attempt < 2; attempt++ {
 		if attempt > 0 {
 			c.mu.Lock()
 			c.shutdownLocked()
 			c.mu.Unlock()
-			// Brief pause so the OS can release the previous process.
 			select {
 			case <-ctx.Done():
 				return nil, ctx.Err()
-			case <-time.After(500 * time.Millisecond):
+			case <-time.After(300 * time.Millisecond):
 			}
 		}
 		res, err := c.captureOnce(ctx, pageURL)
@@ -126,8 +179,7 @@ func (c *Capturer) CapturePNG(ctx context.Context, pageURL string) (*Result, err
 			return res, nil
 		}
 		lastErr = err
-		if !isBrowserStartError(err) {
-			// Page-level errors (HTTP2, net::ERR_*, etc.) won't be fixed by restart.
+		if !isBrowserStartError(err) && !isHungBrowserError(err) {
 			return nil, err
 		}
 	}
@@ -139,12 +191,21 @@ func isBrowserStartError(err error) bool {
 		return false
 	}
 	s := strings.ToLower(err.Error())
-	// Do NOT treat generic "context canceled" / page deadlines as start errors —
-	// those are usually page timeouts, and retry thrashing makes them worse.
 	return strings.Contains(s, "websocket url timeout") ||
 		strings.Contains(s, "chrome failed to start") ||
 		strings.Contains(s, "browser start") ||
 		strings.Contains(s, "invalid context")
+}
+
+func isHungBrowserError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "hard timeout") ||
+		strings.Contains(s, "target closed") ||
+		strings.Contains(s, "browser has been closed") ||
+		strings.Contains(s, "-32000") // CDP target closed
 }
 
 func (c *Capturer) captureOnce(ctx context.Context, pageURL string) (*Result, error) {
@@ -157,18 +218,15 @@ func (c *Capturer) captureOnce(ctx context.Context, pageURL string) (*Result, er
 		return nil, fmt.Errorf("screenshot capture: %w", err)
 	}
 
-	// Tab context inherits the live browser; page timeout is separate so a slow
-	// PDP does not tear down the shared Chrome process.
-	// IMPORTANT: do not wrap browserCtx itself in WithTimeout+cancel — chromedp
-	// treats cancel of the context used to start/run the browser as browser death.
+	// Fresh tab per URL. Do not wrap browserCtx in WithTimeout+cancel —
+	// chromedp treats cancel of the browser-root context as browser death.
 	tabCtx, tabCancel := chromedp.NewContext(browserCtx)
 	defer tabCancel()
 
-	timeout := c.opts.Timeout
-	tabCtx, timeoutCancel := context.WithTimeout(tabCtx, timeout)
+	pageTO := c.opts.Timeout
+	tabCtx, timeoutCancel := context.WithTimeout(tabCtx, pageTO)
 	defer timeoutCancel()
 
-	// If the job context is cancelled, close only this tab.
 	stopWatch := make(chan struct{})
 	defer close(stopWatch)
 	go func() {
@@ -180,15 +238,23 @@ func (c *Capturer) captureOnce(ctx context.Context, pageURL string) (*Result, er
 	}()
 
 	var buf []byte
+	settle := c.opts.Settle
 	err = chromedp.Run(tabCtx,
 		chromedp.EmulateViewport(int64(c.opts.Width), int64(c.opts.Height)),
-		chromedp.Navigate(pageURL),
-		// Retail sites rarely reach true networkIdle quickly; fixed settle is enough for evidence.
-		chromedp.Sleep(2*time.Second),
+		// Issue navigation without waiting for the full load event. Retail SPAs
+		// and bot walls often never fire load, which hung the old chromedp.Navigate
+		// path and left the worker "running" for 10+ minutes.
+		chromedp.ActionFunc(func(ctx context.Context) error {
+			_, _, _, _, e := page.Navigate(pageURL).Do(ctx)
+			return e
+		}),
+		chromedp.Sleep(settle),
 		chromedp.CaptureScreenshot(&buf),
 	)
+	// Always close the tab promptly (defer tabCancel also runs).
+	tabCancel()
+
 	if err != nil {
-		// If the browser itself died, clear so ensureBrowser recreates next time.
 		if browserCtx.Err() != nil {
 			c.mu.Lock()
 			if c.browserCtx == browserCtx {
@@ -201,6 +267,15 @@ func (c *Capturer) captureOnce(ctx context.Context, pageURL string) (*Result, er
 	if len(buf) < 100 {
 		return nil, fmt.Errorf("screenshot: empty image")
 	}
+
+	c.mu.Lock()
+	c.captureN++
+	// Recycle periodically so zombie renderers don't accumulate.
+	if c.captureN >= 12 {
+		c.shutdownLocked()
+	}
+	c.mu.Unlock()
+
 	sum := sha256.Sum256(buf)
 	return &Result{
 		PNG:         buf,
@@ -212,7 +287,6 @@ func (c *Capturer) captureOnce(ctx context.Context, pageURL string) (*Result, er
 }
 
 // ensureBrowser starts (or reuses) a single Chrome process.
-// Browser lifetime is independent of per-request contexts.
 func (c *Capturer) ensureBrowser() (context.Context, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -223,9 +297,6 @@ func (c *Capturer) ensureBrowser() (context.Context, error) {
 	c.shutdownLocked()
 
 	startTO := c.opts.BrowserStartTimeout
-	// Allocator parent must outlive individual captures — use Background.
-	// Never attach a cancelable timeout context as the browser root: chromedp
-	// shuts the browser down when that context is cancelled.
 	allocOpts := append(chromedp.DefaultExecAllocatorOptions[:],
 		chromedp.ExecPath(c.opts.ChromePath),
 		chromedp.Flag("headless", true),
@@ -234,7 +305,9 @@ func (c *Capturer) ensureBrowser() (context.Context, error) {
 		chromedp.Flag("disable-dev-shm-usage", true),
 		chromedp.Flag("hide-scrollbars", true),
 		chromedp.Flag("mute-audio", true),
-		// Prefer a normal desktop UA so bot walls are slightly less aggressive.
+		chromedp.Flag("disable-background-networking", true),
+		// Block heavy extras that slow or hang headless captures.
+		chromedp.Flag("blink-settings", "imagesEnabled=true"),
 		chromedp.UserAgent("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 InsightForge/1.0"),
 		chromedp.WindowSize(c.opts.Width, c.opts.Height),
 		chromedp.WSURLReadTimeout(startTO),
@@ -243,8 +316,7 @@ func (c *Capturer) ensureBrowser() (context.Context, error) {
 	allocCtx, allocCancel := chromedp.NewExecAllocator(context.Background(), allocOpts...)
 	browserCtx, browserCancel := chromedp.NewContext(allocCtx)
 
-	// Start Chrome now (connect DevTools). Must Run on browserCtx itself — not a
-	// child WithTimeout — or canceling the child kills the shared browser.
+	// Run on browserCtx itself (never a cancelable child — that kills the browser).
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- chromedp.Run(browserCtx)
@@ -265,6 +337,7 @@ func (c *Capturer) ensureBrowser() (context.Context, error) {
 	c.allocCancel = allocCancel
 	c.browserCtx = browserCtx
 	c.browserCancel = browserCancel
+	c.captureN = 0
 	return browserCtx, nil
 }
 
@@ -278,19 +351,17 @@ func (c *Capturer) shutdownLocked() {
 		c.allocCancel = nil
 	}
 	c.browserCtx = nil
+	c.captureN = 0
 }
 
 func findChrome() string {
-	// Explicit override (preferred on sprites: Chrome for Testing / headless shell).
 	if p := strings.TrimSpace(os.Getenv("IF_CHROME_PATH")); p != "" {
 		if isRunnableChrome(p) {
 			return p
 		}
 	}
-	// Common install locations (real binaries first; skip Ubuntu snap stubs).
 	home := strings.TrimSpace(os.Getenv("HOME"))
 	candidates := []string{
-		// Chrome for Testing (installed under home on sprites)
 		home + "/chrome-for-testing/chrome-headless-shell-linux64/chrome-headless-shell",
 		home + "/chrome-for-testing/chrome-linux64/chrome",
 		"/home/sprite/chrome-for-testing/chrome-headless-shell-linux64/chrome-headless-shell",
@@ -299,9 +370,8 @@ func findChrome() string {
 		"/Applications/Chromium.app/Contents/MacOS/Chromium",
 		"/usr/bin/google-chrome",
 		"/usr/bin/google-chrome-stable",
-		"/snap/bin/chromium", // real snap binary when installed
+		"/snap/bin/chromium",
 		"/usr/bin/chromium",
-		// /usr/bin/chromium-browser is often a snap *wrapper* that fails without snap — check last.
 		"/usr/bin/chromium-browser",
 	}
 	for _, p := range candidates {
@@ -312,7 +382,6 @@ func findChrome() string {
 	return ""
 }
 
-// isRunnableChrome is true for a real Chrome/Chromium binary (not the Ubuntu apt snap stub script).
 func isRunnableChrome(p string) bool {
 	p = strings.TrimSpace(p)
 	if p == "" {
@@ -322,9 +391,6 @@ func isRunnableChrome(p string) bool {
 	if err != nil || st.IsDir() {
 		return false
 	}
-	// Reject the common Ubuntu stub:
-	//   #!/bin/sh
-	//   ... requires the chromium snap to be installed ...
 	f, err := os.Open(p)
 	if err != nil {
 		return false
@@ -334,7 +400,6 @@ func isRunnableChrome(p string) bool {
 	n, _ := f.Read(buf)
 	head := string(buf[:n])
 	if strings.HasPrefix(head, "#!") {
-		// Shell/python wrappers are only OK if they are the real snap launcher that exists.
 		if strings.Contains(head, "requires the chromium snap") ||
 			strings.Contains(head, "snap install chromium") ||
 			(strings.Contains(head, "/snap/bin/chromium") && !fileExists("/snap/bin/chromium")) {
@@ -364,18 +429,15 @@ func validatePublicHTTPURL(raw string) error {
 	if host == "" {
 		return fmt.Errorf("screenshot: missing host")
 	}
-	// Block obvious local names.
 	low := strings.ToLower(host)
 	if low == "localhost" || strings.HasSuffix(low, ".local") || low == "metadata.google.internal" {
 		return fmt.Errorf("screenshot: blocked host")
 	}
-	// If host is an IP, ensure it's public.
 	if ip := net.ParseIP(host); ip != nil {
 		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
 			return fmt.Errorf("screenshot: blocked private ip")
 		}
 	}
-	// Resolve DNS and block private answers (basic SSRF guard).
 	ips, err := net.DefaultResolver.LookupIPAddr(context.Background(), host)
 	if err == nil {
 		for _, ipa := range ips {

@@ -123,13 +123,18 @@ func main() {
 	if cfg.ScreenshotEnabled {
 		shotTO := time.Duration(cfg.ScreenshotTimeoutMS) * time.Millisecond
 		if shotTO <= 0 {
-			shotTO = 45 * time.Second
+			shotTO = 25 * time.Second
+		}
+		// Cap runaway env values — long timeouts stall the serial screenshot queue.
+		if shotTO > 60*time.Second {
+			shotTO = 60 * time.Second
 		}
 		shotCapturer = screenshot.NewCapturer(screenshot.Options{
 			Timeout:             shotTO,
 			Width:               1280,
 			Height:              720,
-			BrowserStartTimeout: 60 * time.Second,
+			BrowserStartTimeout: 45 * time.Second,
+			Settle:              2500 * time.Millisecond,
 		})
 		if shotCapturer.Available() && tigrisStore != nil {
 			shotWorker = screenshot.NewWorker(tigrisStore, shotCapturer, screenshot.ProofOptions{
