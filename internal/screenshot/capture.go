@@ -14,7 +14,13 @@ import (
 	"time"
 )
 
-// Result is a captured page image.
+// Evidence kinds stored on proof.screenshot.kind.
+const (
+	KindPageScreenshot = "page_screenshot" // full rendered page
+	KindProductImage   = "product_image"   // catalog photo (bot-walled merchants)
+)
+
+// Result is a captured visual evidence image.
 type Result struct {
 	PNG         []byte
 	ContentType string
@@ -23,6 +29,7 @@ type Result struct {
 	SHA256      string
 	HTTPStatus  int
 	Backend     string
+	Kind        string // page_screenshot | product_image
 }
 
 // Backend identifiers.
@@ -149,8 +156,21 @@ func (c *Capturer) Available() bool {
 	}
 }
 
-// CapturePNG returns a PNG (or other image bytes) for pageURL.
+// CapturePNG is a convenience wrapper (page capture only, no product-image fallback).
 func (c *Capturer) CapturePNG(ctx context.Context, pageURL string) (*Result, error) {
+	return c.CaptureEvidence(ctx, pageURL, "")
+}
+
+// CaptureEvidence returns visual proof for a price hit.
+//
+// Strategy (why this exists):
+//   Amazon / Walmart / Home Depot / etc. serve CAPTCHA / "robot or human" /
+//   "continue shopping" interstitial pages to datacenter screenshotters
+//   (thum, microlink, headless Chrome). Those images are useless as price
+//   evidence. For bot-walled hosts we instead archive a product catalog photo
+//   (SerpAPI Google Shopping thumbnail). Friendly hosts still get a full-page
+//   screenshot of the PDP.
+func (c *Capturer) CaptureEvidence(ctx context.Context, pageURL, productImageURL string) (*Result, error) {
 	if c == nil {
 		return nil, fmt.Errorf("screenshot: capturer nil")
 	}
@@ -161,14 +181,110 @@ func (c *Capturer) CapturePNG(ctx context.Context, pageURL string) (*Result, err
 		return nil, fmt.Errorf("screenshot: backend %q unavailable", c.opts.Backend)
 	}
 
+	productImageURL = strings.TrimSpace(productImageURL)
+	host := hostOf(pageURL)
+
+	// Bot-walled big-box: never waste a page render (challenge screens only).
+	if isBotWalledHost(host) {
+		if productImageURL != "" {
+			if err := validatePublicHTTPURL(productImageURL); err == nil {
+				res, err := c.downloadAsResult(ctx, productImageURL, BackendThum)
+				if err == nil {
+					res.Kind = KindProductImage
+					res.Backend = "product_image"
+					return res, nil
+				}
+				// fall through to explicit error with download detail
+				return nil, fmt.Errorf("screenshot: bot-protected host %s — product image fetch failed: %w", host, err)
+			}
+		}
+		return nil, fmt.Errorf("screenshot: bot-protected host %s (Amazon/Walmart/HD/etc.) — page capture skipped; no product image on hit", host)
+	}
+
+	// Friendly hosts: full page screenshot.
+	var res *Result
+	var err error
 	switch c.opts.Backend {
 	case BackendChrome:
-		return c.captureChrome(ctx, pageURL)
+		res, err = c.captureChrome(ctx, pageURL)
 	case BackendMicrolink:
-		return c.captureMicrolink(ctx, pageURL)
+		res, err = c.captureMicrolink(ctx, pageURL)
 	default:
-		return c.captureThum(ctx, pageURL)
+		res, err = c.captureThum(ctx, pageURL)
 	}
+	if err != nil {
+		// Last resort: product image even for non-blocked hosts if page shot fails.
+		if productImageURL != "" && validatePublicHTTPURL(productImageURL) == nil {
+			if img, e2 := c.downloadAsResult(ctx, productImageURL, "product_image"); e2 == nil {
+				img.Kind = KindProductImage
+				return img, nil
+			}
+		}
+		return nil, err
+	}
+	if res != nil && res.Kind == "" {
+		res.Kind = KindPageScreenshot
+	}
+	return res, nil
+}
+
+func hostOf(raw string) string {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return ""
+	}
+	return strings.ToLower(u.Hostname())
+}
+
+// isBotWalledHost is true for merchants that reliably block automated page
+// screenshots with CAPTCHA / interstitial walls from datacenter IPs.
+func isBotWalledHost(host string) bool {
+	host = strings.ToLower(strings.TrimSpace(host))
+	if host == "" {
+		return false
+	}
+	// Strip leading www.
+	host = strings.TrimPrefix(host, "www.")
+	blocked := []string{
+		"amazon.com", "amazon.co.uk", "amazon.ca", "amazon.de", "amazon.fr",
+		"walmart.com", "walmart.ca",
+		"homedepot.com", "homedepot.ca",
+		"lowes.com",
+		"target.com",
+		"bestbuy.com",
+		"costco.com",
+		"ebay.com", "ebay.co.uk",
+		"newegg.com", "neweggbusiness.com",
+		"wayfair.com",
+		"samsung.com", "apple.com",
+		"instagram.com", "facebook.com",
+	}
+	for _, b := range blocked {
+		if host == b || strings.HasSuffix(host, "."+b) {
+			return true
+		}
+	}
+	// Common Amazon regional / CDN hosts used as storefronts.
+	if strings.Contains(host, "amazon.") || strings.Contains(host, "amzn.") {
+		return true
+	}
+	return false
+}
+
+func (c *Capturer) downloadAsResult(ctx context.Context, imgURL, backend string) (*Result, error) {
+	img, ct, err := c.downloadImage(ctx, imgURL)
+	if err != nil {
+		return nil, err
+	}
+	sum := sha256.Sum256(img)
+	return &Result{
+		PNG:         img,
+		ContentType: ct,
+		Width:       c.opts.Width,
+		Height:      c.opts.Height,
+		SHA256:      hex.EncodeToString(sum[:]),
+		Backend:     backend,
+	}, nil
 }
 
 // captureThum uses image.thum.io — no browser process on the sprite.
@@ -224,6 +340,7 @@ func (c *Capturer) captureThum(ctx context.Context, pageURL string) (*Result, er
 		SHA256:      hex.EncodeToString(sum[:]),
 		HTTPStatus:  resp.StatusCode,
 		Backend:     BackendThum,
+		Kind:        KindPageScreenshot,
 	}, nil
 }
 

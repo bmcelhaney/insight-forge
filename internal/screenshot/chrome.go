@@ -83,5 +83,6 @@ func (c *Capturer) captureChrome(ctx context.Context, pageURL string) (*Result, 
 		Height:      c.opts.Height,
 		SHA256:      hex.EncodeToString(sum[:]),
 		Backend:     BackendChrome,
+		Kind:        KindPageScreenshot,
 	}, nil
 }

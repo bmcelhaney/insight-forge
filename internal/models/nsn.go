@@ -263,7 +263,10 @@ type MarketOffer struct {
 	Source        string  `json:"source,omitempty"`           // e.g. UPCITEMDB, SERPAPI, GSA_ADVANTAGE
 	Link          string  `json:"link,omitempty"`
 	Title         string  `json:"title,omitempty"`            // product/offer title used for pack parse
-	AsOf          string  `json:"as_of,omitempty"`            // ISO date when known
+	// ImageURL is an optional product photo (e.g. Google Shopping thumbnail).
+	// Used as visual evidence when full-page screenshots hit bot walls.
+	ImageURL string `json:"image_url,omitempty"`
+	AsOf     string `json:"as_of,omitempty"` // ISO date when known
 }
 
 // CommercialSupplier represents an aggregated commercial supplier derived from SKU/UPC data.

@@ -85,15 +85,17 @@ type DataCaptureProof struct {
 	Screenshot *DataCaptureScreenshot `json:"screenshot,omitempty"`
 }
 
-// DataCaptureScreenshot is a visual capture of links.url stored in object storage.
+// DataCaptureScreenshot is a visual evidence artifact stored in object storage.
 type DataCaptureScreenshot struct {
 	// Status: pending | ready | failed | skipped
-	Status      string    `json:"status"`
+	Status string `json:"status"`
+	// Kind: page_screenshot (full page) | product_image (catalog photo when page is bot-walled)
+	Kind        string    `json:"kind,omitempty"`
 	Bucket      string    `json:"bucket,omitempty"`
 	ObjectKey   string    `json:"object_key,omitempty"`
 	ContentType string    `json:"content_type,omitempty"`
 	CapturedAt  time.Time `json:"captured_at,omitempty"`
-	// SourceURL is the page that was captured (copy of links.url at capture time).
+	// SourceURL is the page (or image origin) associated with this evidence.
 	SourceURL  string `json:"source_url,omitempty"`
 	HTTPStatus int    `json:"http_status,omitempty"`
 	Width      int    `json:"width,omitempty"`

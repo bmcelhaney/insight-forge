@@ -39,14 +39,15 @@ type RunStatus struct {
 }
 
 type captureJob struct {
-	analysisID string
-	nsn        string
-	hitID      string
-	pageURL    string
-	urlKind    string
-	label      HitLabel
-	timeout    time.Duration
-	presignTTL time.Duration
+	analysisID      string
+	nsn             string
+	hitID           string
+	pageURL         string
+	productImageURL string // SerpAPI thumbnail etc. — used when page is bot-walled
+	urlKind         string
+	label           HitLabel
+	timeout         time.Duration
+	presignTTL      time.Duration
 }
 
 // Worker runs screenshot jobs in the background and stores results by analysis_id.
@@ -133,21 +134,37 @@ func (w *Worker) MarkPendingAndEnqueue(doc *models.DataCaptureDocument) int {
 			break
 		}
 		src := strings.TrimSpace(h.Links.URL)
+		productImg := ""
+		if h.Attributes != nil {
+			if v, ok := h.Attributes["product_image"].(string); ok {
+				productImg = strings.TrimSpace(v)
+			}
+		}
 		label := HitLabel{
-			HitID:   h.HitID,
-			HitType: h.HitType,
-			SKU:     h.Identifiers.SKU,
+			HitID:        h.HitID,
+			HitType:      h.HitType,
+			SKU:          h.Identifiers.SKU,
 			Manufacturer: h.Identifiers.Manufacturer,
-			URLKind: h.Links.URLKind,
-			SourceURL: src,
+			URLKind:      h.Links.URLKind,
+			SourceURL:    src,
 		}
 		if h.Pricing != nil {
 			label.Merchant = h.Pricing.Merchant
 			label.UnitPrice = h.Pricing.UnitPrice
 			label.Channel = h.Pricing.Channel
 		}
+		// Anticipate kind for UI while pending.
+		pendingKind := "page_screenshot"
+		if isBotWalledHost(hostOf(src)) {
+			if productImg != "" {
+				pendingKind = "product_image"
+			} else {
+				pendingKind = "product_image" // may still fail without image
+			}
+		}
 		pending := &models.DataCaptureScreenshot{
 			Status:    "pending",
+			Kind:      pendingKind,
 			SourceURL: src,
 		}
 		if h.Proof == nil {
@@ -162,14 +179,15 @@ func (w *Worker) MarkPendingAndEnqueue(doc *models.DataCaptureDocument) int {
 		run.Total++
 
 		job := captureJob{
-			analysisID: doc.AnalysisID,
-			nsn:        nsn,
-			hitID:      h.HitID,
-			pageURL:    src,
-			urlKind:    h.Links.URLKind,
-			label:      label,
-			timeout:    w.opts.Timeout,
-			presignTTL: w.opts.PresignTTL,
+			analysisID:      doc.AnalysisID,
+			nsn:             nsn,
+			hitID:           h.HitID,
+			pageURL:         src,
+			productImageURL: productImg,
+			urlKind:         h.Links.URLKind,
+			label:           label,
+			timeout:         w.opts.Timeout,
+			presignTTL:      w.opts.PresignTTL,
 		}
 		select {
 		case w.jobs <- job:
@@ -237,10 +255,15 @@ func (w *Worker) processJob(job captureJob) {
 		SourceURL: job.pageURL,
 	}
 
-	shot, err := w.capturer.CapturePNG(ctx, job.pageURL)
+	shot, err := w.capturer.CaptureEvidence(ctx, job.pageURL, job.productImageURL)
 	if err != nil {
 		result.Status = "failed"
 		result.Error = truncateErr(err.Error(), 240)
+		if isBotWalledHost(hostOf(job.pageURL)) {
+			result.Kind = KindProductImage
+		} else {
+			result.Kind = KindPageScreenshot
+		}
 		w.finishJob(job, result)
 		return
 	}
@@ -266,6 +289,11 @@ func (w *Worker) processJob(job captureJob) {
 	if shot.Backend != "" {
 		meta["capture-backend"] = shot.Backend
 	}
+	kind := shot.Kind
+	if kind == "" {
+		kind = KindPageScreenshot
+	}
+	meta["evidence-kind"] = kind
 	ct := shot.ContentType
 	if ct == "" {
 		ct = "image/png"
@@ -276,12 +304,14 @@ func (w *Worker) processJob(job captureJob) {
 	if err != nil {
 		result.Status = "failed"
 		result.Error = truncateErr(err.Error(), 240)
+		result.Kind = kind
 		w.finishJob(job, result)
 		return
 	}
 	presign, _ := w.store.PresignGet(ctx, key, job.presignTTL)
 	result = &models.DataCaptureScreenshot{
 		Status:      "ready",
+		Kind:        kind,
 		Bucket:      w.store.Bucket(),
 		ObjectKey:   key,
 		ContentType: ct,

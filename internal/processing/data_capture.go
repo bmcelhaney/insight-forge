@@ -184,6 +184,12 @@ func BuildDataCaptureDocument(result models.InsightResult, snaps []models.DataSn
 				}
 				priceHit.Attributes["offer_title"] = o.Title
 			}
+			if img := strings.TrimSpace(o.ImageURL); img != "" {
+				if priceHit.Attributes == nil {
+					priceHit.Attributes = map[string]any{}
+				}
+				priceHit.Attributes["product_image"] = img
+			}
 			if lnk := bestPriceObservationLinks(o, c); lnk != nil {
 				priceHit.Links = lnk
 			}

@@ -55,6 +55,7 @@ type shoppingHit struct {
 	Link           string
 	Source         string // merchant name
 	ProductID      string
+	Thumbnail      string // product photo URL (Google Shopping thumbnail CDN — not bot-walled)
 	ImmersiveToken string // page_token for engine=google_immersive_product
 }
 
@@ -467,6 +468,7 @@ func identityFromShoppingHits(hits []shoppingHit, preferSKU, mfr string) product
 			Source:    "SERPAPI",
 			Link:      h.Link,
 			Title:     strings.TrimSpace(h.Title),
+			ImageURL:  strings.TrimSpace(h.Thumbnail),
 		})
 	}
 
@@ -667,6 +669,7 @@ func serpGoogleShopping(ctx context.Context, query string) ([]shoppingHit, bool)
 			Price                     string  `json:"price"`
 			ExtractedPrice            float64 `json:"extracted_price"`
 			ProductID                 string  `json:"product_id"`
+			Thumbnail                 string  `json:"thumbnail"`
 			OldPrice                  string  `json:"old_price"`
 			ImmersiveProductPageToken string  `json:"immersive_product_page_token"`
 		} `json:"shopping_results"`
@@ -711,6 +714,7 @@ func serpGoogleShopping(ctx context.Context, query string) ([]shoppingHit, bool)
 			Link:           link, // may be empty when only Google hub URLs — price still used for ranges
 			Source:         strings.TrimSpace(r.Source),
 			ProductID:      strings.TrimSpace(r.ProductID),
+			Thumbnail:      strings.TrimSpace(r.Thumbnail),
 			ImmersiveToken: strings.TrimSpace(r.ImmersiveProductPageToken),
 		})
 	}
