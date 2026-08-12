@@ -296,12 +296,19 @@ func main() {
 		} else {
 			ctx = processing.WithSerpImmersive(ctx, processing.SerpAPIImmersiveDefault())
 		}
+		t0 := time.Now()
 		snaps, _ := extractorReg.FetchAll(ctx, nsn, nil, nil)
+		extractMS := time.Since(t0).Milliseconds()
+		t1 := time.Now()
 		result, _ := processing.Synthesize(ctx, nsn, snaps)
+		synthMS := time.Since(t1).Milliseconds()
+		t2 := time.Now()
 		doc := processing.BuildDataCaptureDocument(result, snaps, processing.DataCaptureMeta{
 			Commit:    commit,
 			BuildTime: buildTime,
 		})
+		dcMS := time.Since(t2).Milliseconds()
+		doc.Timings = processing.AssembleAnalyzeTimings(extractMS, synthMS, dcMS, time.Since(t0).Milliseconds(), snaps, result.PhaseTimings)
 		wantShots := cfg.ScreenshotEnabled && (captureScreenshots || cfg.ScreenshotOnAnalyze)
 		if wantShots && shotWorker != nil && shotWorker.Available() {
 			_ = shotWorker.MarkPendingAndEnqueue(&doc)

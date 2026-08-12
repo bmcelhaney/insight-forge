@@ -247,6 +247,8 @@ func probeProductURL(ctx context.Context, rawURL string) (bool, string) {
 
 	reqCtx, cancel := context.WithTimeout(ctx, linkVerifyTimeout)
 	defer cancel()
+	t0 := time.Now()
+	defer addPhaseMS(ctx, phaseLinkVerify, t0)
 
 	// Prefer HEAD (cheap). Some CDNs reject HEAD → fall back to short GET.
 	ok, reason, tryGET := doProbeMethod(reqCtx, http.MethodHead, rawURL)

@@ -1275,6 +1275,8 @@ func (n *flexibleNum) UnmarshalJSON(b []byte) error {
 func (n flexibleNum) Float() float64 { return float64(n) }
 
 func upcitemdbFetch(ctx context.Context, endpoint, preferSKU string) (id productIdentity, ok bool, transient bool) {
+	t0 := time.Now()
+	defer addPhaseMS(ctx, phaseUPC, t0)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return productIdentity{}, false, true

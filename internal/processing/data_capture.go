@@ -51,9 +51,10 @@ func BuildDataCaptureDocument(result models.InsightResult, snaps []models.DataSn
 		Schema:        models.DataCaptureSchemaID,
 		SchemaVersion: models.DataCaptureSchemaVersion,
 		Purpose: "Machine-readable inventory of NSN/SKU/UPC/ETS/commercial/procurement hits for downstream applications. " +
+			"Ingest pricing (unit_price, quantity, merchant, channel) and links.url as the durable proof of that price. " +
 			"Price hits are atomic (unit_price + quantity); no market ranges. " +
-			"Each hit has at most one primary evidence URL (links.url). " +
-			"Optional proof.screenshot stores visual capture of that URL in object storage. " +
+			"Each priced hit has at most one merchant-matched evidence URL (links.url); omit rather than misattribute. " +
+			"Screenshots and Tigris proof are parked — do not poll /api/proofs. " +
 			"Not the pricing-tool narrative export.",
 		ExportedAt: time.Now().UTC(),
 		AnalysisID: uuid.NewString(),
@@ -265,7 +266,7 @@ func BuildDataCaptureDocument(result models.InsightResult, snaps []models.DataSn
 					Attributes: map[string]any{
 						"signal_count":   pbTotal,
 						"exported_count": pbExported,
-						"truncated":     false,
+						"truncated":      false,
 						"supplier_count": supCount,
 						"last_updated":   lastUp,
 					},
@@ -287,7 +288,7 @@ func BuildDataCaptureDocument(result models.InsightResult, snaps []models.DataSn
 					Attributes: map[string]any{
 						"signal_count":   pb.SignalCount,
 						"exported_count": len(pb.Sample),
-						"truncated":     len(pb.Sample) < pb.SignalCount,
+						"truncated":      len(pb.Sample) < pb.SignalCount,
 						"supplier_count": pb.SupplierCount,
 						"last_updated":   pb.LastUpdated,
 						"source":         "insight_sample_fallback",
@@ -410,7 +411,72 @@ func BuildDataCaptureDocument(result models.InsightResult, snaps []models.DataSn
 	}
 
 	doc.Counts = computeDataCaptureCounts(doc.Hits)
+	doc.URLCoverage = computeURLCoverage(doc.Hits)
 	return doc
+}
+
+// AssembleAnalyzeTimings builds the timings block for a data-capture document.
+func AssembleAnalyzeTimings(extractMS, synthMS, dataCaptureMS, totalMS int64, snaps []models.DataSnapshot, phase map[string]int64) *models.DataCaptureTimings {
+	t := &models.DataCaptureTimings{
+		TotalMS:       totalMS,
+		ExtractMS:     extractMS,
+		SynthesizeMS:  synthMS,
+		DataCaptureMS: dataCaptureMS,
+	}
+	if phase != nil {
+		t.CommercialProbeMS = phase["commercial_probe_ms"]
+		t.ProductLinksMS = phase["product_links_ms"]
+		t.SerpMS = phase["serp_ms"]
+		t.ImmersiveMS = phase["immersive_ms"]
+		t.UPCMS = phase["upc_ms"]
+		t.LinkVerifyMS = phase["link_verify_ms"]
+	}
+	seen := map[string]bool{}
+	for _, s := range snaps {
+		code := s.SourceCode
+		if code == "" {
+			continue
+		}
+		if seen[code] {
+			continue
+		}
+		var ms int64
+		if s.RawResponse != nil {
+			switch v := s.RawResponse["_fetch_ms"].(type) {
+			case int64:
+				ms = v
+			case int:
+				ms = int64(v)
+			case float64:
+				ms = int64(v)
+			}
+		}
+		t.Extractors = append(t.Extractors, models.NamedDuration{Name: code, MS: ms})
+		seen[code] = true
+	}
+	return t
+}
+
+func computeURLCoverage(hits []models.DataCaptureHit) *models.DataCaptureURLCoverage {
+	c := &models.DataCaptureURLCoverage{}
+	for _, h := range hits {
+		if h.HitType != "price_observation" || h.Pricing == nil || h.Pricing.UnitPrice <= 0 {
+			continue
+		}
+		c.PriceObservations++
+		if h.Links == nil || strings.TrimSpace(h.Links.URL) == "" {
+			c.WithoutURL++
+			continue
+		}
+		c.WithURL++
+		switch strings.ToLower(strings.TrimSpace(h.Links.URLKind)) {
+		case "merchant_pdp", "amazon_dp", "federal":
+			c.WithStrongURL++
+		case "search":
+			c.SearchOnly++
+		}
+	}
+	return c
 }
 
 func commercialHitType(source string) string {
@@ -540,8 +606,8 @@ func hostMatchesMerchant(rawURL, merchant string) bool {
 		hosts   []string
 	}
 	aliases := []alias{
-		{[]string{"home depot", "homedepot"}, []string{"homedepot.com"}},
-		{[]string{"walmart", "wal-mart"}, []string{"walmart.com"}},
+		{[]string{"home depot", "homedepot"}, []string{"homedepot.com", "homedepot.ca"}},
+		{[]string{"walmart", "wal-mart"}, []string{"walmart.com", "walmart.ca"}},
 		{[]string{"amazon"}, []string{"amazon.com", "amazon."}},
 		{[]string{"lowe", "lowes"}, []string{"lowes.com"}},
 		{[]string{"ace hardware", "acehardware"}, []string{"acehardware.com"}},
@@ -563,6 +629,26 @@ func hostMatchesMerchant(rawURL, merchant string) bool {
 		{[]string{"painters solutions", "painterssolutions"}, []string{"painterssolutions.com"}},
 		{[]string{"mccoy"}, []string{"mccoys.com"}},
 		{[]string{"dk hardware", "dkhardware"}, []string{"dkhardware.com"}},
+		{[]string{"uline"}, []string{"uline.com"}},
+		{[]string{"global industrial"}, []string{"globalindustrial.com"}},
+		{[]string{"msc", "mscdirect", "msc direct"}, []string{"mscdirect.com"}},
+		{[]string{"webstaurant"}, []string{"webstaurantstore.com"}},
+		{[]string{"sherwin", "sherwin-williams", "sherwin williams"}, []string{"sherwin-williams.com"}},
+		{[]string{"benjamin moore", "benjaminmoore"}, []string{"benjaminmoore.com"}},
+		{[]string{"dunn edwards", "dunnedwards"}, []string{"dunnedwards.com"}},
+		{[]string{"orgill"}, []string{"orgill.com"}},
+		{[]string{"stine"}, []string{"stinehome.com", "stine.com"}},
+		{[]string{"als taping", "alstaping"}, []string{"alstapingtools.com"}},
+		{[]string{"upside down"}, []string{"upsidedownsupply.com"}},
+		{[]string{"northern tool", "northerntool"}, []string{"northerntool.com"}},
+		{[]string{"harbor freight", "harborfreight"}, []string{"harborfreight.com"}},
+		{[]string{"fastenal"}, []string{"fastenal.com"}},
+		{[]string{"costco"}, []string{"costco.com"}},
+		{[]string{"sam's club", "sams club", "samsclub"}, []string{"samsclub.com"}},
+		{[]string{"rural king", "ruralking"}, []string{"ruralking.com"}},
+		{[]string{"blain", "farm and fleet"}, []string{"farmandfleet.com"}},
+		{[]string{"hardware world", "hardwareworld"}, []string{"hardwareworld.com"}},
+		{[]string{"amazon.ca"}, []string{"amazon.ca"}},
 	}
 	for _, a := range aliases {
 		matchMerch := false
@@ -773,9 +859,20 @@ func bestPriceObservationLinks(o models.MarketOffer, parent models.CommercialRef
 		return singleEvidenceLink(raw, classifyEvidenceURLKind(raw))
 	}
 
-	// 1) Offer's own link (best).
+	// 1) Offer's own link (best). Search/hub links fall through.
 	if lnk := try(o.Link); lnk != nil {
 		return lnk
+	}
+
+	// 1b) Amazon: construct /dp/{ASIN} when we have an ASIN but no honest offer link.
+	if ch == "amazon" || strings.Contains(strings.ToLower(merchant), "amazon") {
+		for _, raw := range []string{o.Link, o.Title, parent.LinkAmazon, parent.PriceURL, parent.SKU, parent.Description} {
+			if a, ok := amazonASINFromSKU(scanASINToken(raw)); ok {
+				if lnk := try("https://www.amazon.com/dp/" + a); lnk != nil {
+					return lnk
+				}
+			}
+		}
 	}
 
 	// 2) Sibling market offers with the same merchant that still have a good link.
@@ -860,6 +957,14 @@ func buildDataCaptureSources(snaps []models.DataSnapshot) []models.DataCaptureSo
 		if s.RawResponse != nil {
 			if ds, ok := s.RawResponse["data_source"].(string); ok {
 				src.DataSource = ds
+			}
+			switch v := s.RawResponse["_fetch_ms"].(type) {
+			case int64:
+				src.FetchMS = v
+			case int:
+				src.FetchMS = int64(v)
+			case float64:
+				src.FetchMS = int64(v)
 			}
 			if note, ok := s.RawResponse["note"].(string); ok {
 				src.Note = note
@@ -1010,8 +1115,8 @@ func webHitFromMap(row map[string]any, idx int, nsn, niin, fsc string) models.Da
 		},
 		Description: title,
 		Context:     snippet,
-		Links:      singleEvidenceLink(url, "web"),
-		Attributes: attrs,
+		Links:       singleEvidenceLink(url, "web"),
+		Attributes:  attrs,
 	}
 }
 

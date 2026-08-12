@@ -119,8 +119,11 @@ func Synthesize(ctx context.Context, entityID string, snapshots []models.DataSna
 	// === Commercial SKUs / UPCs (ETS + GSA; WebFLIS + PartsBase excluded from this list) ===
 	commercialRefs := extractCommercialReferences(snapshots)
 	commercialRefs = enrichCommercialReferences(entityID, commercialRefs, snapshots)
+	ctx, clock := WithPhaseClock(ctx)
 	// Bounded probes for top unpriced commercial/ETS rows (soft-fail, cached, env-gated).
+	tProbe := time.Now()
 	commercialRefs = probeCommercialPrices(ctx, commercialRefs)
+	probeMS := time.Since(tProbe).Milliseconds()
 	// Resolve UPC/SKU → product title + Amazon ASIN for accurate deep links (soft-fail).
 	// Stamp AbilityOne.com NSN channel price onto each tile's federal link for per-link pricing.
 	fedPrice, fedSrc := "", ""
@@ -131,7 +134,13 @@ func Synthesize(ctx context.Context, entityID string, snapshots []models.DataSna
 			fedSrc = "ABILITYONE_COM"
 		}
 	}
+	tLinks := time.Now()
 	commercialRefs = enrichProductLinksWithFederal(ctx, commercialRefs, entityID, fedPrice, fedSrc)
+	linksMS := time.Since(tLinks).Milliseconds()
+	result.PhaseTimings = phaseTimingsMap(clock, map[string]int64{
+		"commercial_probe_ms": probeMS,
+		"product_links_ms":    linksMS,
+	})
 
 	// Integration health after commercial resolve so SerpAPI/UPCItemDB last-call status is included.
 	serpEn, serpCfg, upcEn, upcCfg := integrationFlagsSnapshot()

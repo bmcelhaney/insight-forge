@@ -5,24 +5,24 @@
 **UI / pricing-tool envelope:** `POST /api/insight`
 
 **1.2:** each hit has at most **one** primary evidence URL (`links.url` + `links.url_kind`).  
-**1.3:** `analysis_id` + optional `proof.screenshot` (Tigris object for visual pricing proof of `links.url`).
+**1.3:** `analysis_id` + optional `proof.screenshot` (Tigris). **Screenshots and Tigris are parked** — do not poll `/api/proofs`.
 
-### Screenshot-related payload fields (1.3 + recent)
+### Windmill / downstream ingest (current contract)
 
-| Field | Where | Notes |
+Call **`POST /api/analyze` once** per NSN. Do **not** chain `/api/insight`, `/api/export/data`, or `/api/proofs`.
+
+| Persist | Field | Notes |
 |---|---|---|
-| `analysis_id` | document root | Correlates the run + Tigris object keys |
-| `hits[].proof.screenshot` | on eligible hits only | Present when screenshots run (default **on** if Tigris configured; opt out with `capture_screenshots: false`) |
-| `hits[].proof.screenshot.status` | | `pending` → `ready` \| `failed` |
-| `hits[].proof.screenshot.kind` | | `page_screenshot` (full page) or `product_image` (bot-wall fallback) |
-| `hits[].proof.screenshot.source_url` | | **Durable product/page URL** for the hit (merchant link) |
-| `hits[].proof.screenshot.object_key` | | **Durable Tigris key — store this in your DB** |
-| `hits[].proof.screenshot.bucket` | | Tigris bucket name — store with object_key |
-| `hits[].attributes.product_image` | optional | Upstream SerpAPI thumbnail URL (source material, not Tigris) |
+| **Yes** | `hits[].pricing.unit_price` | Atomic listing price (USD unless noted) |
+| **Yes** | `hits[].pricing.quantity` | Pack size; default 1 |
+| **Yes** | `hits[].pricing.merchant` / `channel` / `price_source` | Seller + provenance |
+| **Yes** | `hits[].links.url` | **Durable merchant-matched product page** — this is the proof of the price |
+| **Yes** | `hits[].links.url_kind` | `merchant_pdp` \| `amazon_dp` \| `federal` are strong; `search` is weak |
+| Optional | `query.nsn`, `analysis_id`, `identifiers.*` | Keys for joining / idempotency |
+| Ops only | `timings`, `url_coverage` | Latency + how many priced hits have a honest URL |
+| **No** | `proof.screenshot`, Tigris keys, Serp thumbnails | Parked / not proof of price |
 
-**No short-lived `url` field is populated.** Presigned links expire; they are unsuitable for DB storage. Store `bucket` + `object_key` and re-presign (or fetch with credentials) when you need to display the image.
-
-**Async flow:** initial `POST /api/analyze` returns screenshots as `status: "pending"`. Poll `GET /api/proofs/{analysis_id}` until `status: "complete"`. Use **`data_capture`** — ready hits have `bucket`, `object_key`, and `source_url`.
+If a `price_observation` has no `links.url`, the price is still valid — do **not** invent another retailer's page. Never attach a Home Depot URL to a Newegg observation.
 
 There is no app-level API key. Auth (if any) is at the gateway (e.g. Sprites public vs sprite URL).
 
@@ -78,7 +78,9 @@ DataCaptureDocument
 ├── item                        Catalog identity for that NSN
 ├── hits[]                      ★ Atomic findings (main payload)
 ├── counts                      Rollups for validation
-├── sources[]                   Extractor provenance (optional)
+├── url_coverage                How many priced hits have a merchant-matched URL
+├── timings                     Server-side latency (ms) for this analyze
+├── sources[]                   Extractor provenance (optional; includes fetch_ms)
 └── scores                      Light analysis scores (optional; not hits)
 ```
 
@@ -111,6 +113,8 @@ DataCaptureDocument
 | `item` | object | Primary federal item identity |
 | `hits` | array | **Core inventory** — one row per discrete finding |
 | `counts` | object | Totals / uniqueness / priced hit counts |
+| `url_coverage` | object | Priced hits with / without a merchant-matched `links.url` |
+| `timings` | object | Wall-clock ms: extract, synthesize (Serp/UPC/verify), total |
 | `sources` | array | Optional provenance of extractors used |
 | `scores` | object | Optional scoring context (not a substitute for hits) |
 
@@ -249,14 +253,9 @@ Do **not** expect a long-lived `url` field. Short-lived presigned URLs are not e
 
 **Eligibility:** `price_observation` / strong commercial identity with `url_kind` in `merchant_pdp` \| `amazon_dp` \| `federal`, capped by `IF_SCREENSHOT_MAX_PER_RUN`.
 
-**How to get Tigris URLs on each hit (recommended consumer flow):**
+**Screenshots / Tigris are parked.** Do not poll `/api/proofs`. Proof of a commercial price is `pricing` + merchant-matched `links.url`.
 
-```http
-POST /api/analyze
-{ "nsn": "8020015964253" }
-```
-
-(Screenshots default on. Only add `"capture_screenshots": false` to skip.)
+Historical flow (only if screenshots are re-enabled with `IF_SCREENSHOT_ENABLED=true`):
 
 1. Read `analysis_id` and initial `hits[]` (screenshots are `pending` when capture ran).
 2. Poll until complete:
@@ -337,6 +336,32 @@ Per-extractor provenance for the run:
 | `quality_score` | Internal quality 0–1 or 0–100 |
 | `data_source` | e.g. live vs unavailable |
 | `note` / `result_count` | Ops / volume hints |
+| `fetch_ms` | Extractor wall-clock for this snapshot |
+
+### `url_coverage`
+
+| Field | Description |
+|---|---|
+| `price_observations` | Atomic priced hits |
+| `with_url` | Those hits that have `links.url` |
+| `with_strong_url` | `url_kind` is `merchant_pdp`, `amazon_dp`, or `federal` |
+| `without_url` | Priced but no honest merchant URL (do not invent one) |
+| `search_only` | Only a Google Shopping / search hub URL |
+
+### `timings` (ops — not pricing)
+
+| Field | Description |
+|---|---|
+| `total_ms` | End-to-end analyze |
+| `extract_ms` | Parallel extractors |
+| `synthesize_ms` | Synthesis + commercial enrich |
+| `commercial_probe_ms` | AbilityOne.com unpriced-row probes |
+| `product_links_ms` | UPC + Serp + link rewrite |
+| `serp_ms` / `immersive_ms` | Google Shopping / Immersive Product HTTP |
+| `upc_ms` | UPCItemDB HTTP |
+| `link_verify_ms` | Outbound HEAD/GET of candidate PDPs |
+| `data_capture_ms` | Document assembly |
+| `extractors[]` | `{ name, ms }` per extractor |
 
 ### `scores` (optional)
 
@@ -397,7 +422,33 @@ Useful if you already consume the insight path; **prefer `data_capture.hits` for
 4. **Pack-aware comparison:** use `price_per_each` when `quantity > 1`.  
 5. **Links are best-effort evidence** — verify if you publish them externally; dead links may be stripped server-side.  
 6. **`/api/analyze` and UI Data Capture export are the same builder** — no second schema.  
-7. **Idempotency:** same NSN can yield different hit counts over time (market APIs, quota, immersive on/off).
+7. **Idempotency:** same NSN can yield different hit counts over time (market APIs, quota, immersive on/off).  
+8. **Windmill:** one `POST /api/analyze`. Persist `pricing` + `links.url`. Ignore screenshots. Use `timings` / `url_coverage` for ops, not as catalog data.
+
+---
+
+## 7b. Windmill ingest prompt (copy/paste)
+
+```
+Call Insight Forge once per NSN:
+
+POST https://nib-insightforge-bsmmx.sprites.app/api/analyze
+Content-Type: application/json
+{ "nsn": "<13-digit NSN or 9-digit NIIN>" }
+
+Do not call /api/insight, /api/export/data, or /api/proofs.
+Do not wait for screenshots.
+
+From the JSON response:
+- Keep hits where hit_type == "price_observation" and pricing.unit_price > 0
+- Store: unit_price, quantity, price_per_each, merchant, channel, price_source, as_of
+- Store links.url + links.url_kind as the durable product-page proof
+- If links is missing, store the price without a URL (never copy another hit's URL)
+- Optionally store query.nsn, analysis_id, identifiers.sku / upc / manufacturer
+
+Ignore proof.*, Serp thumbnails, and narrative result text.
+Use timings.total_ms and url_coverage for monitoring only.
+```
 
 ---
 
@@ -456,6 +507,22 @@ Useful if you already consume the insight path; **prefer `data_capture.hits` for
     "total_hits": 42,
     "priced_hits": 28,
     "by_source": { "ABILITYONE_ETS": 10, "SERPAPI": 18 }
+  },
+  "url_coverage": {
+    "price_observations": 28,
+    "with_url": 22,
+    "with_strong_url": 18,
+    "without_url": 6,
+    "search_only": 2
+  },
+  "timings": {
+    "total_ms": 42000,
+    "extract_ms": 8000,
+    "synthesize_ms": 33000,
+    "serp_ms": 12000,
+    "immersive_ms": 4000,
+    "upc_ms": 2000,
+    "link_verify_ms": 1500
   }
 }
 ```

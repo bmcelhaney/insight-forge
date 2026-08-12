@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/bmcelhaney/insight-forge/internal/models"
 )
@@ -103,24 +104,47 @@ func (r *Registry) FetchAll(ctx context.Context, entityID string, sources []stri
 		}
 	}
 
+	launched := 0
 	for _, code := range targets {
 		ex, ok := r.extractors[code]
 		if !ok {
 			continue
 		}
+		launched++
 		go func(e Extractor) {
+			t0 := time.Now()
 			snaps, err := e.Fetch(ctx, entityID, params)
-			results <- result{snaps: snaps, err: err}
+			ms := time.Since(t0).Milliseconds()
+			if len(snaps) == 0 {
+				// Keep a timing-only stub so extractors[] is complete even on empty/error.
+				snaps = []models.DataSnapshot{{
+					SourceCode: e.SourceCode(),
+					EntityID:   entityID,
+					SnapshotAt: time.Now(),
+					RawResponse: map[string]any{
+						"_fetch_ms":    ms,
+						"_extractor":   e.SourceCode(),
+						"_timing_only": true,
+						"result_count": 0,
+					},
+				}}
+			}
+			for i := range snaps {
+				if snaps[i].RawResponse == nil {
+					snaps[i].RawResponse = map[string]any{}
+				}
+				snaps[i].RawResponse["_fetch_ms"] = ms
+				snaps[i].RawResponse["_extractor"] = e.SourceCode()
+			}
+			// Keep timed snaps even when Fetch reports an error (partial results).
+			_ = err
+			results <- result{snaps: snaps, err: nil}
 		}(ex)
 	}
 
 	var all []models.DataSnapshot
-	for i := 0; i < len(targets); i++ {
+	for i := 0; i < launched; i++ {
 		res := <-results
-		if res.err != nil {
-			// In production we would log and continue (partial results are valuable)
-			continue
-		}
 		all = append(all, res.snaps...)
 	}
 	return all, nil

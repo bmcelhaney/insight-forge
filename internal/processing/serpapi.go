@@ -626,6 +626,9 @@ func serpGoogleShopping(ctx context.Context, query string) ([]shoppingHit, bool)
 		return hit.hits, hit.ok
 	}
 
+	t0 := time.Now()
+	defer addPhaseMS(ctx, phaseSerp, t0)
+
 	num := serpResultLimit()
 	u := url.URL{
 		Scheme: "https",
@@ -758,6 +761,9 @@ func serpImmersiveProduct(ctx context.Context, pageToken string) ([]shoppingHit,
 	if hit, ok := getSerpCache(cacheKey); ok {
 		return hit.hits, hit.ok
 	}
+
+	t0 := time.Now()
+	defer addPhaseMS(ctx, phaseImmersive, t0)
 
 	u := url.URL{
 		Scheme: "https",

@@ -89,6 +89,9 @@ type InsightResult struct {
 	// IntegrationHealth aggregates user-facing health of external APIs
 	// (PartsBase, SerpAPI, UPCItemDB, etc.) for clear UI alerts.
 	IntegrationHealth *IntegrationHealth `json:"integration_health,omitempty"`
+
+	// PhaseTimings is internal synthesize-phase latency (ms). Copied onto data_capture.timings.
+	PhaseTimings map[string]int64 `json:"phase_timings,omitempty"`
 }
 
 // IntegrationHealth summarizes external API readiness for the analyst UI.

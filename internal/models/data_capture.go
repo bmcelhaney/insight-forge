@@ -22,10 +22,10 @@ const (
 // Insight Forge resolved for one analysis query. Designed as an input payload
 // for other applications (catalog matching, pricing engines, ERP loaders, etc.).
 type DataCaptureDocument struct {
-	Schema        string               `json:"schema"`
-	SchemaVersion string               `json:"schema_version"`
-	Purpose       string               `json:"purpose"`
-	ExportedAt    time.Time            `json:"exported_at"`
+	Schema        string    `json:"schema"`
+	SchemaVersion string    `json:"schema_version"`
+	Purpose       string    `json:"purpose"`
+	ExportedAt    time.Time `json:"exported_at"`
 	// AnalysisID ties all hits and Tigris screenshot objects for this run.
 	AnalysisID string               `json:"analysis_id,omitempty"`
 	Generator  DataCaptureGenerator `json:"generator"`
@@ -37,6 +37,40 @@ type DataCaptureDocument struct {
 	Sources []DataCaptureSource `json:"sources,omitempty"`
 	// Scores are optional context only; consumers should not treat them as hits.
 	Scores *DataCaptureScores `json:"scores,omitempty"`
+	// Timings is server-side latency for this analyze (ms). For Windmill/ops, not pricing.
+	Timings *DataCaptureTimings `json:"timings,omitempty"`
+	// URLCoverage summarizes how many priced hits have a merchant-matched proof URL.
+	URLCoverage *DataCaptureURLCoverage `json:"url_coverage,omitempty"`
+}
+
+// DataCaptureTimings is wall-clock milliseconds for one analyze/export run.
+type DataCaptureTimings struct {
+	TotalMS           int64           `json:"total_ms"`
+	ExtractMS         int64           `json:"extract_ms"`
+	SynthesizeMS      int64           `json:"synthesize_ms"`
+	CommercialProbeMS int64           `json:"commercial_probe_ms,omitempty"`
+	ProductLinksMS    int64           `json:"product_links_ms,omitempty"`
+	SerpMS            int64           `json:"serp_ms,omitempty"`
+	ImmersiveMS       int64           `json:"immersive_ms,omitempty"`
+	UPCMS             int64           `json:"upc_ms,omitempty"`
+	LinkVerifyMS      int64           `json:"link_verify_ms,omitempty"`
+	DataCaptureMS     int64           `json:"data_capture_ms,omitempty"`
+	Extractors        []NamedDuration `json:"extractors,omitempty"`
+}
+
+// NamedDuration is one timed phase or extractor.
+type NamedDuration struct {
+	Name string `json:"name"`
+	MS   int64  `json:"ms"`
+}
+
+// DataCaptureURLCoverage is how many price_observation hits have usable proof URLs.
+type DataCaptureURLCoverage struct {
+	PriceObservations int `json:"price_observations"`
+	WithURL           int `json:"with_url"`
+	WithStrongURL     int `json:"with_strong_url"` // merchant_pdp | amazon_dp | federal
+	WithoutURL        int `json:"without_url"`
+	SearchOnly        int `json:"search_only"`
 }
 
 // DataCaptureGenerator identifies the producing application/build.
@@ -127,16 +161,16 @@ type DataCaptureIdentifiers struct {
 // DataCapturePricing is one atomic price observation for downstream systems.
 // No min/max/range fields — each observation is unit_price for quantity units.
 type DataCapturePricing struct {
-	UnitPrice    float64 `json:"unit_price"`                 // listing price for the sell unit
-	Quantity     int     `json:"quantity"`                   // base units covered by unit_price (pack size)
-	PricePerEach float64 `json:"price_per_each,omitempty"`   // unit_price / quantity when quantity >= 1
-	Unit         string  `json:"unit,omitempty"`              // EA, DZ, CS, PK, BX, CT, RM, …
-	PackLabel    string  `json:"pack_label,omitempty"`       // e.g. "dozen", "case of 24"
-	BaseUnit     string  `json:"base_unit,omitempty"`        // e.g. "sheet"
-	Currency     string  `json:"currency,omitempty"`         // default USD when empty on export
-	Channel      string  `json:"channel,omitempty"`          // amazon | shop | catalog | federal | gsa | partsbase
+	UnitPrice    float64 `json:"unit_price"`               // listing price for the sell unit
+	Quantity     int     `json:"quantity"`                 // base units covered by unit_price (pack size)
+	PricePerEach float64 `json:"price_per_each,omitempty"` // unit_price / quantity when quantity >= 1
+	Unit         string  `json:"unit,omitempty"`           // EA, DZ, CS, PK, BX, CT, RM, …
+	PackLabel    string  `json:"pack_label,omitempty"`     // e.g. "dozen", "case of 24"
+	BaseUnit     string  `json:"base_unit,omitempty"`      // e.g. "sheet"
+	Currency     string  `json:"currency,omitempty"`       // default USD when empty on export
+	Channel      string  `json:"channel,omitempty"`        // amazon | shop | catalog | federal | gsa | partsbase
 	Merchant     string  `json:"merchant,omitempty"`
-	PriceSource  string  `json:"price_source,omitempty"`     // provenance tag
+	PriceSource  string  `json:"price_source,omitempty"` // provenance tag
 	AsOf         string  `json:"as_of,omitempty"`
 }
 
@@ -180,6 +214,7 @@ type DataCaptureSource struct {
 	DataSource   string    `json:"data_source,omitempty"`
 	Note         string    `json:"note,omitempty"`
 	ResultCount  int       `json:"result_count,omitempty"`
+	FetchMS      int64     `json:"fetch_ms,omitempty"`
 }
 
 // DataCaptureScores is lightweight analysis context (not a substitute for the pricing export).

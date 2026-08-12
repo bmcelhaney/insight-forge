@@ -100,6 +100,12 @@ func TestBuildDataCaptureDocument_AtomicPriceHits(t *testing.T) {
 	if doc.SchemaVersion != "1.3" {
 		t.Fatalf("schema_version: got %q want 1.3", doc.SchemaVersion)
 	}
+	if doc.URLCoverage == nil || doc.URLCoverage.PriceObservations < 4 {
+		t.Fatalf("expected url_coverage on document, got %+v", doc.URLCoverage)
+	}
+	if !strings.Contains(doc.Purpose, "links.url") {
+		t.Fatalf("purpose should tell Windmill to ingest links.url, got %q", doc.Purpose)
+	}
 	if doc.AnalysisID == "" {
 		t.Fatal("expected analysis_id")
 	}
@@ -279,6 +285,78 @@ func TestHostMatchesMerchant(t *testing.T) {
 	}
 	if !hostMatchesMerchant("https://www.amazon.com/dp/B000", "Amazon Marketplace Used") {
 		t.Fatal("amazon")
+	}
+	if !hostMatchesMerchant("https://www.northerntool.com/p/123", "Northern Tool") {
+		t.Fatal("northern tool")
+	}
+	if !hostMatchesMerchant("https://www.harborfreight.com/item/1", "Harbor Freight Tools") {
+		t.Fatal("harbor freight")
+	}
+}
+
+func TestBestPriceObservationLinksAmazonASIN(t *testing.T) {
+	parent := models.CommercialReference{
+		SKU:        "B000DZGQIM",
+		LinkAmazon: "https://www.amazon.com/s?k=B000DZGQIM",
+		LinkShop:   "https://www.homedepot.com/p/Wooster/203150945",
+	}
+	o := models.MarketOffer{
+		UnitPrice: 19.99, Channel: "amazon", Merchant: "Amazon.com",
+		Link: "", Title: "Wooster Sherlock extension pole B000DZGQIM",
+	}
+	lnk := bestPriceObservationLinks(o, parent)
+	if lnk == nil || !strings.Contains(lnk.URL, "amazon.com/dp/B000DZGQIM") {
+		t.Fatalf("want constructed amazon /dp/ASIN, got %+v", lnk)
+	}
+	if lnk.URLKind != "amazon_dp" {
+		t.Fatalf("kind=%q", lnk.URLKind)
+	}
+	// Constructed Amazon URL must never leak onto a non-Amazon merchant.
+	newegg := models.MarketOffer{UnitPrice: 18, Channel: "shop", Merchant: "Newegg.com"}
+	if got := bestPriceObservationLinks(newegg, parent); got != nil {
+		t.Fatalf("newegg must not inherit amazon/hd: %+v", got)
+	}
+}
+
+func TestComputeURLCoverage(t *testing.T) {
+	hits := []models.DataCaptureHit{
+		{HitType: "price_observation", Pricing: &models.DataCapturePricing{UnitPrice: 10},
+			Links: &models.DataCaptureLinks{URL: "https://www.homedepot.com/p/x", URLKind: "merchant_pdp"}},
+		{HitType: "price_observation", Pricing: &models.DataCapturePricing{UnitPrice: 12},
+			Links: &models.DataCaptureLinks{URL: "https://www.amazon.com/dp/B000TEST01", URLKind: "amazon_dp"}},
+		{HitType: "price_observation", Pricing: &models.DataCapturePricing{UnitPrice: 8},
+			Links: &models.DataCaptureLinks{URL: "https://www.google.com/search?tbm=shop&q=x", URLKind: "search"}},
+		{HitType: "price_observation", Pricing: &models.DataCapturePricing{UnitPrice: 9}},
+		{HitType: "ets_mapping"}, // not a price
+	}
+	c := computeURLCoverage(hits)
+	if c.PriceObservations != 4 || c.WithURL != 3 || c.WithStrongURL != 2 || c.SearchOnly != 1 || c.WithoutURL != 1 {
+		t.Fatalf("coverage=%+v", c)
+	}
+}
+
+func TestAssembleAnalyzeTimings(t *testing.T) {
+	snaps := []models.DataSnapshot{
+		{SourceCode: "WEBFLIS", RawResponse: map[string]any{"_fetch_ms": int64(120)}},
+		{SourceCode: "WEBFLIS", RawResponse: map[string]any{"_fetch_ms": int64(120)}}, // dedupe
+		{SourceCode: "ABILITYONE_ETS", RawResponse: map[string]any{"_fetch_ms": float64(8)}},
+	}
+	got := AssembleAnalyzeTimings(200, 1500, 5, 1710, snaps, map[string]int64{
+		"commercial_probe_ms": 40,
+		"product_links_ms":    1200,
+		"serp_ms":             800,
+		"immersive_ms":        300,
+		"upc_ms":              90,
+		"link_verify_ms":      50,
+	})
+	if got.ExtractMS != 200 || got.SynthesizeMS != 1500 || got.TotalMS != 1710 {
+		t.Fatalf("phase totals: %+v", got)
+	}
+	if got.SerpMS != 800 || got.ImmersiveMS != 300 || got.LinkVerifyMS != 50 || got.UPCMS != 90 {
+		t.Fatalf("network splits: %+v", got)
+	}
+	if len(got.Extractors) != 2 {
+		t.Fatalf("extractors=%v", got.Extractors)
 	}
 }
 
