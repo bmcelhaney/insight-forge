@@ -59,7 +59,7 @@ Content-Type: application/json
 |---|---|---|
 | `nsn` | **Yes** | 9-digit NIIN or 13-digit NSN |
 | `serp_immersive` | No | `true` = Google Shopping + Immersive multi-store (default). `false` = shopping-search only (less SerpAPI quota) |
-| `capture_screenshots` | No | **Default `true`** when Tigris/screenshot worker is available. Async visual evidence → Tigris (`bucket` + `object_key`). Hits start `pending`; poll `GET /api/proofs/{analysis_id}` for `data_capture` with proofs filled. Set `false` / `?capture_screenshots=false` to skip. |
+| `capture_screenshots` | No | **Currently disabled server-wide** (screenshots/Tigris parked). When re-enabled via `IF_SCREENSHOT_ENABLED=true`, pass `true` to request async page captures. |
 
 Same body works for `POST /api/insight`. Query params: `?serp_immersive=false`, `?capture_screenshots=false` to disable.
 

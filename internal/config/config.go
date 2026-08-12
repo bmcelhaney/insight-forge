@@ -95,15 +95,14 @@ func Load() (*Config, error) {
 	// Default on for richer merchant prices; set false to burn less quota.
 	viper.SetDefault("SERPAPI_IMMERSIVE", true)
 	viper.SetDefault("UPCITEMDB_ENABLED", true)
+	// Tigris + screenshots: parked for now (pricing hits + reliable URLs only).
+	// Re-enable later with IF_TIGRIS_ENABLED=true and IF_SCREENSHOT_ENABLED=true.
 	viper.SetDefault("TIGRIS_ENABLED", false)
 	viper.SetDefault("TIGRIS_REGION", "auto")
 	viper.SetDefault("SCREENSHOT_ENABLED", false)
-	// Page captures only; keep modest so Windmill is not blocked long.
 	viper.SetDefault("SCREENSHOT_MAX_PER_RUN", 6)
 	viper.SetDefault("SCREENSHOT_TIMEOUT_MS", 10000)
-	// Default true: every analyze/export captures evidence when Tigris is configured.
-	// Opt out per request with capture_screenshots=false, or set IF_SCREENSHOT_ON_ANALYZE=false.
-	viper.SetDefault("SCREENSHOT_ON_ANALYZE", true)
+	viper.SetDefault("SCREENSHOT_ON_ANALYZE", false)
 
 	partsBaseClientID := getConfiguredValue("PARTSBASE_CLIENT_ID")
 	partsBaseClientSecret := getConfiguredValue("PARTSBASE_CLIENT_SECRET")

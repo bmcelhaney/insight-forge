@@ -90,11 +90,13 @@ func main() {
 		cfg.UPCItemDBEnabled, cfg.UPCItemDBConfigured,
 	)
 
-	// Tigris object storage + async evidence screenshots (never log secrets).
+	// Tigris + page screenshots: PARKED (not used in production path).
+	// Focus is pricing hits + reliable product URLs. To revive later:
+	//   IF_TIGRIS_ENABLED=true + IF_SCREENSHOT_ENABLED=true + credentials in .env.tigris
 	var tigrisStore *storage.Client
 	var shotCapturer *screenshot.Capturer
 	var shotWorker *screenshot.Worker
-	if cfg.TigrisEnabled {
+	if cfg.ScreenshotEnabled && cfg.TigrisEnabled {
 		st, err := storage.NewTigrisClient(storage.TigrisConfig{
 			Enabled:   true,
 			Bucket:    cfg.TigrisBucket,
@@ -108,27 +110,18 @@ func main() {
 		} else if st != nil {
 			tigrisStore = st
 			fmt.Printf("Tigris: enabled (bucket=%s endpoint=%s)\n", cfg.TigrisBucket, cfg.TigrisEndpoint)
-			// Quick connectivity check (non-fatal).
 			pingCtx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 			if err := st.Ping(pingCtx); err != nil {
-				fmt.Printf("Tigris: ping failed (screenshots may fail): %v\n", err)
+				fmt.Printf("Tigris: ping failed: %v\n", err)
 			} else {
 				fmt.Printf("Tigris: bucket reachable\n")
 			}
 			cancel()
 		}
-	} else {
-		fmt.Printf("Tigris: disabled (set IF_TIGRIS_ENABLED + credentials in .env.tigris)\n")
-	}
-	if cfg.ScreenshotEnabled {
 		shotTO := time.Duration(cfg.ScreenshotTimeoutMS) * time.Millisecond
 		if shotTO <= 0 {
 			shotTO = 10 * time.Second
 		}
-		if shotTO > 30*time.Second {
-			shotTO = 30 * time.Second
-		}
-		// Default backend is thum.io (HTTP) — page screenshots of product URLs only.
 		backend := strings.TrimSpace(os.Getenv("IF_SCREENSHOT_BACKEND"))
 		if backend == "" {
 			backend = screenshot.BackendThum
@@ -153,15 +146,10 @@ func main() {
 				BatchTimeout: batchTO,
 				PresignTTL:   time.Hour,
 			})
-			fmt.Printf("Screenshots: async page-capture (backend=%s parallel=%d page_timeout=%s batch_budget=%s max=%d/run) — poll GET /api/proofs/{analysis_id}\n",
-				shotCapturer.Backend(), shotCapturer.Parallelism(), shotTO, batchTO, cfg.ScreenshotMaxPerRun)
-		} else if shotCapturer.Available() {
-			fmt.Printf("Screenshots: backend=%s ok but Tigris not configured\n", shotCapturer.Backend())
-		} else {
-			fmt.Printf("Screenshots: enabled but backend %q unavailable\n", backend)
+			fmt.Printf("Screenshots: ENABLED (backend=%s max=%d/run)\n", shotCapturer.Backend(), cfg.ScreenshotMaxPerRun)
 		}
 	} else {
-		fmt.Printf("Screenshots: disabled (IF_SCREENSHOT_ENABLED=false)\n")
+		fmt.Printf("Screenshots/Tigris: disabled (pricing hits + product URLs only; set IF_SCREENSHOT_ENABLED=true to re-enable)\n")
 	}
 
 	// Surface PartsBase credential status without leaking secrets.
@@ -300,13 +288,12 @@ func main() {
 	// runAnalyze synthesizes an NSN and builds the data-capture document.
 	// One builder for UI export, POST /api/analyze, and GET /api/export/data.
 	// serpImmersive nil → server default (IF_SERPAPI_IMMERSIVE, default true).
-	// captureScreenshots true → async screenshots of eligible links.url → Tigris
-	// (hits marked proof.screenshot.status=pending; poll GET /api/proofs/{analysis_id}).
+	// captureScreenshots is ignored unless screenshots are explicitly re-enabled
+	// (IF_SCREENSHOT_ENABLED + Tigris). Default path: pricing hits + reliable URLs only.
 	runAnalyze := func(ctx context.Context, nsn string, serpImmersive *bool, captureScreenshots bool) (models.InsightResult, models.DataCaptureDocument) {
 		if serpImmersive != nil {
 			ctx = processing.WithSerpImmersive(ctx, *serpImmersive)
 		} else {
-			// Explicit default so request path is always intentional.
 			ctx = processing.WithSerpImmersive(ctx, processing.SerpAPIImmersiveDefault())
 		}
 		snaps, _ := extractorReg.FetchAll(ctx, nsn, nil, nil)
@@ -315,7 +302,7 @@ func main() {
 			Commit:    commit,
 			BuildTime: buildTime,
 		})
-		wantShots := captureScreenshots || cfg.ScreenshotOnAnalyze
+		wantShots := cfg.ScreenshotEnabled && (captureScreenshots || cfg.ScreenshotOnAnalyze)
 		if wantShots && shotWorker != nil && shotWorker.Available() {
 			_ = shotWorker.MarkPendingAndEnqueue(&doc)
 		}
@@ -424,24 +411,17 @@ func main() {
 	// GET /api/export/data/{nsn} and to the UI Data Capture export (same builder).
 	// Optional: "serp_immersive": true|false (default true / server IF_SERPAPI_IMMERSIVE).
 	//
-	// Screenshots default ON when the worker is available (Tigris + backend ready).
-	// Opt out: {"capture_screenshots":false} or ?capture_screenshots=false
-	// (was opt-in before — Windmill export/data runs never uploaded to Tigris).
+	// Screenshots are OFF unless the feature is re-enabled server-side and the
+	// client explicitly requests them. Parked: focus on pricing + product URLs.
 	parseCaptureScreenshots := func(body *bool, query string) bool {
-		defaultOn := shotWorker != nil && shotWorker.Available()
+		if !cfg.ScreenshotEnabled || shotWorker == nil || !shotWorker.Available() {
+			return false
+		}
 		if body != nil {
 			return *body
 		}
 		q := strings.TrimSpace(strings.ToLower(query))
-		switch q {
-		case "1", "true", "yes", "on":
-			return true
-		case "0", "false", "no", "off":
-			return false
-		default:
-			// Omitted → default on when screenshots are configured.
-			return defaultOn
-		}
+		return q == "1" || q == "true" || q == "yes" || q == "on"
 	}
 
 	r.Post("/api/analyze", func(w http.ResponseWriter, r *http.Request) {
@@ -495,9 +475,9 @@ func main() {
 			"data_capture":         doc,
 			"serp_immersive":       usedImmersive && processing.SerpAPIEnabled(),
 			"analysis_id":          doc.AnalysisID,
-			"screenshots_queued":   shots || cfg.ScreenshotOnAnalyze,
-			"screenshots_async":    true,
-			"proofs_poll_url":      "/api/proofs/" + doc.AnalysisID,
+			"screenshots_queued":   shots && shotWorker != nil,
+			"screenshots_async":    shotWorker != nil,
+			"proofs_poll_url":      "",
 		})
 	})
 

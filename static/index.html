@@ -472,7 +472,8 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
               tog.checked = !!data.serpapi_immersive;
             }
           }
-          screenshotsFeatureAvailable = !!(data.screenshots_enabled || data.tigris_configured);
+          // Screenshots/Tigris parked — only enable UI gallery if server reports on.
+          screenshotsFeatureAvailable = !!(data.screenshots_enabled);
         }
         loadAPIQuotas(false);
       } catch (e) {
@@ -823,8 +824,8 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
       try {
         // /api/insight returns full analysis for the UI; /api/analyze is data-capture only (downstream apps).
         const serpImmersive = getSerpImmersivePreference();
-        // Async screenshots when Tigris/Chrome available (does not block response).
-        const captureScreenshots = screenshotsFeatureAvailable !== false;
+        // Screenshots disabled for now (pricing hits + product URLs only).
+        const captureScreenshots = false;
         const res = await fetch('/api/insight', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -850,10 +851,12 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
 
         try {
           renderFullAnalysis(currentResult, nsn);
-          // Seed gallery from pending proofs on data_capture, then poll async worker.
-          initEvidenceScreenshotsFromDataCapture(currentDataCapture);
-          if (currentAnalysisId && (data.screenshots_queued || captureScreenshots)) {
-            startProofPolling(currentAnalysisId);
+          // Evidence screenshot gallery parked (screenshotsFeatureAvailable).
+          if (screenshotsFeatureAvailable) {
+            initEvidenceScreenshotsFromDataCapture(currentDataCapture);
+            if (currentAnalysisId && data.screenshots_queued) {
+              startProofPolling(currentAnalysisId);
+            }
           }
         } catch (renderErr) {
           console.error('Render error:', renderErr);
