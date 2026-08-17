@@ -1,4 +1,40 @@
-# Deployment Process for nib-insightforge
+# Deployment Process for Insight Forge
+
+There are two live hosts:
+
+| Host | Org | URL | Use |
+|---|---|---|---|
+| Sprite `nib-insightforge` | `bill-nib` | https://nib-insightforge-bsmmx.sprites.app/ | Day-to-day / Windmill (current) |
+| Fly app `insight-forge` | `nib-235` | https://insight-forge.fly.dev/ | Permanent NIB org machine |
+
+## Fly.io (`nib-235`)
+
+From this repo (after `fly auth login`):
+
+```bash
+cd ~/insight-forge
+git pull
+COMMIT=$(git rev-parse --short HEAD)
+BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+fly deploy -a insight-forge --remote-only --yes \
+  --build-arg COMMIT="$COMMIT" \
+  --build-arg BUILD_TIME="$BUILD_TIME"
+```
+
+Verify:
+
+```bash
+curl -s https://insight-forge.fly.dev/version
+curl -s https://insight-forge.fly.dev/health
+```
+
+Secrets live in Fly (`fly secrets list -a insight-forge`), not in git. They were copied from the sprite `.env.partsbase` / `.env.serpapi` / `.env.upcitemdb` files. Screenshots/Tigris stay off.
+
+The GitHub Fly integration created the empty app; it could not finish until `fly.toml` + a working Dockerfile landed. Push those files so later GitHub deploys have a config.
+
+---
+
+## Sprite (`nib-insightforge`)
 
 This document exists because of repeated painful failures where code was pushed but old binaries continued serving traffic for hours or days.
 

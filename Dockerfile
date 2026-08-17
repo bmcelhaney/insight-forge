@@ -1,5 +1,6 @@
-# Insight Forge - Multi-stage Go build (following Stitchify Go Framework patterns)
-FROM golang:1.23-bookworm AS builder
+# Insight Forge — static Go binary + UI + ETS spreadsheet.
+# The live server does not use DuckDB; do not enable CGO or install libduckdb.
+FROM golang:1.26-bookworm AS builder
 
 WORKDIR /app
 
@@ -7,27 +8,28 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
-RUN CGO_ENABLED=1 GOOS=linux go build -o /insight-forge ./cmd/server
 
-# Runtime image
+ARG COMMIT=dev
+ARG BUILD_TIME=unknown
+RUN CGO_ENABLED=0 GOOS=linux go build \
+    -ldflags="-s -w -X main.commit=${COMMIT} -X main.buildTime=${BUILD_TIME}" \
+    -o /insight-forge ./cmd/server
+
 FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
-    libduckdb0 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
 COPY --from=builder /insight-forge /app/insight-forge
-COPY migrations ./migrations
-
-# Data volume for DuckDB file
-VOLUME ["/app/data"]
+COPY static ./static
+COPY docs ./docs
 
 ENV IF_ENV=production
 ENV IF_PORT=8080
-ENV IF_DUCKDB_PATH=/app/data/insight-forge.duckdb
+ENV IF_ETS_XLSX_PATH="/app/docs/20260701 AbilityOne ETS File.xlsx"
 
 EXPOSE 8080
 

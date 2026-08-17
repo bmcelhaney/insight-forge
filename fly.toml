@@ -1,0 +1,38 @@
+# Insight Forge — Fly.io app in org nib-235 (shared NIB org).
+# Deploy: fly deploy -a insight-forge --org nib-235
+app = "insight-forge"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  IF_ENV = "production"
+  IF_PORT = "8080"
+  IF_LOG_LEVEL = "info"
+  IF_SCREENSHOT_ENABLED = "false"
+  IF_TIGRIS_ENABLED = "false"
+  IF_ETS_XLSX_PATH = "/app/docs/20260701 AbilityOne ETS File.xlsx"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [http_service.concurrency]
+    type = "requests"
+    hard_limit = 50
+    soft_limit = 25
+
+[[http_service.checks]]
+  grace_period = "20s"
+  interval = "30s"
+  method = "GET"
+  path = "/health"
+  timeout = "10s"
+
+[[vm]]
+  size = "shared-cpu-2x"
+  memory = "2gb"
