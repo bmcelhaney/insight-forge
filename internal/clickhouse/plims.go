@@ -118,7 +118,7 @@ func (c *Client) plimsProgress(ctx context.Context) (plimsProgress, error) {
 	line := strings.TrimSpace(string(raw))
 	var row struct {
 		Eligible int `json:"eligible"`
-		Already  int `json:"already"`
+		Already  int `json:"already_analyzed"`
 	}
 	if err := json.Unmarshal([]byte(line), &row); err != nil {
 		return plimsProgress{}, fmt.Errorf("plims progress: %w", err)
@@ -145,7 +145,7 @@ FORMAT JSONEachRow`, plimsProductsTable, analysesTable, limit)
 func plimsProgressSQL() string {
 	return fmt.Sprintf(`SELECT
   countIf(already = 0) AS eligible,
-  countIf(already = 1) AS already
+  countIf(already = 1) AS already_analyzed
 FROM (
   SELECT
     nsn,
