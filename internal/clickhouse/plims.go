@@ -21,29 +21,42 @@ type PlimsNSN struct {
 	LatestRaw string    `json:"latest_raw,omitempty"`
 }
 
-// LatestPlimsNSNs returns up to limit distinct NSNs from MONTH='Current month',
-// newest CREATION_DATE first.
-func (c *Client) LatestPlimsNSNs(ctx context.Context, limit int) ([]PlimsNSN, error) {
+// PlimsPick is a batch of not-yet-analyzed distinct current-month NSNs.
+type PlimsPick struct {
+	NSNs            []PlimsNSN `json:"nsns"`
+	Eligible        int        `json:"eligible"`         // distinct current-month NSNs not yet in nsn_analyses
+	AlreadyAnalyzed int        `json:"already_analyzed"` // distinct current-month NSNs already in nsn_analyses
+	RemainingAfter  int        `json:"remaining_after"`  // eligible minus this pick
+}
+
+const analysesTable = "fair_market_pricing.nsn_analyses"
+
+// LatestPlimsNSNs returns up to limit distinct digit-NSNs from MONTH='Current month',
+// newest CREATION_DATE first, skipping NSNs already present in nsn_analyses.
+func (c *Client) LatestPlimsNSNs(ctx context.Context, limit int) (PlimsPick, error) {
+	pick := PlimsPick{}
 	if limit < 1 {
 		limit = 1
 	}
 	if limit > 50 {
 		limit = 50
 	}
-	// Fetch extra rows so we can skip non-numeric / invalid NSNs.
-	fetch := limit * 4
-	if fetch < 40 {
-		fetch = 40
+	stats, err := c.plimsProgress(ctx)
+	if err != nil {
+		return pick, err
 	}
-	if fetch > 200 {
-		fetch = 200
+	pick.Eligible = stats.eligible
+	pick.AlreadyAnalyzed = stats.already
+	if stats.eligible == 0 {
+		return pick, fmt.Errorf("all current-month PLIMS NSNs already have nsn_analyses rows")
 	}
-	sql := latestPlimsSQL(fetch)
+
+	sql := latestPlimsSQL(limit)
 	raw, err := c.Query(ctx, sql)
 	if err != nil {
-		return nil, err
+		return pick, err
 	}
-	var out []PlimsNSN
+	seen := map[string]bool{}
 	sc := bufio.NewScanner(bytes.NewReader(raw))
 	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for sc.Scan() {
@@ -52,6 +65,7 @@ func (c *Client) LatestPlimsNSNs(ctx context.Context, limit int) ([]PlimsNSN, er
 			continue
 		}
 		var row struct {
+			NSN       string `json:"nsn"`
 			NSNDashed string `json:"nsn_dashed"`
 			ProdName  string `json:"prod_name"`
 			Latest    string `json:"latest"`
@@ -59,10 +73,11 @@ func (c *Client) LatestPlimsNSNs(ctx context.Context, limit int) ([]PlimsNSN, er
 		if err := json.Unmarshal([]byte(line), &row); err != nil {
 			continue
 		}
-		digits := digitsOnly(row.NSNDashed)
-		if !validAnalyzeNSN(digits) {
+		digits := digitsOnly(firstNonEmpty(row.NSN, row.NSNDashed))
+		if !validAnalyzeNSN(digits) || seen[digits] {
 			continue
 		}
+		seen[digits] = true
 		item := PlimsNSN{
 			NSN:       digits,
 			NSNDashed: strings.TrimSpace(row.NSNDashed),
@@ -72,26 +87,87 @@ func (c *Client) LatestPlimsNSNs(ctx context.Context, limit int) ([]PlimsNSN, er
 		if t, ok := parseCHTime(row.Latest); ok {
 			item.Latest = t
 		}
-		out = append(out, item)
-		if len(out) >= limit {
+		pick.NSNs = append(pick.NSNs, item)
+		if len(pick.NSNs) >= limit {
 			break
 		}
 	}
 	if err := sc.Err(); err != nil {
-		return nil, err
+		return pick, err
 	}
-	if len(out) == 0 {
-		return nil, fmt.Errorf("no valid NSNs in %s with MONTH='Current month'", plimsProductsTable)
+	if len(pick.NSNs) == 0 {
+		return pick, fmt.Errorf("no valid unused NSNs in %s with MONTH='Current month'", plimsProductsTable)
 	}
-	return out, nil
+	pick.RemainingAfter = stats.eligible - len(pick.NSNs)
+	if pick.RemainingAfter < 0 {
+		pick.RemainingAfter = 0
+	}
+	return pick, nil
 }
 
-func latestPlimsSQL(fetch int) string {
-	return fmt.Sprintf(
-		"SELECT NSN AS nsn_dashed, any(PROD_NAME) AS prod_name, max(CREATION_DATE) AS latest "+
-			"FROM %s WHERE MONTH = 'Current month' GROUP BY NSN ORDER BY latest DESC LIMIT %d FORMAT JSONEachRow",
-		plimsProductsTable, fetch,
-	)
+type plimsProgress struct {
+	eligible int
+	already  int
+}
+
+func (c *Client) plimsProgress(ctx context.Context) (plimsProgress, error) {
+	raw, err := c.Query(ctx, plimsProgressSQL())
+	if err != nil {
+		return plimsProgress{}, err
+	}
+	line := strings.TrimSpace(string(raw))
+	var row struct {
+		Eligible int `json:"eligible"`
+		Already  int `json:"already"`
+	}
+	if err := json.Unmarshal([]byte(line), &row); err != nil {
+		return plimsProgress{}, fmt.Errorf("plims progress: %w", err)
+	}
+	return plimsProgress{eligible: row.Eligible, already: row.Already}, nil
+}
+
+func latestPlimsSQL(limit int) string {
+	return fmt.Sprintf(`SELECT
+  replaceRegexpAll(ifNull(NSN, ''), '[^0-9]', '') AS nsn,
+  any(NSN) AS nsn_dashed,
+  any(PROD_NAME) AS prod_name,
+  max(CREATION_DATE) AS latest
+FROM %s
+WHERE MONTH = 'Current month'
+  AND length(replaceRegexpAll(ifNull(NSN, ''), '[^0-9]', '')) IN (9, 13)
+GROUP BY nsn
+HAVING nsn NOT IN (SELECT nsn FROM %s WHERE nsn != '')
+ORDER BY latest DESC
+LIMIT %d
+FORMAT JSONEachRow`, plimsProductsTable, analysesTable, limit)
+}
+
+func plimsProgressSQL() string {
+	return fmt.Sprintf(`SELECT
+  countIf(already = 0) AS eligible,
+  countIf(already = 1) AS already
+FROM (
+  SELECT
+    nsn,
+    nsn IN (SELECT nsn FROM %s WHERE nsn != '') AS already
+  FROM (
+    SELECT replaceRegexpAll(ifNull(NSN, ''), '[^0-9]', '') AS nsn
+    FROM %s
+    WHERE MONTH = 'Current month'
+      AND length(replaceRegexpAll(ifNull(NSN, ''), '[^0-9]', '')) IN (9, 13)
+    GROUP BY nsn
+  )
+)
+FORMAT JSONEachRow`, analysesTable, plimsProductsTable)
+}
+
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 func digitsOnly(s string) string {

@@ -527,7 +527,7 @@ func main() {
 			limit = 25
 		}
 		qctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
-		nsns, err := chClient.LatestPlimsNSNs(qctx, limit)
+		pick, err := chClient.LatestPlimsNSNs(qctx, limit)
 		cancel()
 		if err != nil {
 			w.WriteHeader(http.StatusBadGateway)
@@ -535,7 +535,7 @@ func main() {
 			return
 		}
 		imm := parseSerpImmersive(req.SerpImmersive, r.URL.Query().Get("serp_immersive"))
-		job, err := jobs.start(nsns, runAnalyze, imm)
+		job, err := jobs.start(pick, runAnalyze, imm)
 		if err != nil {
 			w.WriteHeader(http.StatusConflict)
 			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})

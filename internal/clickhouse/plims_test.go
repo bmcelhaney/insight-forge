@@ -25,4 +25,10 @@ func TestLatestPlimsSQLFiltersCurrentMonth(t *testing.T) {
 	if !strings.Contains(sql, "ORDER BY latest DESC") {
 		t.Fatalf("expected newest CREATION_DATE, got %s", sql)
 	}
+	if !strings.Contains(sql, "GROUP BY nsn") {
+		t.Fatalf("expected distinct digit NSN, got %s", sql)
+	}
+	if !strings.Contains(sql, "NOT IN (SELECT nsn FROM fair_market_pricing.nsn_analyses") {
+		t.Fatalf("expected skip already-analyzed NSNs, got %s", sql)
+	}
 }

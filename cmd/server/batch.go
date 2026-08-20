@@ -46,6 +46,9 @@ type batchJob struct {
 	StartedAt         time.Time
 	FinishedAt        time.Time
 	AvgMS             int64
+	AlreadyAnalyzed   int
+	Eligible          int
+	RemainingAfter    int
 	Items             []batchItem
 	Error             string
 }
@@ -60,7 +63,8 @@ func newBatchStore() *batchStore {
 	return &batchStore{jobs: map[string]*batchJob{}}
 }
 
-func (s *batchStore) start(nsns []clickhouse.PlimsNSN, analyze analyzeFn, serpImmersive *bool) (*batchJob, error) {
+func (s *batchStore) start(pick clickhouse.PlimsPick, analyze analyzeFn, serpImmersive *bool) (*batchJob, error) {
+	nsns := pick.NSNs
 	s.mu.Lock()
 	if s.running != "" {
 		cur := s.jobs[s.running]
@@ -70,13 +74,16 @@ func (s *batchStore) start(nsns []clickhouse.PlimsNSN, analyze analyzeFn, serpIm
 		}
 	}
 	job := &batchJob{
-		ID:        uuid.NewString(),
-		Status:    "queued",
-		Source:    "EBS.XXSC_XXSC_PLIMS_PRODUCTS",
-		Limit:     len(nsns),
-		Total:     len(nsns),
-		StartedAt: time.Now().UTC(),
-		Items:     make([]batchItem, len(nsns)),
+		ID:              uuid.NewString(),
+		Status:          "queued",
+		Source:          "EBS.XXSC_XXSC_PLIMS_PRODUCTS",
+		Limit:           len(nsns),
+		Total:           len(nsns),
+		StartedAt:       time.Now().UTC(),
+		AlreadyAnalyzed: pick.AlreadyAnalyzed,
+		Eligible:        pick.Eligible,
+		RemainingAfter:  pick.RemainingAfter,
+		Items:           make([]batchItem, len(nsns)),
 	}
 	for i, n := range nsns {
 		job.Items[i] = batchItem{
@@ -227,6 +234,9 @@ func (j *batchJob) snapshot() map[string]any {
 		"eta_ms":              eta,
 		"current_elapsed_ms":  currentElapsed,
 		"started_at":          j.StartedAt.Format(time.RFC3339),
+		"already_analyzed":    j.AlreadyAnalyzed,
+		"eligible":            j.Eligible,
+		"remaining_after":     j.RemainingAfter,
 		"items":               items,
 	}
 	if !j.FinishedAt.IsZero() {

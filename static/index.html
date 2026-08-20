@@ -133,7 +133,7 @@
                   class="px-4 py-1.5 bg-zinc-800 hover:bg-emerald-700 border border-zinc-600 hover:border-emerald-500 transition text-[12px] font-semibold rounded-xl">
             BATCH ANALYZE
           </button>
-          <span class="text-[10px] text-zinc-500">Latest unique NSNs from EBS.XXSC_XXSC_PLIMS_PRODUCTS where MONTH = Current month</span>
+          <span class="text-[10px] text-zinc-500">Current-month PLIMS, distinct NSNs, skipping any already in nsn_analyses (batches resume)</span>
         </div>
         <!-- External API health alerts (PartsBase, SerpAPI, UPCItemDB, …) -->
         <div id="integration-status-banner" class="hidden mt-3 rounded-2xl border px-4 py-3 text-sm"></div>
@@ -999,7 +999,10 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
         status = 'Analyzing ' + idx + ' of ' + total + ': ' + cur;
         if (snap.current_elapsed_ms) status += ' (' + formatDurationMS(snap.current_elapsed_ms) + ' elapsed)';
       } else {
-        status = 'Queued ' + total + ' NSNs from PLIMS…';
+        status = 'Queued ' + total + ' new NSNs from PLIMS…';
+      }
+      if (snap.already_analyzed) {
+        status += ' Skipped ' + snap.already_analyzed + ' already in nsn_analyses.';
       }
       const statusEl = document.getElementById('batch-status-line');
       if (statusEl) statusEl.textContent = status;
@@ -1020,7 +1023,8 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
           + ' · ' + Number(snap.failed || 0) + ' failed'
           + ' · ClickHouse: ' + Number(snap.analyses_written || 0) + ' analyses, '
           + Number(snap.hits_written || 0) + ' hits ('
-          + Number(snap.priced_hits_written || 0) + ' priced)';
+          + Number(snap.priced_hits_written || 0) + ' priced)'
+          + (snap.remaining_after != null ? ' · ' + snap.remaining_after + ' remaining after this batch' : '');
       }
 
       const reportEl = document.getElementById('batch-report');
@@ -1029,7 +1033,8 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
         reportEl.textContent = 'Processed ' + Number(snap.processed_ok || 0) + ' of ' + total
           + ' NSNs successfully. Loaded ' + Number(snap.analyses_written || 0)
           + ' analysis records and ' + Number(snap.hits_written || 0)
-          + ' hits (' + Number(snap.priced_hits_written || 0) + ' priced) into nsn_analyses / nsn_hits.';
+          + ' hits (' + Number(snap.priced_hits_written || 0) + ' priced) into nsn_analyses / nsn_hits.'
+          + (snap.remaining_after != null ? ' ' + snap.remaining_after + ' current-month NSNs still queued for later batches.' : '');
       }
 
       const tbody = document.getElementById('batch-rows');
