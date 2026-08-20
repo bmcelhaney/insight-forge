@@ -21,7 +21,8 @@ type PlimsNSN struct {
 	LatestRaw string    `json:"latest_raw,omitempty"`
 }
 
-// LatestPlimsNSNs returns up to limit distinct NSNs, newest CREATION_DATE first.
+// LatestPlimsNSNs returns up to limit distinct NSNs from MONTH='Current month',
+// newest CREATION_DATE first.
 func (c *Client) LatestPlimsNSNs(ctx context.Context, limit int) ([]PlimsNSN, error) {
 	if limit < 1 {
 		limit = 1
@@ -37,11 +38,7 @@ func (c *Client) LatestPlimsNSNs(ctx context.Context, limit int) ([]PlimsNSN, er
 	if fetch > 200 {
 		fetch = 200
 	}
-	sql := fmt.Sprintf(
-		"SELECT NSN AS nsn_dashed, any(PROD_NAME) AS prod_name, max(CREATION_DATE) AS latest "+
-			"FROM %s GROUP BY NSN ORDER BY latest DESC LIMIT %d FORMAT JSONEachRow",
-		plimsProductsTable, fetch,
-	)
+	sql := latestPlimsSQL(fetch)
 	raw, err := c.Query(ctx, sql)
 	if err != nil {
 		return nil, err
@@ -84,9 +81,17 @@ func (c *Client) LatestPlimsNSNs(ctx context.Context, limit int) ([]PlimsNSN, er
 		return nil, err
 	}
 	if len(out) == 0 {
-		return nil, fmt.Errorf("no valid NSNs in %s", plimsProductsTable)
+		return nil, fmt.Errorf("no valid NSNs in %s with MONTH='Current month'", plimsProductsTable)
 	}
 	return out, nil
+}
+
+func latestPlimsSQL(fetch int) string {
+	return fmt.Sprintf(
+		"SELECT NSN AS nsn_dashed, any(PROD_NAME) AS prod_name, max(CREATION_DATE) AS latest "+
+			"FROM %s WHERE MONTH = 'Current month' GROUP BY NSN ORDER BY latest DESC LIMIT %d FORMAT JSONEachRow",
+		plimsProductsTable, fetch,
+	)
 }
 
 func digitsOnly(s string) string {
