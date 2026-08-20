@@ -59,7 +59,7 @@ func New(cfg Config) (*Client, error) {
 		user:     strings.TrimSpace(cfg.User),
 		password: cfg.Password,
 		http: &http.Client{
-			Timeout: 20 * time.Second,
+			Timeout: 45 * time.Second,
 			Transport: &http.Transport{
 				Proxy:                 nil, // never honor HTTP_PROXY for CH
 				TLSHandshakeTimeout:   8 * time.Second,

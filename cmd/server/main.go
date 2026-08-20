@@ -371,6 +371,8 @@ func main() {
 		return result, doc
 	}
 
+	jobs := newBatchStore()
+
 	// parseSerpImmersive reads optional body field or query param.
 	// Omitted → nil (use server default = immersive on).
 	parseSerpImmersive := func(body *bool, query string) *bool {
@@ -502,6 +504,56 @@ func main() {
 		shots := parseCaptureScreenshots(req.CaptureScreenshots, r.URL.Query().Get("capture_screenshots"))
 		_, doc := runAnalyze(r.Context(), req.NSN, parseSerpImmersive(req.SerpImmersive, r.URL.Query().Get("serp_immersive")), shots)
 		writeDataCaptureJSON(w, doc, req.NSN, false)
+	})
+
+	// Batch: latest unique NSNs from EBS.XXSC_XXSC_PLIMS_PRODUCTS, then sequential analyze.
+	r.Post("/api/batch/analyze", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		if chClient == nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{"error": "ClickHouse is not configured; batch requires EBS.XXSC_XXSC_PLIMS_PRODUCTS"})
+			return
+		}
+		var req struct {
+			Limit         int   `json:"limit"`
+			SerpImmersive *bool `json:"serp_immersive"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		limit := req.Limit
+		if limit <= 0 {
+			limit = 5
+		}
+		if limit > 25 {
+			limit = 25
+		}
+		qctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+		nsns, err := chClient.LatestPlimsNSNs(qctx, limit)
+		cancel()
+		if err != nil {
+			w.WriteHeader(http.StatusBadGateway)
+			json.NewEncoder(w).Encode(map[string]string{"error": "could not load PLIMS NSNs: " + err.Error()})
+			return
+		}
+		imm := parseSerpImmersive(req.SerpImmersive, r.URL.Query().Get("serp_immersive"))
+		job, err := jobs.start(nsns, runAnalyze, imm)
+		if err != nil {
+			w.WriteHeader(http.StatusConflict)
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+		w.WriteHeader(http.StatusAccepted)
+		json.NewEncoder(w).Encode(job.snapshot())
+	})
+
+	r.Get("/api/batch/{id}", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		job := jobs.get(chi.URLParam(r, "id"))
+		if job == nil {
+			w.WriteHeader(http.StatusNotFound)
+			json.NewEncoder(w).Encode(map[string]string{"error": "batch job not found"})
+			return
+		}
+		json.NewEncoder(w).Encode(job.snapshot())
 	})
 
 	// Full insight payload for the Insight Forge UI and pricing-tool consumers.
