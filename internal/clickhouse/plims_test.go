@@ -22,6 +22,9 @@ func TestLatestPlimsSQLFiltersCurrentMonth(t *testing.T) {
 	if !strings.Contains(sql, "WHERE MONTH = 'Current month'") {
 		t.Fatalf("expected current-month filter, got %s", sql)
 	}
+	if !strings.Contains(sql, "LIST_TYPE = 'B'") {
+		t.Fatalf("expected LIST_TYPE B filter, got %s", sql)
+	}
 	if !strings.Contains(sql, "ORDER BY latest DESC") {
 		t.Fatalf("expected newest CREATION_DATE, got %s", sql)
 	}

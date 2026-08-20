@@ -48,7 +48,7 @@ func (c *Client) LatestPlimsNSNs(ctx context.Context, limit int) (PlimsPick, err
 	pick.Eligible = stats.eligible
 	pick.AlreadyAnalyzed = stats.already
 	if stats.eligible == 0 {
-		return pick, fmt.Errorf("all current-month PLIMS NSNs already have nsn_analyses rows")
+		return pick, fmt.Errorf("all current-month LIST_TYPE=B PLIMS NSNs already have nsn_analyses rows")
 	}
 
 	sql := latestPlimsSQL(limit)
@@ -96,7 +96,7 @@ func (c *Client) LatestPlimsNSNs(ctx context.Context, limit int) (PlimsPick, err
 		return pick, err
 	}
 	if len(pick.NSNs) == 0 {
-		return pick, fmt.Errorf("no valid unused NSNs in %s with MONTH='Current month'", plimsProductsTable)
+		return pick, fmt.Errorf("no valid unused NSNs in %s with MONTH='Current month' AND LIST_TYPE='B'", plimsProductsTable)
 	}
 	pick.RemainingAfter = stats.eligible - len(pick.NSNs)
 	if pick.RemainingAfter < 0 {
@@ -134,6 +134,7 @@ func latestPlimsSQL(limit int) string {
   max(CREATION_DATE) AS latest
 FROM %s
 WHERE MONTH = 'Current month'
+  AND LIST_TYPE = 'B'
   AND length(replaceRegexpAll(ifNull(NSN, ''), '[^0-9]', '')) IN (9, 13)
 GROUP BY nsn
 HAVING nsn NOT IN (SELECT nsn FROM %s WHERE nsn != '')
@@ -154,6 +155,7 @@ FROM (
     SELECT replaceRegexpAll(ifNull(NSN, ''), '[^0-9]', '') AS nsn
     FROM %s
     WHERE MONTH = 'Current month'
+      AND LIST_TYPE = 'B'
       AND length(replaceRegexpAll(ifNull(NSN, ''), '[^0-9]', '')) IN (9, 13)
     GROUP BY nsn
   )
