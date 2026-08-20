@@ -28,7 +28,9 @@ curl -s https://insight-forge.fly.dev/version
 curl -s https://insight-forge.fly.dev/health
 ```
 
-Secrets live in Fly (`fly secrets list -a insight-forge`), not in git. They were copied from the sprite `.env.partsbase` / `.env.serpapi` / `.env.upcitemdb` files. Screenshots/Tigris stay off.
+Secrets live in Fly (`fly secrets list -a insight-forge`), not in git. PartsBase/Serp/UPC came from the sprite dotenv files. ClickHouse + NetBird (`CH_USER`, `CH_PASSWORD`, `NB_SETUP_KEY`) were copied from `fair-market-pricing`. Analyze runs write `nsn_analyses` + `nsn_hits` in ClickHouse Cloud via `fmp-ch-egress`. Screenshots/Tigris stay off.
+
+Keep a single machine: `fly deploy ... --ha=false` (or `fly scale count 1`).
 
 The GitHub Fly integration created the empty app; it could not finish until `fly.toml` + a working Dockerfile landed. Push those files so later GitHub deploys have a config.
 

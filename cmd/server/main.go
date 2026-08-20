@@ -12,6 +12,7 @@ import (
 
 	"time"
 
+	"github.com/bmcelhaney/insight-forge/internal/clickhouse"
 	"github.com/bmcelhaney/insight-forge/internal/config"
 	"github.com/bmcelhaney/insight-forge/internal/extraction"
 	"github.com/bmcelhaney/insight-forge/internal/models"
@@ -165,6 +166,34 @@ func main() {
 		fmt.Printf("PartsBase: disabled\n")
 	}
 
+	var chClient *clickhouse.Client
+	if cfg.ClickHouseEnabled {
+		c, err := clickhouse.New(clickhouse.Config{
+			Host:     cfg.ClickHouseHost,
+			Port:     cfg.ClickHousePort,
+			Database: cfg.ClickHouseDatabase,
+			User:     cfg.ClickHouseUser,
+			Password: cfg.ClickHousePassword,
+		})
+		if err != nil {
+			fmt.Printf("ClickHouse: config error: %v\n", err)
+		} else {
+			chClient = c
+			fmt.Printf("ClickHouse: enabled (db=%s host=%s)\n", cfg.ClickHouseDatabase, cfg.ClickHouseHost)
+			go func() {
+				pingCtx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+				defer cancel()
+				if err := chClient.Ping(pingCtx); err != nil {
+					fmt.Printf("ClickHouse: ping failed: %v\n", err)
+				} else {
+					fmt.Printf("ClickHouse: reachable\n")
+				}
+			}()
+		}
+	} else {
+		fmt.Printf("ClickHouse: disabled (set CH_HOST/CH_USER/CH_PASSWORD to ingest analyze runs)\n")
+	}
+
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
@@ -189,34 +218,46 @@ func main() {
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		payload := map[string]any{
-			"status":               "ok",
-			"service":              "insight-forge",
-			"commit":               commit,
-			"buildTime":            buildTime,
-			"version":              "analyst-v2-gated",
-			"note":                 "Award data prefers USAspending.gov (real, public). SAM.gov path is currently disabled.",
-			"partsbase_enabled":    cfg.PartsBaseEnabled,
-			"partsbase_configured": cfg.PartsBaseConfigured,
-			"partsbase_registered": extractorReg.PartsBaseRegistered(),
-			"partsbase_env_files":  cfg.PartsBaseEnvFilesLoaded,
-			"serpapi_enabled":      cfg.SerpAPIEnabled,
-			"serpapi_configured":   cfg.SerpAPIConfigured && processing.SerpAPIEnabled(),
-			"serpapi_num":          cfg.SerpAPINum,
-			"serpapi_immersive":    cfg.SerpAPIImmersive && processing.SerpAPIImmersiveEnabled(),
-			"upcitemdb_enabled":    cfg.UPCItemDBEnabled,
-			"upcitemdb_configured": cfg.UPCItemDBConfigured && processing.UPCItemDBConfigured(),
-			"upcitemdb_plan":       map[bool]string{true: "v1", false: "trial"}[processing.UPCItemDBConfigured()],
-			"tigris_configured":    tigrisStore != nil,
-			"tigris_bucket":        cfg.TigrisBucket,
-			"screenshots_enabled":  shotWorker != nil && shotWorker.Available(),
-			"screenshots_async":    true,
-			"screenshots_max":      cfg.ScreenshotMaxPerRun,
+			"status":                "ok",
+			"service":               "insight-forge",
+			"commit":                commit,
+			"buildTime":             buildTime,
+			"version":               "analyst-v2-gated",
+			"note":                  "Award data prefers USAspending.gov (real, public). SAM.gov path is currently disabled.",
+			"partsbase_enabled":     cfg.PartsBaseEnabled,
+			"partsbase_configured":  cfg.PartsBaseConfigured,
+			"partsbase_registered":  extractorReg.PartsBaseRegistered(),
+			"partsbase_env_files":   cfg.PartsBaseEnvFilesLoaded,
+			"serpapi_enabled":       cfg.SerpAPIEnabled,
+			"serpapi_configured":    cfg.SerpAPIConfigured && processing.SerpAPIEnabled(),
+			"serpapi_num":           cfg.SerpAPINum,
+			"serpapi_immersive":     cfg.SerpAPIImmersive && processing.SerpAPIImmersiveEnabled(),
+			"upcitemdb_enabled":     cfg.UPCItemDBEnabled,
+			"upcitemdb_configured":  cfg.UPCItemDBConfigured && processing.UPCItemDBConfigured(),
+			"upcitemdb_plan":        map[bool]string{true: "v1", false: "trial"}[processing.UPCItemDBConfigured()],
+			"tigris_configured":     tigrisStore != nil,
+			"tigris_bucket":         cfg.TigrisBucket,
+			"screenshots_enabled":   shotWorker != nil && shotWorker.Available(),
+			"screenshots_async":     true,
+			"clickhouse_configured": chClient != nil,
+			"clickhouse_database":   cfg.ClickHouseDatabase,
+			"screenshots_max":       cfg.ScreenshotMaxPerRun,
 			"screenshots_backend": func() string {
 				if shotCapturer != nil {
 					return shotCapturer.Backend()
 				}
 				return ""
 			}(),
+		}
+		if chClient != nil {
+			ok, errText, at := chClient.LastStatus()
+			payload["clickhouse_ok"] = ok
+			if errText != "" {
+				payload["clickhouse_error"] = errText
+			}
+			if !at.IsZero() {
+				payload["clickhouse_checked_at"] = at.Format(time.RFC3339)
+			}
 		}
 		// Last observed PartsBase fetch outcome (for UI source-status banner).
 		var pbStatus *models.PartsBaseStatus
@@ -312,6 +353,16 @@ func main() {
 		wantShots := cfg.ScreenshotEnabled && (captureScreenshots || cfg.ScreenshotOnAnalyze)
 		if wantShots && shotWorker != nil && shotWorker.Available() {
 			_ = shotWorker.MarkPendingAndEnqueue(&doc)
+		}
+		if chClient != nil {
+			ingCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+			if err := chClient.IngestAnalysis(ingCtx, doc); err != nil {
+				fmt.Printf("ClickHouse ingest failed analysis_id=%s: %v\n", doc.AnalysisID, err)
+			} else {
+				fmt.Printf("ClickHouse ingest ok analysis_id=%s hits=%d priced=%d\n",
+					doc.AnalysisID, doc.Counts.TotalHits, doc.Counts.PriceObservations)
+			}
+			cancel()
 		}
 		return result, doc
 	}
@@ -433,9 +484,9 @@ func main() {
 
 	r.Post("/api/analyze", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
-			NSN                 string `json:"nsn"`
-			SerpImmersive       *bool  `json:"serp_immersive"`
-			CaptureScreenshots  *bool  `json:"capture_screenshots"`
+			NSN                string `json:"nsn"`
+			SerpImmersive      *bool  `json:"serp_immersive"`
+			CaptureScreenshots *bool  `json:"capture_screenshots"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.NSN == "" {
 			w.Header().Set("Content-Type", "application/json")
@@ -477,14 +528,14 @@ func main() {
 		enc.SetEscapeHTML(false)
 		// data_capture is embedded for the UI export button — same struct as /api/analyze.
 		_ = enc.Encode(map[string]any{
-			"nsn":                  req.NSN,
-			"result":               result,
-			"data_capture":         doc,
-			"serp_immersive":       usedImmersive && processing.SerpAPIEnabled(),
-			"analysis_id":          doc.AnalysisID,
-			"screenshots_queued":   shots && shotWorker != nil,
-			"screenshots_async":    shotWorker != nil,
-			"proofs_poll_url":      "",
+			"nsn":                req.NSN,
+			"result":             result,
+			"data_capture":       doc,
+			"serp_immersive":     usedImmersive && processing.SerpAPIEnabled(),
+			"analysis_id":        doc.AnalysisID,
+			"screenshots_queued": shots && shotWorker != nil,
+			"screenshots_async":  shotWorker != nil,
+			"proofs_poll_url":    "",
 		})
 	})
 
@@ -615,17 +666,17 @@ func main() {
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{
-			"nsn":                     nsn,
-			"ets_dataset":             etsDataset,
-			"ets_matched_rows":        etsMatched,
-			"ets_truncated":           etsTruncated || len(result.CommercialReferences) >= 200,
-			"abilityone_com_price":    abilityOnePrice,
-			"abilityone_com_sku":      abilityOnePriceSKU,
-			"commercial_refs":         len(result.CommercialReferences),
-			"priced_count":            priced,
-			"sources":                 sources,
-			"sample":                  sample,
-			"pricing_note":            "Primary live price source is AbilityOne.com catalog (dashed NSN). GSA Advantage HTML scrape is degraded after their SPA rewrite.",
+			"nsn":                  nsn,
+			"ets_dataset":          etsDataset,
+			"ets_matched_rows":     etsMatched,
+			"ets_truncated":        etsTruncated || len(result.CommercialReferences) >= 200,
+			"abilityone_com_price": abilityOnePrice,
+			"abilityone_com_sku":   abilityOnePriceSKU,
+			"commercial_refs":      len(result.CommercialReferences),
+			"priced_count":         priced,
+			"sources":              sources,
+			"sample":               sample,
+			"pricing_note":         "Primary live price source is AbilityOne.com catalog (dashed NSN). GSA Advantage HTML scrape is degraded after their SPA rewrite.",
 		})
 	})
 

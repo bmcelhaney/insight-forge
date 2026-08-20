@@ -53,10 +53,17 @@ type Config struct {
 	TigrisAccessKey string
 	TigrisSecretKey string
 	// Screenshots of links.url → Tigris
-	ScreenshotEnabled    bool
-	ScreenshotMaxPerRun  int
-	ScreenshotTimeoutMS  int
-	ScreenshotOnAnalyze  bool // if true, every analyze captures (slow); else request flag only
+	ScreenshotEnabled   bool
+	ScreenshotMaxPerRun int
+	ScreenshotTimeoutMS int
+	ScreenshotOnAnalyze bool // if true, every analyze captures (slow); else request flag only
+	// ClickHouse Cloud (via NetBird ch-egress). Unprefixed CH_* env matches FMP.
+	ClickHouseEnabled  bool
+	ClickHouseHost     string
+	ClickHousePort     string
+	ClickHouseDatabase string
+	ClickHouseUser     string
+	ClickHousePassword string
 }
 
 func Load() (*Config, error) {
@@ -103,6 +110,9 @@ func Load() (*Config, error) {
 	viper.SetDefault("SCREENSHOT_MAX_PER_RUN", 6)
 	viper.SetDefault("SCREENSHOT_TIMEOUT_MS", 10000)
 	viper.SetDefault("SCREENSHOT_ON_ANALYZE", false)
+	viper.SetDefault("CH_PORT", "8443")
+	viper.SetDefault("CH_DB_NAME", "fair_market_pricing")
+	viper.SetDefault("CLICKHOUSE_ENABLED", true)
 
 	partsBaseClientID := getConfiguredValue("PARTSBASE_CLIENT_ID")
 	partsBaseClientSecret := getConfiguredValue("PARTSBASE_CLIENT_SECRET")
@@ -180,6 +190,16 @@ func Load() (*Config, error) {
 		shotTO = 10000
 	}
 
+	chHost := firstNonEmpty(getConfiguredValue("CH_HOST"), getConfiguredValue("CLICKHOUSE_HOST"))
+	chPort := firstNonEmpty(getConfiguredValue("CH_PORT"), getConfiguredValue("CLICKHOUSE_PORT"), "8443")
+	chDB := firstNonEmpty(getConfiguredValue("CH_DB_NAME"), getConfiguredValue("CLICKHOUSE_DATABASE"), "fair_market_pricing")
+	chUser := firstNonEmpty(getConfiguredValue("CH_USER"), getConfiguredValue("CLICKHOUSE_USER"))
+	chPass := firstNonEmpty(getConfiguredValue("CH_PASSWORD"), getConfiguredValue("CLICKHOUSE_PASSWORD"))
+	chEnabled := viper.GetBool("CLICKHOUSE_ENABLED")
+	if chHost == "" || chUser == "" || chPass == "" {
+		chEnabled = false
+	}
+
 	cfg := &Config{
 		Env:                      viper.GetString("ENV"),
 		Port:                     viper.GetInt("PORT"),
@@ -219,6 +239,12 @@ func Load() (*Config, error) {
 		ScreenshotMaxPerRun:      shotMax,
 		ScreenshotTimeoutMS:      shotTO,
 		ScreenshotOnAnalyze:      viper.GetBool("SCREENSHOT_ON_ANALYZE"),
+		ClickHouseEnabled:        chEnabled,
+		ClickHouseHost:           chHost,
+		ClickHousePort:           chPort,
+		ClickHouseDatabase:       chDB,
+		ClickHouseUser:           chUser,
+		ClickHousePassword:       chPass,
 	}
 
 	levelStr := viper.GetString("LOG_LEVEL")

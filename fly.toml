@@ -13,6 +13,21 @@ primary_region = "iad"
   IF_SCREENSHOT_ENABLED = "false"
   IF_TIGRIS_ENABLED = "false"
   IF_ETS_XLSX_PATH = "/app/docs/20260701 AbilityOne ETS File.xlsx"
+  CH_HOST = "https://igijlwqd6s.eastus2.azure.clickhouse.cloud"
+  CH_PORT = "8443"
+  CH_DB_NAME = "fair_market_pricing"
+  CH_DNS = "igijlwqd6s.eastus2.azure.clickhouse.cloud"
+  NB_HOSTNAME = "insight-forge"
+  NB_LOG_LEVEL = "info"
+  NB_MANAGEMENT_URL = "https://147.182.137.121.nip.io"
+  EGRESS_HOST = "ch-egress.netbird.selfhosted"
+  EGRESS_NB_IP = "100.86.156.220"
+  EGRESS_NB_KEY = "RpiCUdaDS9WUao9/O3EDsPk/PRhFRvo5rOAVJTCU918="
+
+[[mounts]]
+  source = "nb_state"
+  destination = "/var/lib/netbird"
+  initial_size = 1
 
 [http_service]
   internal_port = 8080
@@ -27,7 +42,7 @@ primary_region = "iad"
     soft_limit = 25
 
 [[http_service.checks]]
-  grace_period = "20s"
+  grace_period = "60s"
   interval = "30s"
   method = "GET"
   path = "/health"
