@@ -229,6 +229,7 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
         <div class="grid grid-cols-1 lg:grid-cols-5 gap-6">
           <div class="lg:col-span-3 analyst-card bg-zinc-900 border border-zinc-700 rounded-3xl p-6">
             <div class="section-header text-zinc-400 mb-2">Executive Summary</div>
+            <div id="clickhouse-ingest" class="hidden mb-3 text-[12px] leading-snug rounded-xl px-3 py-2 border"></div>
             <div id="summary" class="insight-text text-[15px] leading-relaxed"></div>
           </div>
           <div id="analyst-recommendation-card" class="lg:col-span-2 analyst-card bg-zinc-900 border border-zinc-700 rounded-3xl p-6">
@@ -318,6 +319,7 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
     let currentResult = null;
     let currentDataCapture = null; // machine-readable hit inventory for downstream apps
     let currentAnalysisId = null;
+    let currentClickhouseIngest = null;
     let proofPollTimer = null;
     let screenshotsFeatureAvailable = false;
     let currentNSN = '';
@@ -736,6 +738,30 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
       }
     }
 
+    function renderClickhouseIngestNote(ch) {
+      const el = document.getElementById('clickhouse-ingest');
+      if (!el) return;
+      if (!ch || !ch.enabled) {
+        el.classList.add('hidden');
+        el.textContent = '';
+        return;
+      }
+      el.classList.remove('hidden');
+      if (ch.written) {
+        const analyses = Number(ch.analyses || 0);
+        const hits = Number(ch.hits || 0);
+        const priced = Number(ch.priced_hits || 0);
+        el.className = 'mb-3 text-[12px] leading-snug rounded-xl px-3 py-2 border border-emerald-800 bg-emerald-950/40 text-emerald-200';
+        el.textContent = 'ClickHouse: wrote ' + analyses + ' analysis record and ' + hits + ' hits'
+          + (priced ? ' (' + priced + ' priced)' : '')
+          + ' to nsn_analyses / nsn_hits.';
+        return;
+      }
+      el.className = 'mb-3 text-[12px] leading-snug rounded-xl px-3 py-2 border border-amber-800 bg-amber-950/40 text-amber-200';
+      el.textContent = 'ClickHouse: this run was not written'
+        + (ch.error ? ' — ' + ch.error : '.');
+    }
+
     // Boot: attach listeners immediately. This script is at the very end of <body>,
     // so the DOM (form, quick-nsn buttons, inputs, results containers) is fully parsed.
     // Using window.onload previously could delay or skip attachment if load timing
@@ -816,6 +842,7 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
       dismissError();
       stopProofPolling();
       currentAnalysisId = null;
+      currentClickhouseIngest = null;
       const loadingEl = document.getElementById('loading');
       const resultsEl = document.getElementById('results');
       if (loadingEl) loadingEl.classList.remove('hidden');
@@ -844,6 +871,9 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
         currentDataCapture = data.data_capture || data.dataCapture || null;
         currentAnalysisId = data.analysis_id || data.analysisId ||
           (currentDataCapture && (currentDataCapture.analysis_id || currentDataCapture.AnalysisID)) || null;
+        currentClickhouseIngest = data.clickhouse
+          || (currentDataCapture && currentDataCapture.clickhouse)
+          || null;
 
         // Persist successful search for the recent-searches dropdown.
         const itemName = (currentResult && (currentResult.item_name || currentResult.ItemName)) || '';
@@ -1238,6 +1268,7 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
       // Executive Summary
       const summaryEl = document.getElementById('summary');
       if (summaryEl) summaryEl.textContent = result.summary || result.Summary || 'No summary generated.';
+      renderClickhouseIngestNote(typeof currentClickhouseIngest !== 'undefined' ? currentClickhouseIngest : null);
 
       // Item Identity (from WebFLIS prototype data) - new for arbitrary NSNs
       const itemIdEl = document.getElementById('item-identity');

@@ -16,29 +16,67 @@ const (
 	tableHits     = "nsn_hits"
 )
 
-// IngestAnalysis writes one data-capture document into nsn_analyses + nsn_hits.
-func (c *Client) IngestAnalysis(ctx context.Context, doc models.DataCaptureDocument) error {
-	if c == nil || !c.Configured() {
-		return nil
+// IngestResult is how many rows this analyze wrote to ClickHouse.
+type IngestResult struct {
+	Enabled    bool   `json:"enabled"`
+	Written    bool   `json:"written"`
+	Analyses   int    `json:"analyses"`
+	Hits       int    `json:"hits"`
+	PricedHits int    `json:"priced_hits"`
+	Error      string `json:"error,omitempty"`
+}
+
+func (r IngestResult) ToModel() *models.DataCaptureClickHouse {
+	cp := r
+	return &models.DataCaptureClickHouse{
+		Enabled:    cp.Enabled,
+		Written:    cp.Written,
+		Analyses:   cp.Analyses,
+		Hits:       cp.Hits,
+		PricedHits: cp.PricedHits,
+		Error:      cp.Error,
 	}
+}
+
+// IngestAnalysis writes one data-capture document into nsn_analyses + nsn_hits.
+func (c *Client) IngestAnalysis(ctx context.Context, doc models.DataCaptureDocument) IngestResult {
+	out := IngestResult{}
+	if c == nil || !c.Configured() {
+		return out
+	}
+	out.Enabled = true
 	if strings.TrimSpace(doc.AnalysisID) == "" {
-		return fmt.Errorf("clickhouse: missing analysis_id")
+		out.Error = "missing analysis_id"
+		return out
 	}
 	analysisJSON, err := json.Marshal(analysisRowFromDoc(doc))
 	if err != nil {
-		return err
+		out.Error = err.Error()
+		return out
 	}
 	if err := c.ExecJSONEachRow(ctx, tableAnalyses, append(analysisJSON, '\n')); err != nil {
-		return err
+		out.Error = err.Error()
+		return out
 	}
+	out.Analyses = 1
 	hitsPayload, err := encodeHitRows(doc)
 	if err != nil {
-		return err
+		out.Error = err.Error()
+		return out
 	}
-	if len(hitsPayload) == 0 {
-		return nil
+	if len(hitsPayload) > 0 {
+		if err := c.ExecJSONEachRow(ctx, tableHits, hitsPayload); err != nil {
+			out.Error = err.Error()
+			return out
+		}
 	}
-	return c.ExecJSONEachRow(ctx, tableHits, hitsPayload)
+	out.Hits = len(doc.Hits)
+	out.PricedHits = doc.Counts.PriceObservations
+	if out.PricedHits == 0 {
+		out.PricedHits = doc.Counts.PricedHits
+	}
+	out.Written = true
+	return out
 }
 
 type analysisRow struct {

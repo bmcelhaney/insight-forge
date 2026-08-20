@@ -41,6 +41,18 @@ type DataCaptureDocument struct {
 	Timings *DataCaptureTimings `json:"timings,omitempty"`
 	// URLCoverage summarizes how many priced hits have a merchant-matched proof URL.
 	URLCoverage *DataCaptureURLCoverage `json:"url_coverage,omitempty"`
+	// ClickHouse reports whether this run was written to nsn_analyses / nsn_hits.
+	ClickHouse *DataCaptureClickHouse `json:"clickhouse,omitempty"`
+}
+
+// DataCaptureClickHouse is ingest status for one analyze run (ops + UI note).
+type DataCaptureClickHouse struct {
+	Enabled    bool   `json:"enabled"`
+	Written    bool   `json:"written"`
+	Analyses   int    `json:"analyses"`
+	Hits       int    `json:"hits"`
+	PricedHits int    `json:"priced_hits"`
+	Error      string `json:"error,omitempty"`
 }
 
 // DataCaptureTimings is wall-clock milliseconds for one analyze/export run.

@@ -356,13 +356,17 @@ func main() {
 		}
 		if chClient != nil {
 			ingCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
-			if err := chClient.IngestAnalysis(ingCtx, doc); err != nil {
-				fmt.Printf("ClickHouse ingest failed analysis_id=%s: %v\n", doc.AnalysisID, err)
-			} else {
-				fmt.Printf("ClickHouse ingest ok analysis_id=%s hits=%d priced=%d\n",
-					doc.AnalysisID, doc.Counts.TotalHits, doc.Counts.PriceObservations)
-			}
+			ing := chClient.IngestAnalysis(ingCtx, doc)
 			cancel()
+			doc.ClickHouse = ing.ToModel()
+			if ing.Error != "" {
+				fmt.Printf("ClickHouse ingest failed analysis_id=%s: %s\n", doc.AnalysisID, ing.Error)
+			} else if ing.Written {
+				fmt.Printf("ClickHouse ingest ok analysis_id=%s analyses=%d hits=%d priced=%d\n",
+					doc.AnalysisID, ing.Analyses, ing.Hits, ing.PricedHits)
+			}
+		} else {
+			doc.ClickHouse = &models.DataCaptureClickHouse{Enabled: false}
 		}
 		return result, doc
 	}
@@ -533,6 +537,7 @@ func main() {
 			"data_capture":       doc,
 			"serp_immersive":     usedImmersive && processing.SerpAPIEnabled(),
 			"analysis_id":        doc.AnalysisID,
+			"clickhouse":         doc.ClickHouse,
 			"screenshots_queued": shots && shotWorker != nil,
 			"screenshots_async":  shotWorker != nil,
 			"proofs_poll_url":    "",

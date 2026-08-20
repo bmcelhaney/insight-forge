@@ -86,7 +86,8 @@ func TestHitRowsIncludeURLKindAndParent(t *testing.T) {
 
 func TestIngestNoopWhenUnconfigured(t *testing.T) {
 	var c *Client
-	if err := c.IngestAnalysis(nil, sampleDoc()); err != nil {
-		t.Fatal(err)
+	got := c.IngestAnalysis(nil, sampleDoc())
+	if got.Enabled || got.Written {
+		t.Fatalf("unconfigured ingest should be a no-op: %+v", got)
 	}
 }
