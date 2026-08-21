@@ -127,13 +127,13 @@
         <div class="mt-3 flex flex-wrap items-center gap-2 px-1">
           <span class="text-[11px] text-zinc-400">Batch from PLIMS</span>
           <label class="text-[11px] text-zinc-400" for="batch-limit">NSNs</label>
-          <input id="batch-limit" type="number" min="1" max="25" value="5"
+          <input id="batch-limit" type="number" min="1" max="500" value="5"
                  class="w-20 bg-zinc-900 border border-zinc-700 focus:border-emerald-500 rounded-xl px-2 py-1 text-sm font-mono text-zinc-200">
           <button type="button" id="batch-analyze-btn"
                   class="px-4 py-1.5 bg-zinc-800 hover:bg-emerald-700 border border-zinc-600 hover:border-emerald-500 transition text-[12px] font-semibold rounded-xl">
             BATCH ANALYZE
           </button>
-          <span class="text-[10px] text-zinc-500">Current-month PLIMS LIST_TYPE=B, distinct NSNs, skipping any already in nsn_analyses</span>
+          <span class="text-[10px] text-zinc-500">Current-month PLIMS LIST_TYPE=B, distinct NSNs, skip already analyzed. Max 500 (can take hours; leave the tab or it still runs on the server).</span>
         </div>
         <!-- External API health alerts (PartsBase, SerpAPI, UPCItemDB, …) -->
         <div id="integration-status-banner" class="hidden mt-3 rounded-2xl border px-4 py-3 text-sm"></div>
@@ -919,7 +919,7 @@ Analyst use: Scores <40 with diversified NIB coverage are generally low-risk for
       const limitEl = document.getElementById('batch-limit');
       let limit = parseInt(limitEl && limitEl.value ? limitEl.value : '5', 10);
       if (!Number.isFinite(limit) || limit < 1) limit = 5;
-      if (limit > 25) limit = 25;
+      if (limit > 500) limit = 500;
       if (limitEl) limitEl.value = String(limit);
 
       const loadingEl = document.getElementById('loading');

@@ -523,8 +523,8 @@ func main() {
 		if limit <= 0 {
 			limit = 5
 		}
-		if limit > 25 {
-			limit = 25
+		if limit > clickhouse.MaxPlimsBatch {
+			limit = clickhouse.MaxPlimsBatch
 		}
 		qctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 		pick, err := chClient.LatestPlimsNSNs(qctx, limit)

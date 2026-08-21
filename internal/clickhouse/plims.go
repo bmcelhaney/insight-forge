@@ -12,6 +12,9 @@ import (
 
 const plimsProductsTable = "EBS.XXSC_XXSC_PLIMS_PRODUCTS"
 
+// MaxPlimsBatch is the largest number of NSNs one batch job will queue.
+const MaxPlimsBatch = 500
+
 // PlimsNSN is one unique NSN taken from the latest PLIMS product row.
 type PlimsNSN struct {
 	NSN       string    `json:"nsn"`
@@ -38,8 +41,8 @@ func (c *Client) LatestPlimsNSNs(ctx context.Context, limit int) (PlimsPick, err
 	if limit < 1 {
 		limit = 1
 	}
-	if limit > 50 {
-		limit = 50
+	if limit > MaxPlimsBatch {
+		limit = MaxPlimsBatch
 	}
 	stats, err := c.plimsProgress(ctx)
 	if err != nil {
